@@ -141,17 +141,14 @@ struct BoardMovingPoints {
             let netID = points[HorizontalCanvasModeSupport.pointKey(point)]?.netIDs.lazy.compactMap { $0 }.first
             landed[HorizontalCanvasModeSupport.pointKey(to), default: (to, [], netID)].ids.append(id)
         }
-        for key in landed.keys.sorted() {
-            guard let entry = landed[key], let preferredID = entry.ids.min() else {
-                continue
-            }
-            BoardTrackRouting.mergeJunctions(
-                at: entry.point,
-                preferredID: preferredID,
-                netID: board.junctionNetIDs[preferredID] ?? entry.netID,
-                board: &board
-            )
-        }
+        // Every point the junctions landed on in one call, which keys the
+        // board's junctions once: a call for each read them all again.
+        BoardTrackRouting.mergeJunctions(
+            at: landed.keys.sorted().compactMap { key in
+                landed[key].flatMap { entry in entry.ids.min().map { (entry.point, $0, entry.netID) } }
+            },
+            board: &board
+        )
     }
 
     private static func netsMatch(_ lhs: String?, _ rhs: String?) -> Bool {

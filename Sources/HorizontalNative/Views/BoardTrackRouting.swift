@@ -834,9 +834,99 @@ enum BoardTrackRouting {
         layer: Int? = nil,
         board: inout HorizontalBoard
     ) -> String {
-        let matchingIDs = board.junctionIDs(at: point, joining: layer)
+        foldJunctions(board.junctionIDs(at: point, joining: layer), at: point, preferredID: preferredID, netID: netID, board: &board)
+    }
+
+    /// `mergeJunctions(at:preferredID:netID:board:)` at each of `places` in
+    /// turn, each junction kept on the net it has, else the place's. The
+    /// junctions are keyed by point once for all the places: merged one call
+    /// at a time, a move that carried every junction of a board read all of
+    /// them again at each. `preferredID` is a junction of the board's, by
+    /// its own id.
+    static func mergeJunctions(
+        at places: [(point: HorizontalPoint, preferredID: String, netID: String?)],
+        board: inout HorizontalBoard
+    ) {
+        guard !places.isEmpty else {
+            return
+        }
+        var byPoint = board.junctionIDsByPoint()
+        for place in places {
+            let key = HorizontalBoard.junctionPointKey(place.point)
+            let before = board.junctions[place.preferredID]
+            let kept = foldJunctions(
+                byPoint[key] ?? [],
+                at: place.point,
+                preferredID: place.preferredID,
+                netID: board.junctionNetIDs[place.preferredID] ?? place.netID,
+                board: &board
+            )
+            // The junctions here are now the one kept, which has left the
+            // point it was at.
+            if kept == place.preferredID, let before {
+                let left = HorizontalBoard.junctionPointKey(before)
+                if left != key {
+                    byPoint[left]?.removeAll { $0 == kept }
+                }
+            }
+            byPoint[key] = [kept]
+        }
+    }
+
+    /// Takes junctions from where they stand to new points, group after
+    /// group, each group folded into one with what it meets where it lands,
+    /// as moving them and then `mergeJunctions(at:preferredID:netID:board:)`
+    /// there does, with the junctions keyed by point once for all the
+    /// groups. The first of a group, by id, is the one kept, with its own
+    /// net or else the group's. Every junction that goes has left its point
+    /// before any lands, so one that lands where another stood, itself
+    /// about to go, doesn't take that one in.
+    static func carryJunctions(
+        _ groups: [(ids: [String], to: HorizontalPoint, netID: String?)],
+        board: inout HorizontalBoard
+    ) {
+        guard !groups.isEmpty else {
+            return
+        }
+        var byPoint = board.junctionIDsByPoint()
+        for group in groups {
+            for id in group.ids {
+                if let from = board.junctions[id] {
+                    byPoint[HorizontalBoard.junctionPointKey(from)]?.removeAll { $0 == id }
+                }
+            }
+        }
+        for group in groups {
+            guard let preferred = group.ids.min() else {
+                continue
+            }
+            let key = HorizontalBoard.junctionPointKey(group.to)
+            let kept = foldJunctions(
+                ((byPoint[key] ?? []) + group.ids).sorted(),
+                at: group.to,
+                preferredID: preferred,
+                netID: board.junctionNetIDs[preferred] ?? group.netID,
+                board: &board
+            )
+            byPoint[key] = [kept]
+        }
+    }
+
+    /// Folds the junctions `matchingIDs` at `point` into one, as
+    /// `mergeJunctions` says.
+    @discardableResult
+    private static func foldJunctions(
+        _ matchingIDs: [String],
+        at point: HorizontalPoint,
+        preferredID: String?,
+        netID: String?,
+        board: inout HorizontalBoard
+    ) -> String {
+        // By its own id where the board has it, else whatever its case.
         let existingPreferredID = preferredID.flatMap { preferred in
-            board.junctions.keys.first { normalizedID($0) == normalizedID(preferred) }
+            board.junctions[preferred] != nil
+                ? preferred
+                : board.junctions.keys.first { normalizedID($0) == normalizedID(preferred) }
         }
         let keepID = existingPreferredID ?? matchingIDs.first ?? preferredID ?? UUID().uuidString.lowercased()
         let keepNetID = board.junctionNetIDs[keepID]
