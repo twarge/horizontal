@@ -15256,21 +15256,6 @@ struct BoardCanvasView: View {
             )
         }
         // The tracks the move reshapes are outlined where it has taken their
-    /// The tracks a route snaps to along their length, on the layer it is
-    /// drawn on (`BoardTrackRouting.snapTracks`): none with no route, or
-    /// while something is moved.
-    private func boardSnapTracks() -> [HorizontalSnapTrack] {
-        guard moveState?.snapTargets == nil, let state = drawTrackState else {
-            return []
-        }
-        let key = BoardTrackSnapTracksKey(
-            targets: BoardTrackSnapTargetsKey(selectables: selectableCacheKey, layer: state.layer),
-            netID: state.netID.map(normalizedID))
-        return selectableCache.trackSnapTracks(key: key) {
-            BoardTrackRouting.snapTracks(on: state.layer, netID: state.netID, in: selectableSceneBoard)
-        }
-    }
-
         // ends, as the scene draws them, not shifted whole off the copper.
         if let movingTracks {
             let overlay = boardMovingTrackOutlineOverlay(movingTracks.outlines, at: placement, style: movingTracks.style)
@@ -15803,6 +15788,21 @@ struct BoardCanvasView: View {
         }
         return selectableCache.snapTargets(key: selectableCacheKey) {
             boardSelectableScene().snapTargets(pointKey: pointKey)
+        }
+    }
+
+    /// The tracks a route snaps to along their length, on the layer it is
+    /// drawn on (`BoardTrackRouting.snapTracks`): none with no route, or
+    /// while something is moved.
+    private func boardSnapTracks() -> [HorizontalSnapTrack] {
+        guard moveState?.snapTargets == nil, let state = drawTrackState else {
+            return []
+        }
+        let key = BoardTrackSnapTracksKey(
+            targets: BoardTrackSnapTargetsKey(selectables: selectableCacheKey, layer: state.layer),
+            netID: state.netID.map(normalizedID))
+        return selectableCache.trackSnapTracks(key: key) {
+            BoardTrackRouting.snapTracks(on: state.layer, netID: state.netID, in: selectableSceneBoard)
         }
     }
 
