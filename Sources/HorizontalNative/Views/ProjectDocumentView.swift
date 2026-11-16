@@ -5961,6 +5961,54 @@ struct ProjectWorkspaceView: View {
         let panes = pane.panesAfterTab(from: visiblePanes)
         if panes != visiblePanes {
             visiblePanes = panes
+            frameSpotlight(inPaneJustShown: other)
+        }
+    }
+
+    /// Tab to a pane that wasn't showing when Spotlight was made, and so was
+    /// left as it was: what is spotlit is brought into it as it comes up,
+    /// when Settings asks Spotlight to frame every view. The schematic turns
+    /// to the sheet that draws the most of it, the board to its side; then
+    /// the canvas scrolls to it, unless it shows already, once it has laid
+    /// out, since hidden it had no size to scroll in.
+    private func frameSpotlight(inPaneJustShown pane: HorizontalPane) {
+        guard spotlightFramesEveryView else {
+            return
+        }
+        let nets = highlightedNetIDs
+        let components = highlightedComponentIDs
+        guard !nets.isEmpty || !components.isEmpty else {
+            return
+        }
+        let rect: HorizontalRect
+        switch pane {
+        case .board:
+            guard let board = project.board,
+                  let boardRect = HorizontalSpotlightFraming.boardRect(board, netIDs: nets, componentIDs: boardComponentIDs(components),
+                                                                       margin: 0) else {
+                return
+            }
+            if let side = HorizontalSpotlightFraming.boardSide(board, componentIDs: boardComponentIDs(components)) {
+                showBoardSide(side)
+            }
+            rect = boardRect
+        case .schematic:
+            let currentSheetID = selectedSchematic?.sheet.id
+            guard let target = HorizontalSpotlightFraming.sheetTarget(project, netIDs: nets, componentIDs: schematicComponentIDs(components),
+                                                                      currentSheetID: currentSheetID, margin: 0) else {
+                return
+            }
+            if target.sheetID.caseInsensitiveCompare(currentSheetID ?? "") != .orderedSame {
+                navigatorSelection = target.blockID.map { .sheet(blockID: $0, sheetID: target.sheetID) }
+                    ?? .standaloneSheet(target.sheetID)
+            }
+            rect = target.rect
+        case .parts, .library, .threeD:
+            return
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(250))
+            canvasCommandActionsByPane[pane]?.revealWorldRect?(rect, nil)
         }
     }
 
