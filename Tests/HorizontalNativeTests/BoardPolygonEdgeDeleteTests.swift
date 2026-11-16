@@ -31,6 +31,24 @@ final class BoardPolygonEdgeDeleteTests: XCTestCase {
         XCTAssertNil(HorizontalPolygonEdgeDeletion.edgeIndex(afterDeleting: 6, vertexCount: 6), "not one of its edges")
     }
 
+    // MARK: - Several parts at once
+
+    /// Edges selected together are deleted as they were picked: each index
+    /// is into the polygon as it stood, not as the deletes before it left it.
+    func testEdgesDeletedTogetherTakeTheVerticesTheyHadWhenSelected() {
+        func remaining(_ parts: [(HorizontalObjectType, Int)], of count: Int = 8) -> [Double] {
+            var polygon = HorizontalPolygon(
+                id: "p", vertices: (0..<count).map { HorizontalPoint(x: Double($0), y: 0) }, layer: HorizontalBoardLayers.topCopper)
+            XCTAssertTrue(polygon.deleteParts(parts.map { HorizontalSelectableRef(id: "p", type: $0.0, vertex: $0.1) }))
+            return polygon.polygonVertices.map(\.position.x)
+        }
+        XCTAssertEqual(remaining([(.polygonEdge, 1), (.polygonEdge, 5)]), [0, 3, 4, 7], "two edges apart")
+        XCTAssertEqual(remaining([(.polygonEdge, 5), (.polygonEdge, 1)]), [0, 3, 4, 7], "in either order")
+        XCTAssertEqual(remaining([(.polygonEdge, 1), (.polygonEdge, 2)]), [0, 4, 5, 6, 7], "neighbours share a vertex")
+        XCTAssertEqual(remaining([(.polygonEdge, 7), (.polygonEdge, 3)]), [1, 2, 5, 6], "the closing edge among them")
+        XCTAssertEqual(remaining([(.polygonEdge, 0), (.polygonVertex, 4)]), [2, 3, 5, 6, 7], "an edge and a vertex")
+    }
+
     // MARK: - On the board
 
     @MainActor private final class State: ObservableObject {

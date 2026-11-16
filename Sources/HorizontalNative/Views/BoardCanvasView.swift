@@ -7856,6 +7856,7 @@ struct BoardCanvasView: View {
             ($0.type == .junction ? 1 : 0) < ($1.type == .junction ? 1 : 0)
         }
 
+        var reshapedPolygonIDs = Set<String>()
         for ref in refs {
             switch ref.type {
             case .boardPackage:
@@ -7897,7 +7898,13 @@ struct BoardCanvasView: View {
                 changed = removeElement(from: &board.texts, matching: ref) || changed
                 changed = removeElement(from: &board.packageTexts, matching: ref) || changed
             case .polygonArcCenter, .polygonEdge, .polygonVertex:
-                changed = deletePolygonVertices(ref, from: &board.polygons) || changed
+                // A polygon's selected parts go together, at its first, since
+                // each one's index is into the polygon as it stood.
+                guard reshapedPolygonIDs.insert(normalizedID(ref.id)).inserted else {
+                    continue
+                }
+                let parts = refs.filter { isPolygonRef($0) && normalizedID($0.id) == normalizedID(ref.id) }
+                changed = deletePolygonParts(parts, of: ref.id, from: &board.polygons) || changed
                 // One left with too few points is gone, which patchPolygons
                 // takes only from the flag.
                 if !ref.id.contains("/"), !board.polygons.contains(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
@@ -8070,27 +8077,10 @@ struct BoardCanvasView: View {
         return HorizontalSelectableRef(id: new.id, type: .polygonEdge, vertex: index, layer: new.layer)
     }
 
-    private func deletePolygonVertices(_ ref: HorizontalSelectableRef, from polygons: inout [HorizontalPolygon]) -> Bool {
-        guard let polygonIndex = polygons.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }),
-              polygons[polygonIndex].polygonVertices.indices.contains(ref.vertex) else {
+    private func deletePolygonParts(_ parts: [HorizontalSelectableRef], of id: String, from polygons: inout [HorizontalPolygon]) -> Bool {
+        guard let polygonIndex = polygons.firstIndex(where: { normalizedID($0.id) == normalizedID(id) }),
+              polygons[polygonIndex].deleteParts(parts) else {
             return false
-        }
-
-        if ref.type == .polygonArcCenter {
-            polygons[polygonIndex].polygonVertices[ref.vertex].type = .line
-            return true
-        }
-
-        let indices: [Int]
-        if ref.type == .polygonEdge {
-            let next = polygons[polygonIndex].nextVertexIndex(after: ref.vertex)
-            indices = Array(Set([ref.vertex, next])).sorted(by: >)
-        } else {
-            indices = [ref.vertex]
-        }
-
-        for index in indices where polygons[polygonIndex].polygonVertices.indices.contains(index) {
-            polygons[polygonIndex].polygonVertices.remove(at: index)
         }
         if polygons[polygonIndex].polygonVertices.count < 3 || abs(polygons[polygonIndex].area) < 1 {
             polygons.remove(at: polygonIndex)

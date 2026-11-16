@@ -4222,13 +4222,20 @@ struct SchematicCanvasView: View {
             }
         }
 
+        let polygonPartTypes: Set<HorizontalObjectType> = [.polygonEdge, .polygonVertex, .polygonArcCenter]
+        var reshapedPolygonIDs = Set<String>()
         for ref in refs {
             if editorProfile.isPoolMode, ref.type == .symbolPin {
                 changed = sheet.removeEditablePin(id: ref.id) || changed
                 continue
             }
-            if editorProfile.isPoolMode, [.polygonEdge, .polygonVertex, .polygonArcCenter].contains(ref.type) {
-                changed = sheet.deleteDrawingPolygonVertices(ref) || changed
+            if editorProfile.isPoolMode, polygonPartTypes.contains(ref.type) {
+                // A polygon's selected parts go together, at its first, since
+                // each one's index is into the polygon as it stood.
+                if reshapedPolygonIDs.insert(ref.id.lowercased()).inserted {
+                    let parts = refs.filter { polygonPartTypes.contains($0.type) && $0.id.lowercased() == ref.id.lowercased() }
+                    changed = sheet.deleteDrawingPolygonParts(parts, of: ref.id) || changed
+                }
                 continue
             }
             switch ref.type {

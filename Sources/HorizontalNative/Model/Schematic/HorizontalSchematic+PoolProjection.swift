@@ -112,27 +112,20 @@ extension HorizontalSchematicSheet {
         }
     }
 
-    /// `deletePolygonVertices` as the board does it: an arc centre becomes a
-    /// straight edge, an edge takes both its vertices, a vertex itself; a
-    /// polygon left with fewer than three vertices (or no area) goes away.
+    /// A drawing polygon's parts deleted as the board deletes them
+    /// (`HorizontalPolygon.deleteParts`): an arc centre becomes a straight
+    /// edge, an edge takes both its vertices, a vertex itself; a polygon left
+    /// with fewer than two vertices goes away.
     mutating func deleteDrawingPolygonVertices(_ ref: HorizontalSelectableRef) -> Bool {
-        guard let polygonIndex = drawingPolygons.firstIndex(where: { $0.id.lowercased() == ref.id.lowercased() }),
-              drawingPolygons[polygonIndex].polygonVertices.indices.contains(ref.vertex) else {
+        deleteDrawingPolygonParts([ref], of: ref.id)
+    }
+
+    /// Several parts of the one polygon `id`, their indices all into the
+    /// polygon as it stands.
+    mutating func deleteDrawingPolygonParts(_ parts: [HorizontalSelectableRef], of id: String) -> Bool {
+        guard let polygonIndex = drawingPolygons.firstIndex(where: { $0.id.lowercased() == id.lowercased() }),
+              drawingPolygons[polygonIndex].deleteParts(parts) else {
             return false
-        }
-        if ref.type == .polygonArcCenter {
-            drawingPolygons[polygonIndex].polygonVertices[ref.vertex].type = .line
-            return true
-        }
-        let indices: [Int]
-        if ref.type == .polygonEdge {
-            let next = drawingPolygons[polygonIndex].nextVertexIndex(after: ref.vertex)
-            indices = Array(Set([ref.vertex, next])).sorted(by: >)
-        } else {
-            indices = [ref.vertex]
-        }
-        for index in indices where drawingPolygons[polygonIndex].polygonVertices.indices.contains(index) {
-            drawingPolygons[polygonIndex].polygonVertices.remove(at: index)
         }
         if drawingPolygons[polygonIndex].polygonVertices.count < 2 {
             drawingPolygons.remove(at: polygonIndex)
