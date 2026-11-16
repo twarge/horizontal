@@ -71,7 +71,10 @@ struct HorizontalPartUpdatesSheet: View {
                     Toggle("Replace local edits and unverified project copies", isOn: $allowProjectChanges)
                 }
                 if let error { Text(error).foregroundStyle(.red).font(.callout).textSelection(.enabled) }
+                // A narrow iPad window has no room for it beside the buttons.
+                if horizontalSizeClass == .compact { selectAll }
                 HStack {
+                    if horizontalSizeClass != .compact { selectAll.fixedSize() }
                     Spacer()
                     Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
                     Button("Update Selected") {
@@ -124,14 +127,23 @@ struct HorizontalPartUpdatesSheet: View {
         }
     }
 
+    private func isChecked(_ id: String) -> Binding<Bool> {
+        Binding(get: { checked.contains(id) }, set: { if $0 { checked.insert(id) } else { checked.remove(id) } })
+    }
+
+    /// One checkbox for the list's: it checks or clears every listed part that
+    /// can be updated, and shows mixed when only some of them are checked.
+    private var selectAll: some View {
+        let updatable = rows.filter(\.canUpdate).map { isChecked($0.id) }
+        return Toggle("Select all parts", sources: updatable, isOn: \.self)
+            .disabled(updatable.isEmpty || isReadOnly || isRefreshing)
+    }
+
     private var partList: some View {
         List(selection: $selection) {
             ForEach(rows) { part in
                 HStack(spacing: 10) {
-                    Toggle("Update \(part.name)", isOn: Binding(
-                        get: { checked.contains(part.id) },
-                        set: { if $0 { checked.insert(part.id) } else { checked.remove(part.id) } }
-                    ))
+                    Toggle("Update \(part.name)", isOn: isChecked(part.id))
                     .labelsHidden()
                     .disabled(!part.canUpdate || isReadOnly || isRefreshing)
                     VStack(alignment: .leading, spacing: 4) {
