@@ -310,7 +310,8 @@ struct HorizontalSettingsView: View {
     }
 
     /// Every line width slider runs over the same range in the same steps,
-    /// so each has the same ticks.
+    /// so each has the same ticks: one at every whole pixel, not one a step,
+    /// which is too many to read.
     private func lineWidthSliderRow(
         _ title: String,
         width: Binding<Double>,
@@ -322,8 +323,16 @@ struct HorizontalSettingsView: View {
             Slider(
                 value: width,
                 in: HorizontalAppearanceSettings.lineWidthRange,
-                step: HorizontalAppearanceSettings.lineWidthStep
+                step: HorizontalAppearanceSettings.lineWidthStep,
+                label: { Text(title) },
+                tick: { value in
+                    // A step lands a hair off a whole pixel, 0.5 + 5 × 0.1.
+                    abs(value - value.rounded()) < HorizontalAppearanceSettings.lineWidthStep / 4
+                        ? SliderTick(value)
+                        : nil
+                }
             )
+            .labelsHidden()
             Text(width.wrappedValue.formatted(.number.precision(.fractionLength(1))) + " px")
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
