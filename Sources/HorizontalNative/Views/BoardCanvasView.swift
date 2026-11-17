@@ -19,6 +19,13 @@ private enum BoardClipboardItem {
     case text(HorizontalText)
     case hole(HorizontalHole)
     case polygon(HorizontalPolygon)
+    /// A plane with its outline, which the plane holds: the copy is a plane
+    /// of the same net and settings, not yet poured.
+    case plane(HorizontalPlane)
+    /// A keepout with its outline, which the keepout holds.
+    case keepout(HorizontalKeepout)
+    case dimension(HorizontalDimension)
+    case decal(HorizontalBoardDecal)
     /// Package editor: a pad, re-baked at its new position on paste.
     case pad(HorizontalPad)
     /// Padstack editor: a shape, re-baked on paste.
@@ -4399,7 +4406,13 @@ struct BoardCanvasView: View {
         case .via: return has(board.vias)
         case .text: return has(board.texts)
         case .boardHole: return has(board.holes)
-        case .polygonVertex, .polygonEdge, .polygonArcCenter: return has(board.polygons)
+        case .polygonVertex, .polygonEdge, .polygonArcCenter:
+            // A plane's or a keepout's outline is kept in it, and is copied with it.
+            return has(board.polygons) || clipboardOwner(ofPolygon: ref.id, in: board) != nil
+        case .plane: return board.planes.contains { normalizedID($0.id) == id && !$0.id.contains("/") && $0.fallbackPolygon != nil }
+        case .keepout: return board.keepouts.contains { normalizedID($0.id) == id && !$0.id.contains("/") }
+        case .dimension: return has(board.dimensions)
+        case .boardDecal: return board.decals.contains { normalizedID($0.id) == id && !$0.id.contains("/") && $0.position != nil }
         case .pad: return modeProfile.mode == .package && poolPad(for: ref) != nil
         case .padstackShape: return padstackShape(for: ref) != nil
         default: return false
@@ -4948,12 +4961,27 @@ struct BoardCanvasView: View {
     /// Collects the full objects behind the selected refs (deduping polygons),
     /// plus their bounding-box minimum (paste anchor). Only standalone copper /
     /// graphics are harvested.
+    /// The plane or keepout of the board's own whose outline the polygon
+    /// `polygonID` is, as a clipboard item: a copy of the outline alone would
+    /// be a bare polygon where the user copied a plane.
+    private func clipboardOwner(ofPolygon polygonID: String, in board: HorizontalBoard) -> BoardClipboardItem? {
+        let id = normalizedID(polygonID)
+        if let plane = board.planes.first(where: { normalizedID($0.polygonID) == id && !$0.id.contains("/") && $0.fallbackPolygon != nil }) {
+            return .plane(plane)
+        }
+        if let keepout = board.keepouts.first(where: { normalizedID($0.polygonID) == id && !$0.id.contains("/") }) {
+            return .keepout(keepout)
+        }
+        return nil
+    }
+
     private func harvestClipboard(
         _ refs: [HorizontalSelectableRef],
         from board: HorizontalBoard
     ) -> (items: [BoardClipboardItem], anchor: HorizontalPoint?) {
         var items = [BoardClipboardItem]()
         var seenPolygons = Set<String>()
+        var seenOwners = Set<String>()
         var minX = Double.greatestFiniteMagnitude
         var minY = Double.greatestFiniteMagnitude
         var found = false
@@ -4985,8 +5013,39 @@ struct BoardCanvasView: View {
             case .boardHole:
                 if let h = match(board.holes, ref) { items.append(.hole(h)); note([h.position]) }
             case .polygonArcCenter, .polygonEdge, .polygonVertex:
-                if seenPolygons.insert(normalizedID(ref.id)).inserted, let poly = match(board.polygons, ref) {
+                guard seenPolygons.insert(normalizedID(ref.id)).inserted else { break }
+                if let poly = match(board.polygons, ref) {
                     items.append(.polygon(poly)); note(poly.polygonVertices.map(\.position))
+                } else if let owner = clipboardOwner(ofPolygon: ref.id, in: board) {
+                    switch owner {
+                    case .plane(let plane):
+                        guard seenOwners.insert("plane:" + normalizedID(plane.id)).inserted else { break }
+                        items.append(owner); note(plane.fallbackPolygon?.vertices ?? [])
+                    case .keepout(let keepout):
+                        guard seenOwners.insert("keepout:" + normalizedID(keepout.id)).inserted else { break }
+                        items.append(owner); note(keepout.polygon.vertices)
+                    default:
+                        break
+                    }
+                }
+            case .plane:
+                if let plane = match(board.planes, ref), !plane.id.contains("/"), let outline = plane.fallbackPolygon,
+                   seenOwners.insert("plane:" + normalizedID(plane.id)).inserted {
+                    items.append(.plane(plane)); note(outline.vertices)
+                }
+            case .keepout:
+                if let keepout = match(board.keepouts, ref), !keepout.id.contains("/"),
+                   seenOwners.insert("keepout:" + normalizedID(keepout.id)).inserted {
+                    items.append(.keepout(keepout)); note(keepout.polygon.vertices)
+                }
+            case .dimension:
+                // One dimension however many of its parts are selected.
+                if seenOwners.insert("dimension:" + normalizedID(ref.id)).inserted, let d = match(board.dimensions, ref) {
+                    items.append(.dimension(d)); note([d.p0, d.p1])
+                }
+            case .boardDecal:
+                if let decal = match(board.decals, ref), !decal.id.contains("/"), let position = decal.position {
+                    items.append(.decal(decal)); note([position])
                 }
             case .pad:
                 if modeProfile.mode == .package, let pad = poolPad(for: ref, in: board) {
@@ -5076,6 +5135,48 @@ struct BoardCanvasView: View {
                 }
                 board.polygons.append(poly)
                 refs.append(contentsOf: BoardPolygonParts.wholeSelection(of: poly))
+            case .plane(let original):
+                // The outline under an id of its own, in the plane, as the
+                // board loads one; the fill is the next pour's.
+                var plane = shifted(original, by: offset)
+                let outlineID = newID()
+                plane.id = newID()
+                plane.polygonID = outlineID
+                plane.fallbackPolygon?.id = outlineID
+                plane.fragments = []
+                board.planes.append(plane)
+                if let outline = plane.fallbackPolygon {
+                    refs.append(contentsOf: BoardPolygonParts.wholeSelection(of: outline))
+                }
+            case .keepout(let original):
+                var keepout = shifted(original, by: offset)
+                let outlineID = newID()
+                keepout.id = newID()
+                keepout.polygonID = outlineID
+                keepout.polygon.id = outlineID
+                board.keepouts.append(keepout)
+                refs.append(contentsOf: BoardPolygonParts.wholeSelection(of: keepout.polygon))
+            case .dimension(var dimension):
+                dimension.id = newID()
+                dimension.p0 = shift(dimension.p0)
+                dimension.p1 = shift(dimension.p1)
+                board.dimensions.append(dimension)
+                refs.append(BoardDimensionParts.ref(dimension, BoardDimensionParts.start))
+                refs.append(BoardDimensionParts.ref(dimension, BoardDimensionParts.end))
+            case .decal(let original):
+                var decal = shifted(original, by: offset)
+                let oldID = original.id
+                decal.id = newID()
+                // Its artwork is named under its id.
+                func renamed(_ id: String) -> String {
+                    id.hasPrefix(oldID) ? decal.id + id.dropFirst(oldID.count) : id
+                }
+                for index in decal.polygons.indices { decal.polygons[index].id = renamed(decal.polygons[index].id) }
+                for index in decal.lines.indices { decal.lines[index].id = renamed(decal.lines[index].id) }
+                for index in decal.arcs.indices { decal.arcs[index].id = renamed(decal.arcs[index].id) }
+                for index in decal.texts.indices { decal.texts[index].id = renamed(decal.texts[index].id) }
+                board.decals.append(decal)
+                refs.append(HorizontalSelectableRef(id: decal.id, type: .boardDecal))
             case .pad(var pad):
                 pad.id = newID()
                 pad.name = HorizontalPoolPackage.nextPadName(among: board.pads)
