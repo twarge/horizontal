@@ -1112,7 +1112,8 @@ struct ProjectWorkspaceView: View {
                 if let review = partLibrary.review {
                     HorizontalPartUpdatesSheet(review: review, isReadOnly: isReadOnly, isRefreshing: partLibrary.isChecking,
                                                onRefresh: partLibrary.recheck, onChooseSource: partLibrary.chooseSource,
-                                               onUpdate: updateProjectParts)
+                                               onUpdate: updateProjectParts,
+                                               onCopyEditsToPool: isReadOnly ? nil : { copy in try copyEditsToPool(copy) })
                 }
             }
             .alert("Library Review", isPresented: Binding(get: { partLibrary.error != nil }, set: { if !$0 { partLibrary.error = nil } })) {
@@ -1163,6 +1164,20 @@ struct ProjectWorkspaceView: View {
         } catch {
             partLibrary.error = HorizontalCanvasProjectEdit.message(for: error)
         }
+    }
+
+    /// The reverse of Update Project Parts: writes edits made here to cached
+    /// items into the pools they came from, and has the project record what
+    /// those pools hold now, as one undoable edit of the project.
+    private func copyEditsToPool(_ copy: HorizontalPoolEditCopy) throws {
+        guard !isReadOnly, let directory = project.poolDirectory else {
+            throw HorizontalDispatchError.failed("This project's library is read-only.")
+        }
+        var archive = document.archive
+        try HorizontalPoolEditCopier.track(copy, in: &archive, poolDirectory: directory)
+        try HorizontalPoolEditCopier.writePoolFiles(copy)
+        try applyLiveArchive(archive, actionName: "Copy Changes to \(copy.targetList)")
+        partLibrary.recheck()
     }
 
     private var partLibraryInputs: HorizontalPartLibraryInputs {
@@ -2484,6 +2499,7 @@ struct ProjectWorkspaceView: View {
                     populatedPartIDs: HorizontalPoolCacheUpdater.populatedPartIDs(in: document.archive, project: project),
                     copyTargets: project.poolDirectory.map { HorizontalPoolPartCopier.targets(forProjectPool: project.baseURL.appendingPathComponent($0)) } ?? [],
                     onCopyToPool: isReadOnly ? nil : { partID, target in preparePoolCopy(partID: partID, to: target) },
+                    onCopyEditsToPool: isReadOnly ? nil : { copy in try copyEditsToPool(copy) },
                     onReviewUpdates: { showsPartUpdates = true },
                     onCleanUp: poolCleanupAction,
                     onSelectUses: { selectComponents(usingPart: $0) },
@@ -4463,6 +4479,7 @@ struct ProjectWorkspaceView: View {
             return
         }
         do {
+            try recordOriginBeforeEdit(ofArchivePath: relativePath)
             try document.archive.replaceRegularFileData(relativePath: relativePath, with: payload.data)
             var reloaded = try HorizontalProject.loadSnapshot(of: document.archive)
             if project.poolModelFiles != nil {
@@ -4472,6 +4489,21 @@ struct ProjectWorkspaceView: View {
             installLiveSnapshot(HorizontalLiveSnapshot(archive: document.archive, project: reloaded), installsArchive: false)
         } catch {
             recordArchiveApplyFailure(error)
+        }
+    }
+
+    /// A cached pool item about to take an edit, while the archive still
+    /// holds it as it was: where nothing records the pool it came from and it
+    /// is still that pool's copy, that is recorded first, so the parts review
+    /// reads the edit as one made here that the pool can take.
+    private func recordOriginBeforeEdit(ofArchivePath relativePath: String) throws {
+        guard let directory = project.poolDirectory, relativePath.hasPrefix(directory + "/") else { return }
+        let provenancePath = directory + "/" + HorizontalPoolCacheProvenance.path
+        if let provenance = HorizontalPoolEditCopier.provenanceBeforeEdit(
+            of: String(relativePath.dropFirst(directory.count + 1)),
+            current: document.archive.regularFileData(relativePath: relativePath),
+            provenance: document.archive.regularFileData(relativePath: provenancePath), review: partLibrary.review) {
+            try document.archive.replaceRegularFileData(relativePath: provenancePath, with: provenance)
         }
     }
 
@@ -5765,6 +5797,15 @@ struct ProjectWorkspaceView: View {
         )
     }
 
+    /// The project pool's items the parts review found edited here, for the
+    /// Pools pane to mark and offer to their pools.
+    private var libraryItemEdits: HorizontalPoolItemEdits? {
+        guard let review = partLibrary.review, let directory = project.poolDirectory else {
+            return nil
+        }
+        return HorizontalPoolItemEdits(review: review, projectPool: project.baseURL.appendingPathComponent(directory))
+    }
+
     /// The Pools pane's Place and Replace, and its Place for a decal.
     private var libraryPartActions: HorizontalPoolPartActions {
         HorizontalPoolPartActions(
@@ -5788,7 +5829,9 @@ struct ProjectWorkspaceView: View {
             placeDecal: isReadOnly || project.board == nil ? nil : { item in placeDecalFromLibrary(item) },
             placeDecalUnavailableReason: isReadOnly
                 ? "Read-only operation is enabled in Horizontal."
-                : project.board == nil ? "This project has no board to place decals on." : nil
+                : project.board == nil ? "This project has no board to place decals on." : nil,
+            itemEdits: libraryItemEdits,
+            copyEditsToPool: isReadOnly ? nil : { copy in try copyEditsToPool(copy) }
         )
     }
 

@@ -68,13 +68,23 @@ final class HorizontalPartLibraryMonitor: ObservableObject {
         recheck()
     }
 
-    /// The parts the info bar is about: out of date, or in no attached pool.
+    /// The parts the info bar is about: out of date, edited here with the
+    /// edits not in their pools, or in no attached pool.
     var noticeSignature: String {
         review.map(Self.noticeSignature(for:)) ?? ""
     }
 
     nonisolated static func noticeSignature(for review: HorizontalPoolCacheReview) -> String {
-        (review.outdatedInUse.map { "u:\($0.id)" } + review.notInAttachedPoolInUse.map { "m:\($0.id)" }).sorted().joined(separator: ",")
+        (review.outdatedInUse.map { "u:\($0.id)" } + review.editedInUse.map { "e:\($0.id)" }
+            + review.notInAttachedPoolInUse.map { "m:\($0.id)" }).sorted().joined(separator: ",")
+    }
+
+    /// The info bar is only about edits made here that a pool can take: its
+    /// button offers the copy, where otherwise it offers the updates.
+    var noticeOffersPoolCopy: Bool {
+        guard let review else { return false }
+        return review.outdatedInUse.isEmpty && review.notInAttachedPoolInUse.isEmpty
+            && review.editedInUse.contains(where: \.canCopyToPool)
     }
 
     var showsNotice: Bool {
@@ -100,6 +110,7 @@ final class HorizontalPartLibraryMonitor: ObservableObject {
             return "\(parts.count) \(parts.count == 1 ? singular : plural)\(named)"
         }
         return [describe(review.outdatedInUse, "part is out of date with its pool", "parts are out of date with their pools"),
+                describe(review.editedInUse, "part has edits its pool doesn't have", "parts have edits their pools don't have"),
                 describe(review.notInAttachedPoolInUse, "part isn't in any attached pool", "parts aren't in any attached pool")]
             .compactMap { $0 }.joined(separator: "; ")
     }
@@ -140,19 +151,21 @@ final class HorizontalPartLibraryMonitor: ObservableObject {
 }
 
 /// Horizon's info bar for a pool cache that has fallen behind: what is out
-/// of date or in no attached pool, and a way to the updates sheet.
+/// of date or in no attached pool, and a way to the updates sheet. Edits made
+/// in the project that its pools don't have are named too, and where they
+/// are all there is, the button offers to copy them to the pool.
 struct HorizontalPartLibraryNotice: View {
     @ObservedObject var library: HorizontalPartLibraryMonitor
     var onReview: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+            Image(systemName: library.noticeOffersPoolCopy ? "arrow.up.circle.fill" : "arrow.triangle.2.circlepath.circle.fill")
                 .foregroundStyle(.orange)
             Text(library.noticeText)
                 .font(.callout)
                 .lineLimit(2)
-            Button("Review Updates…", action: onReview)
+            Button(library.noticeOffersPoolCopy ? "Copy to Pool…" : "Review Updates…", action: onReview)
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
             Button("Dismiss") { library.dismissNotice() }

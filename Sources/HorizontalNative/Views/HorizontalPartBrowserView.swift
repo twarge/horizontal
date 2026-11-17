@@ -30,6 +30,7 @@ private enum HorizontalPartSearchScope: String, CaseIterable, Identifiable {
 private enum HorizontalPartLibraryFilter: String, CaseIterable, Identifiable {
     case all
     case outOfDate
+    case editedInProject
     case notInAttachedPool
 
     var id: String { rawValue }
@@ -38,6 +39,7 @@ private enum HorizontalPartLibraryFilter: String, CaseIterable, Identifiable {
         switch self {
         case .all: "All Parts"
         case .outOfDate: "Out of Date"
+        case .editedInProject: "Edited in Project"
         case .notInAttachedPool: "Not in an Attached Pool"
         }
     }
@@ -61,6 +63,9 @@ struct HorizontalPartBrowserView: View {
     var copyTargets: [HorizontalPoolCopyTarget] = []
     /// Copies a part into a pool (a plan the host confirms first).
     var onCopyToPool: ((HorizontalPoolPart.ID, URL) -> Void)? = nil
+    /// Copies the edits made here to a part back to the pools it came from,
+    /// once this pane's confirmation is answered.
+    var onCopyEditsToPool: ((HorizontalPoolEditCopy) throws -> Void)? = nil
     /// Opens the document's Update Project Parts sheet.
     var onReviewUpdates: () -> Void = {}
     /// Opens the project pool cleanup, where the document offers one.
@@ -106,6 +111,8 @@ struct HorizontalPartBrowserView: View {
     @State private var spotlightScrollPartID: HorizontalPoolPart.ID?
     @State private var selectionChangedAt = Date.distantPast
     @State private var libraryFilter = HorizontalPartLibraryFilter.all
+    /// A copy of a part's edits to its pools, waiting on its confirmation.
+    @State private var pendingEditCopy: HorizontalPoolEditCopy?
     /// Leaves out what isn't bought for the board: parts flagged exclude
     /// from BOM (test pads, mounting holes) and parts only Do Not Populate
     /// components use.
@@ -190,7 +197,8 @@ struct HorizontalPartBrowserView: View {
     private func matchesLibraryFilter(_ part: HorizontalPoolPart) -> Bool {
         switch libraryFilter {
         case .all: true
-        case .outOfDate: libraryRow(for: part).map { !$0.changes.isEmpty } ?? false
+        case .outOfDate: libraryRow(for: part).map { !$0.changes.isEmpty && !$0.isAheadOfPool } ?? false
+        case .editedInProject: libraryRow(for: part)?.changes.contains(where: \.locallyModified) ?? false
         case .notInAttachedPool: libraryRow(for: part)?.isInNoAttachedPool ?? false
         }
     }
@@ -247,6 +255,13 @@ struct HorizontalPartBrowserView: View {
         }
         .onChange(of: libraryFilter) { _, _ in
             scrollToken += 1
+        }
+        .poolEditCopyConfirmation($pendingEditCopy) { copy in
+            do {
+                try onCopyEditsToPool?(copy)
+            } catch {
+                library.error = HorizontalCanvasProjectEdit.message(for: error)
+            }
         }
         // Asks DigiKey about parts it has no fresh answer for whenever the
         // parts or the credentials change, unless the column is hidden.
@@ -351,7 +366,7 @@ struct HorizontalPartBrowserView: View {
         }
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("Showing \(libraryFilter.title). List the parts out of date with their pools, or the ones no attached pool has, and hide test pads, mounting holes and other parts excluded from the BOM, and parts only Do Not Populate components use")
+        .help("Showing \(libraryFilter.title). List the parts out of date with their pools, the ones edited in this project, or the ones no attached pool has, and hide test pads, mounting holes and other parts excluded from the BOM, and parts only Do Not Populate components use")
     }
 
     private func partCommands(compact: Bool) -> some View {
@@ -524,7 +539,7 @@ struct HorizontalPartBrowserView: View {
             TableColumn("Library Status") { part in
                 cell(part) {
                     if let row = libraryRow(for: part) {
-                        Label(row.statusTitle, systemImage: row.status.symbol)
+                        Label(row.statusTitle, systemImage: row.statusSymbol)
                             .foregroundStyle(row.status == .current || row.status == .projectOnly ? Color.secondary : Color.orange)
                             .lineLimit(1)
                             .help(row.message.isEmpty ? row.sourcePool.map { "From \($0)" } ?? row.statusTitle : row.message)
@@ -642,6 +657,16 @@ struct HorizontalPartBrowserView: View {
             Menu("Copy to Pool") {
                 ForEach(copyTargets) { target in
                     Button(target.name) { onCopyToPool(part.id, target.url) }
+                }
+            }
+        }
+        // The reverse of an update: what was edited here goes to its pool.
+        if onCopyEditsToPool != nil, !isReadOnly, let review = library.review, let row = libraryRow(for: part), row.canCopyToPool {
+            Button("Copy Changes to \(row.poolCopyTargetNames.joined(separator: " and "))…") {
+                do {
+                    pendingEditCopy = try HorizontalPoolEditCopier.plan(partIDs: [row.id], review: review)
+                } catch {
+                    library.error = HorizontalCanvasProjectEdit.message(for: error)
                 }
             }
         }

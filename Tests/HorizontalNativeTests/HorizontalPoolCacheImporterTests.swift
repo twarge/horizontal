@@ -441,6 +441,241 @@ final class HorizontalPoolCacheImporterTests: XCTestCase {
         }
     }
 
+    /// An edit of one of the project pool's files, saved as its editor saves it.
+    private func editProjectCopy(_ path: String, edit: (inout JSONDictionary) -> Void) throws {
+        var json = try JSONHelper.loadDictionary(from: projectPoolURL.appendingPathComponent(path))
+        edit(&json)
+        try write(json, to: "project/pool/" + path)
+    }
+
+    private func stockName(_ path: String) throws -> String? {
+        try JSONHelper.loadDictionary(from: poolURL.appendingPathComponent(path)).string("name")
+    }
+
+    /// The project's archive once a copy of its edits is staged and written.
+    private func copying(_ copy: HorizontalPoolEditCopy) throws -> HorizontalProjectArchive {
+        var archive = try HorizontalProjectArchive.snapshot(from: temporaryRoot.appendingPathComponent("project"))
+        try HorizontalPoolEditCopier.track(copy, in: &archive, poolDirectory: "pool")
+        try HorizontalPoolEditCopier.writePoolFiles(copy)
+        return archive
+    }
+
+    func testAnEditMadeInTheProjectIsOfferedToItsPoolAndCopiesThere() throws {
+        try importFixture()
+        try editProjectCopy("symbols/cache/sym-1.json") { $0["name"] = "Resistor, redrawn here" }
+        let used = ["part-1": ["R1", "R2"]]
+        let review = try cachedReview(references: used)
+        let row = try XCTUnwrap(review.parts.first)
+        XCTAssertEqual(row.status, .locallyModified)
+        XCTAssertTrue(row.isAheadOfPool)
+        XCTAssertTrue(row.canCopyToPool)
+        XCTAssertEqual(row.poolCopyTargetNames, ["Stock"])
+        XCTAssertEqual(row.statusSymbol, "arrow.up.circle")
+        XCTAssertEqual(row.message, "Edited in this project. Stock doesn't have the changes: copy them there, or update to discard them.")
+        // Its pool has nothing newer, so it isn't out of date.
+        XCTAssertEqual(review.outdatedInUse.map(\.id), [])
+        XCTAssertEqual(review.editedInUse.map(\.id), ["part-1"])
+        XCTAssertEqual(HorizontalPartLibraryMonitor.noticeText(for: review), "1 part has edits its pool doesn't have (R1, R2)")
+        XCTAssertNotEqual(HorizontalPartLibraryMonitor.noticeSignature(for: review), "")
+
+        let copy = try HorizontalPoolEditCopier.plan(partIDs: ["part-1"], review: review)
+        XCTAssertEqual(copy.targetList, "Stock")
+        XCTAssertEqual(copy.files.map(\.url.lastPathComponent), ["resistor.json"])
+        XCTAssertTrue(copy.summary.hasPrefix("Replaces in Stock:\n• Symbol: Resistor, redrawn here\n\nOther projects that use this pool"), copy.summary)
+        XCTAssertEqual(try stockName("symbols/passive/resistor.json"), "Resistor", "a plan writes nothing")
+
+        let archive = try copying(copy)
+        XCTAssertEqual(try stockName("symbols/passive/resistor.json"), "Resistor, redrawn here")
+        // The project's copy is its pool's again.
+        let files = HorizontalPoolCacheUpdater.files(in: archive, poolDirectory: "pool")
+        let after = try cachedReview(files: files, references: used)
+        XCTAssertEqual(after.parts.first?.status, .current)
+        XCTAssertEqual(HorizontalPartLibraryMonitor.noticeSignature(for: after), "")
+        XCTAssertThrowsError(try HorizontalPoolEditCopier.plan(partIDs: ["part-1"], review: after), "nothing is left to copy")
+        // A change the pool makes afterwards is an update, not a conflict.
+        try changeSource("symbols/passive/resistor.json") { $0["name"] = "Redrawn again in Stock" }
+        let later = try XCTUnwrap(try cachedReview(files: files, references: used).parts.first)
+        XCTAssertEqual(later.status, .updateAvailable)
+        XCTAssertFalse(later.canCopyToPool)
+    }
+
+    func testAnEditWhosePoolChangedTooSaysWhatCopyingReplaces() throws {
+        try importFixture()
+        try editProjectCopy("symbols/cache/sym-1.json") { $0["name"] = "Edited here" }
+        try changeSource("symbols/passive/resistor.json") { $0["name"] = "Edited in Stock" }
+        let review = try cachedReview(references: ["part-1": ["R1"]])
+        let row = try XCTUnwrap(review.parts.first)
+        XCTAssertEqual(row.changes.first?.sourceChanged, true)
+        XCTAssertFalse(row.isAheadOfPool)
+        XCTAssertEqual(row.statusSymbol, "pencil.circle")
+        XCTAssertEqual(review.outdatedInUse.map(\.id), ["part-1"], "the pool has something the project doesn't")
+        XCTAssertEqual(review.editedInUse.map(\.id), [])
+        XCTAssertTrue(row.canCopyToPool, "either side can still be made the other's")
+        let copy = try HorizontalPoolEditCopier.plan(partIDs: ["part-1"], review: review)
+        XCTAssertTrue(copy.summary.contains("• Symbol: Edited here (Stock's own changes since are replaced)"), copy.summary)
+
+        // The pool changing once more before the copy is written stops it.
+        try changeSource("symbols/passive/resistor.json") { $0["name"] = "Edited in Stock again" }
+        XCTAssertThrowsError(try HorizontalPoolEditCopier.writePoolFiles(copy))
+        XCTAssertEqual(try stockName("symbols/passive/resistor.json"), "Edited in Stock again")
+        XCTAssertThrowsError(try HorizontalPoolEditCopier.plan(partIDs: ["part-1"], review: review), "nor is a copy planned from a review that old")
+        // And so does the project changing after the plan was made.
+        try editProjectCopy("symbols/cache/sym-1.json") { $0["name"] = "Edited here again" }
+        var archive = try HorizontalProjectArchive.snapshot(from: temporaryRoot.appendingPathComponent("project"))
+        XCTAssertThrowsError(try HorizontalPoolEditCopier.track(copy, in: &archive, poolDirectory: "pool"))
+    }
+
+    func testAPackageEditedHereGoesBackWithItsNewModelUnderThePoolsOwnPaths() throws {
+        try importFixture()
+        // A second 3D model, kept in the project's pool.
+        let model = projectPoolURL.appendingPathComponent("3d_models/r0603-tall.step")
+        try Data("solid, taller".utf8).write(to: model)
+        try editProjectCopy("packages/cache/pkg-1/package.json") { package in
+            var models = package.dictionaryMap("models")
+            models["model-2"] = ["filename": "3d_models/r0603-tall.step", "x": 0, "y": 0, "z": 0, "roll": 0, "pitch": 0, "yaw": 0]
+            package["models"] = models
+            package["name"] = "R0603, tall"
+        }
+        let used = ["part-1": ["R1"]]
+        let copy = try HorizontalPoolEditCopier.plan(partIDs: ["part-1"], review: try cachedReview(references: used))
+        XCTAssertEqual(Set(copy.files.map(\.url.lastPathComponent)), ["package.json", "r0603-tall.step"])
+        XCTAssertTrue(copy.summary.contains("• Package: R0603, tall (1 new 3D model)"), copy.summary)
+
+        let archive = try copying(copy)
+        let package = try JSONHelper.loadDictionary(from: poolURL.appendingPathComponent("packages/r0603/package.json"))
+        XCTAssertEqual(Set(package.dictionaryMap("models").values.compactMap { $0.string("filename") }),
+                       ["3d_models/r0603.step", "3d_models/r0603-tall.step"], "a pool's model paths are its own, not the cache's")
+        XCTAssertEqual(try Data(contentsOf: poolURL.appendingPathComponent("3d_models/r0603-tall.step")), Data("solid, taller".utf8))
+        // The project names the pool's model as an update would have left it.
+        let files = HorizontalPoolCacheUpdater.files(in: archive, poolDirectory: "pool")
+        XCTAssertEqual(files["3d_models/cache/stock-pool/3d_models/r0603-tall.step"], Data("solid, taller".utf8))
+        let row = try XCTUnwrap(try cachedReview(files: files, references: used).parts.first)
+        XCTAssertEqual(row.status, .current, row.message)
+    }
+
+    func testAnEditItsPoolCannotTakeIsNotOfferedOrIsStopped() throws {
+        try importFixture()
+        // A padstack of the project's own, which Stock doesn't have.
+        try write(["type": "padstack", "padstack_type": "top", "uuid": "ps-mine", "name": "Mine",
+                   "shapes": [:], "holes": [:], "polygons": [:], "parameter_set": [:]], to: "project/pool/padstacks/mine.json")
+        try editProjectCopy("packages/cache/pkg-1/package.json") { package in
+            var pads = package.dictionaryMap("pads")
+            pads["pad-1"]?["padstack"] = "ps-mine"
+            package["pads"] = pads
+        }
+        XCTAssertThrowsError(try HorizontalPoolEditCopier.plan(partIDs: ["part-1"], review: try cachedReview())) {
+            let message = HorizontalCanvasProjectEdit.message(for: $0)
+            XCTAssertTrue(message.contains("uses the padstack Mine, which Stock doesn't have"), message)
+        }
+        XCTAssertEqual(try stockName("packages/r0603/package.json"), "R0603")
+
+        // A pool that can't be written is told of, not offered.
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: poolURL.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: poolURL.path) }
+        let row = try XCTUnwrap(try cachedReview().parts.first)
+        XCTAssertTrue(row.isAheadOfPool)
+        XCTAssertFalse(row.canCopyToPool)
+        XCTAssertEqual(row.statusSymbol, "pencil.circle")
+        XCTAssertEqual(row.message, "Edited in this project. Stock doesn't have the changes, and can't be written from here.")
+    }
+
+    /// A project Horizon made records no origins, so an edit of a cached item
+    /// read as a copy that had fallen behind. The origin is recorded as the
+    /// edit is saved, while the copy is still its pool's.
+    func testAnEditOfACopyWithNoRecordedOriginIsStillReadAsAnEdit() throws {
+        try importFixture()
+        var files = try cachedFiles()
+        files.removeValue(forKey: HorizontalPoolCacheProvenance.path)
+        let path = "symbols/cache/sym-1.json"
+        let unedited = try XCTUnwrap(files[path])
+        let before = try cachedReview(files: files)
+        var symbol = try JSONHelper.loadDictionary(from: unedited)
+        symbol["name"] = "Edited here"
+        let edited = try JSONSerialization.data(withJSONObject: symbol)
+
+        files[path] = edited
+        var row = try XCTUnwrap(try cachedReview(files: files).parts.first)
+        XCTAssertEqual(row.status, .updateAvailable, "nothing says which side changed")
+        XCTAssertFalse(row.canCopyToPool)
+
+        let provenance = try XCTUnwrap(HorizontalPoolEditCopier.provenanceBeforeEdit(of: path, current: unedited, provenance: nil, review: before))
+        XCTAssertEqual(try HorizontalPoolCacheProvenance.load(provenance).files.keys.sorted(), [path])
+        files[HorizontalPoolCacheProvenance.path] = provenance
+        row = try XCTUnwrap(try cachedReview(files: files).parts.first)
+        XCTAssertEqual(row.status, .locallyModified)
+        XCTAssertTrue(row.isAheadOfPool)
+        XCTAssertTrue(row.canCopyToPool)
+        // Recorded once; and a copy that already differs has no origin to record.
+        XCTAssertNil(HorizontalPoolEditCopier.provenanceBeforeEdit(of: path, current: unedited, provenance: provenance, review: before))
+        XCTAssertNil(HorizontalPoolEditCopier.provenanceBeforeEdit(of: path, current: edited, provenance: nil, review: before))
+    }
+
+    /// The project pool's rows as the Pools pane lists them.
+    private func projectRow(_ category: HorizontalPoolItemCategory, uuid: String) throws -> HorizontalPoolLibraryItem {
+        let items = HorizontalPoolLibrary.items(inPool: projectPoolURL, poolName: "Project pool")
+        return try XCTUnwrap(items.first { $0.category == category && $0.uuid == uuid })
+    }
+
+    /// Saves the project's side of a copy, as saving the document does.
+    private func saveProjectPool(of archive: HorizontalProjectArchive) throws {
+        for (path, data) in HorizontalPoolCacheUpdater.files(in: archive, poolDirectory: "pool") {
+            let url = projectPoolURL.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: url)
+        }
+        HorizontalPoolLibrary.invalidateCache()
+    }
+
+    /// The Pools pane lists items, not parts: the row that was edited is the
+    /// one marked, and its copy takes that item alone.
+    func testThePoolsPaneOffersAnEditedItemsCopyOnItsOwnRow() throws {
+        try importFixture()
+        try editProjectCopy("symbols/cache/sym-1.json") { $0["name"] = "Resistor, redrawn here" }
+        try editProjectCopy("packages/cache/pkg-1/padstacks/local.json") { $0["name"] = "Local padstack, widened" }
+        var edits = HorizontalPoolItemEdits(review: try cachedReview(), projectPool: projectPoolURL)
+        XCTAssertEqual(edits.targetNames(for: try projectRow(.symbol, uuid: "sym-1")), ["Stock"])
+        XCTAssertEqual(edits.targetNames(for: try projectRow(.padstack, uuid: "ps-local")), ["Stock"])
+        XCTAssertEqual(edits.targetNames(for: try projectRow(.package, uuid: "pkg-1")), ["Stock"], "a package's own padstack goes with it")
+        // The part is made of them, but its own file is as its pool has it.
+        XCTAssertEqual(edits.targetNames(for: try projectRow(.part, uuid: "part-1")), [])
+        XCTAssertEqual(edits.targetNames(for: try projectRow(.unit, uuid: "unit-1")), [])
+        XCTAssertEqual(edits.targetNames(for: try libraryItem(.symbol, uuid: "sym-1")), [], "Stock's own row has nothing to copy")
+        XCTAssertThrowsError(try edits.plan(for: try projectRow(.unit, uuid: "unit-1")))
+
+        let symbol = try edits.plan(for: try projectRow(.symbol, uuid: "sym-1"))
+        XCTAssertEqual(symbol.files.map(\.url.lastPathComponent), ["resistor.json"], "the symbol, and not the padstack edited beside it")
+        try saveProjectPool(of: try copying(symbol))
+        XCTAssertEqual(try stockName("symbols/passive/resistor.json"), "Resistor, redrawn here")
+        XCTAssertEqual(try stockName("packages/r0603/padstacks/local.json"), "Local padstack")
+
+        edits = HorizontalPoolItemEdits(review: try cachedReview(), projectPool: projectPoolURL)
+        XCTAssertEqual(edits.targetNames(for: try projectRow(.symbol, uuid: "sym-1")), [])
+        let package = try edits.plan(for: try projectRow(.package, uuid: "pkg-1"))
+        XCTAssertEqual(package.files.map(\.url.lastPathComponent), ["local.json"])
+        XCTAssertTrue(package.summary.hasPrefix("Replaces in Stock:\n• Padstack: Local padstack, widened\n\n"), package.summary)
+        try saveProjectPool(of: try copying(package))
+        XCTAssertEqual(try stockName("packages/r0603/padstacks/local.json"), "Local padstack, widened")
+        let after = try cachedReview()
+        XCTAssertEqual(after.parts.first?.status, .current)
+        XCTAssertTrue(after.poolCopyChangesByItem.isEmpty)
+    }
+
+    /// A 3D model has no row in the Pools pane; its package's row carries it.
+    func testAnEdited3DModelIsCopiedFromItsPackagesRow() throws {
+        try importFixture()
+        let cached = "3d_models/cache/stock-pool/3d_models/r0603.step"
+        try Data("solid, chamfered".utf8).write(to: projectPoolURL.appendingPathComponent(cached))
+        let review = try cachedReview()
+        XCTAssertEqual(review.poolCopyChangesByItem.keys.sorted(), [cached, "packages/cache/pkg-1/package.json"])
+        let edits = HorizontalPoolItemEdits(review: review, projectPool: projectPoolURL)
+        let copy = try edits.plan(for: try projectRow(.package, uuid: "pkg-1"))
+        XCTAssertEqual(copy.files.map(\.url.lastPathComponent), ["r0603.step"])
+        XCTAssertTrue(copy.summary.contains("• 3D model: r0603.step"), copy.summary)
+        try saveProjectPool(of: try copying(copy))
+        XCTAssertEqual(try Data(contentsOf: poolURL.appendingPathComponent("3d_models/r0603.step")), Data("solid, chamfered".utf8))
+        XCTAssertEqual(try cachedReview().parts.first?.status, .current)
+    }
+
     func testThePartsPaneListsABaseOnlyWhereTheDesignUsesIt() throws {
         try importFixture()
         let parts = HorizontalPoolPart.loadAll(from: projectPoolURL)

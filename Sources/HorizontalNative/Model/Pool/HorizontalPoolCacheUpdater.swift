@@ -35,6 +35,16 @@ struct HorizontalPoolCacheChange: Identifiable, Sendable {
     var unverified: Bool
     var blockingReason: String?
     var origin: HorizontalPoolCacheProvenance.Origin
+    /// The pool's copy changed after the project took its own. With
+    /// `locallyModified` both sides changed, and neither is simply the newer.
+    var sourceChanged = false
+    /// The pool the project's copy came from, and its file there.
+    var sourcePoolName = ""
+    var sourcePoolURL: URL? = nil
+    var sourceURL: URL? = nil
+    /// An edit made in the project that its pool can take: the copy was
+    /// changed here, and the pool's folder can be written.
+    var canCopyToPool = false
 
     var title: String {
         if let json = try? JSONHelper.loadDictionary(from: after) {
@@ -73,10 +83,30 @@ struct HorizontalPartLibraryReview: Identifiable, Sendable {
     var statusTitle: String {
         status == .sourceUnavailable && sourcePool == nil ? "Not in an attached pool" : status.title
     }
+    /// The status's icon: an edit its pool can take points up to the pool.
+    var statusSymbol: String {
+        isAheadOfPool && canCopyToPool ? "arrow.up.circle" : status.symbol
+    }
     var canUpdate: Bool {
         !changes.isEmpty && status != .sourceUnavailable && changes.allSatisfy { $0.blockingReason == nil }
     }
     var needsConfirmation: Bool { changes.contains { $0.locallyModified || $0.unverified } }
+
+    /// The edits made in the project that the part's pools can take, the
+    /// reverse of an update (`HorizontalPoolEditCopier`).
+    var poolCopyChanges: [HorizontalPoolCacheChange] {
+        status == .sourceUnavailable ? [] : changes.filter(\.canCopyToPool)
+    }
+    var canCopyToPool: Bool { !poolCopyChanges.isEmpty }
+    /// The pools those edits go to, by name.
+    var poolCopyTargetNames: [String] {
+        poolCopyChanges.reduce(into: [String]()) { if !$0.contains($1.sourcePoolName) { $0.append($1.sourcePoolName) } }
+    }
+    /// Everything that differs was edited here, and its pool hasn't changed
+    /// since: the project has nothing to take, only edits its pool lacks.
+    var isAheadOfPool: Bool {
+        !changes.isEmpty && changes.allSatisfy { $0.locallyModified && !$0.sourceChanged }
+    }
 }
 
 struct HorizontalPoolCacheReview: Sendable {
@@ -85,7 +115,16 @@ struct HorizontalPoolCacheReview: Sendable {
     /// Parts the design uses whose pools hold a newer copy, Horizon's "out of
     /// date" in its pool cache status.
     var outdatedInUse: [HorizontalPartLibraryReview] {
-        parts.filter { !$0.references.isEmpty && !$0.changes.isEmpty && ($0.status == .updateAvailable || $0.status == .locallyModified) }
+        parts.filter {
+            !$0.references.isEmpty && !$0.changes.isEmpty && !$0.isAheadOfPool
+                && ($0.status == .updateAvailable || $0.status == .locallyModified)
+        }
+    }
+
+    /// Parts the design uses that were edited in the project and whose pools
+    /// haven't changed since: not out of date, but ahead of their pools.
+    var editedInUse: [HorizontalPartLibraryReview] {
+        parts.filter { !$0.references.isEmpty && $0.isAheadOfPool }
     }
 
     /// Parts the design uses that no attached pool holds, so nothing can
@@ -98,6 +137,11 @@ struct HorizontalPoolCacheReview: Sendable {
     /// Pools the reviewed pools include that the review couldn't find. Parts
     /// from one read as unavailable; this names the reason once.
     var missingPools: [HorizontalMissingPool]
+    /// The edits a copy of one project-pool item takes back to its pool, by
+    /// the item's path in the project pool: the item's own, and with a
+    /// package those of what is the package's alone, its padstacks and its 3D
+    /// models. The Pools pane lists items, not parts, and copies one of them.
+    let poolCopyChangesByItem: [String: [HorizontalPoolCacheChange]]
 
     let digest: String
 
@@ -107,12 +151,45 @@ struct HorizontalPoolCacheReview: Sendable {
         self.projectFiles = projectFiles
         self.sourceDigests = sourceDigests
         self.missingPools = missingPools
+        poolCopyChangesByItem = Self.poolCopyChangesByItem(parts: parts, projectFiles: projectFiles)
         let changes = parts.flatMap(\.changes).map {
             "\($0.path):\(HorizontalProjectTransaction.digest($0.after)):\($0.origin.poolUUID):\($0.origin.sourcePath)"
         }.sorted()
         let inputs = projectFiles.keys.sorted().map { "\($0):\(HorizontalProjectTransaction.digest(projectFiles[$0]!))" }
         let sources = sourceDigests.keys.sorted { $0.path < $1.path }.map { "\($0.path):\(sourceDigests[$0]!)" }
         digest = HorizontalProjectTransaction.digest(Data((inputs + changes + sources).joined(separator: "\n").utf8))
+    }
+
+    private static func poolCopyChangesByItem(parts: [HorizontalPartLibraryReview],
+                                              projectFiles: [String: Data]) -> [String: [HorizontalPoolCacheChange]] {
+        var copyable = [String: HorizontalPoolCacheChange]()
+        for change in parts.flatMap(\.poolCopyChanges) where copyable[change.path] == nil {
+            copyable[change.path] = change
+        }
+        guard !copyable.isEmpty else { return [:] }
+        var byItem = copyable.mapValues { [$0] }
+        // A package's own padstacks are found beside it; its models only by
+        // reading the packages, which is done when a model was edited.
+        var ownedPaths = [String: [String]]()
+        for path in copyable.keys.sorted() {
+            let components = path.split(separator: "/")
+            if components.count == 5, components[0] == "packages", components[1] == "cache", components[3] == "padstacks" {
+                ownedPaths[components.prefix(3).joined(separator: "/") + "/package.json", default: []].append(path)
+            }
+        }
+        if copyable.keys.contains(where: { $0.hasPrefix("3d_models/") }) {
+            for (path, data) in projectFiles.sorted(by: { $0.key < $1.key })
+            where path.hasPrefix("packages/cache/") && path.hasSuffix("/package.json") {
+                guard let package = try? JSONHelper.loadDictionary(from: data) else { continue }
+                let models = ([package.string("model_filename")] + package.dictionaryMap("models").values.map { $0.string("filename") })
+                    .compactMap { $0 }.filter { copyable[$0] != nil }
+                ownedPaths[path, default: []].append(contentsOf: Set(models).sorted())
+            }
+        }
+        for (package, paths) in ownedPaths {
+            byItem[package, default: []].append(contentsOf: paths.compactMap { copyable[$0] })
+        }
+        return byItem
     }
 
     func affectedParts(selecting ids: Set<String>) -> [HorizontalPartLibraryReview] {
@@ -343,6 +420,14 @@ enum HorizontalPoolCacheUpdater {
             precedenceByPool[pool.path] = ranks
             return ranks
         }
+        // Whether an edit made here could go back to its pool.
+        var writableByPool = [String: Bool]()
+        func isWritable(_ pool: URL) -> Bool {
+            if let known = writableByPool[pool.path] { return known }
+            let writable = FileManager.default.isWritableFile(atPath: pool.path)
+            writableByPool[pool.path] = writable
+            return writable
+        }
         let jsons = files.compactMapValues { try? JSONHelper.loadDictionary(from: $0) }
         let partPaths = preferredPaths(jsons).filter { jsons[$0]?.string("type") == "part" }
         let baseIDs = Set(partPaths.compactMap { jsons[$0]?.string("base")?.lowercased() })
@@ -501,14 +586,22 @@ enum HorizontalPoolCacheUpdater {
                         reason = "A project-local item overrides this dependency. Review it in Pools before updating."
                     }
                     let modified = metadata.files[path].map { oldDigest != nil && oldDigest != $0.baseline } ?? false
+                    let sourcePoolName = HorizontalPoolRegistryStore.poolInfo(at: sourcePool).name
                     row.changes.append(.init(path: path, before: before, after: after,
                                              fields: changedFields(before: before, after: after), locallyModified: modified,
                                              unverified: before != nil && metadata.files[path] == nil,
-                                             blockingReason: reason, origin: origin))
+                                             blockingReason: reason, origin: origin,
+                                             sourceChanged: metadata.files[path].map { $0.baseline != origin.baseline } ?? false,
+                                             sourcePoolName: sourcePoolName, sourcePoolURL: sourcePool, sourceURL: sourceURL,
+                                             canCopyToPool: modified && isWritable(sourcePool)))
                 }
                 if row.changes.contains(where: \.locallyModified) { row.status = .locallyModified }
                 else if !row.changes.isEmpty { row.status = .updateAvailable }
-                if let reason = row.changes.compactMap(\.blockingReason).first { row.message = reason }
+                if row.isAheadOfPool {
+                    let pools = row.changes.reduce(into: [String]()) { if !$0.contains($1.sourcePoolName) { $0.append($1.sourcePoolName) } }
+                    row.message = "Edited in this project. \(pools.joined(separator: " and ")) \(pools.count == 1 ? "doesn't" : "don't") have the changes"
+                        + (row.canCopyToPool ? ": copy them there, or update to discard them." : ", and can't be written from here.")
+                } else if let reason = row.changes.compactMap(\.blockingReason).first { row.message = reason }
                 else if row.needsConfirmation { row.message = "This update replaces project edits or older copies whose import baseline is unknown." }
             } catch {
                 row.status = .sourceUnavailable

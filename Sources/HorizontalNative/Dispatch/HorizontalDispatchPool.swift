@@ -43,10 +43,12 @@ enum HorizontalDispatchPool {
              "references": part.references, "can_update": part.canUpdate,
              "needs_confirmation": part.needsConfirmation, "message": part.message,
              "source_pool": part.sourcePool as Any, "in_attached_pool": !part.isInNoAttachedPool,
+             "can_copy_to_pool": part.canCopyToPool,
              "changes": part.changes.map { change -> JSONDictionary in
                  var json: JSONDictionary = [
                      "path": change.path, "name": change.title, "fields": change.fields,
                      "locally_modified": change.locallyModified, "unverified": change.unverified,
+                     "source_changed": change.sourceChanged, "can_copy_to_pool": change.canCopyToPool,
                      "blocking_reason": change.blockingReason as Any,
                      "before_bytes": change.before?.count as Any, "after_bytes": change.after.count]
                  if contents {

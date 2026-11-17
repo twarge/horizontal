@@ -8,6 +8,9 @@ struct HorizontalPartUpdatesSheet: View {
     var onRefresh: () -> Void
     var onChooseSource: (String, URL) throws -> Void
     var onUpdate: (HorizontalPoolCacheReview, Set<String>, Bool) throws -> Void
+    /// The reverse of an update: writes the edits made here to a part into
+    /// the pools it came from. Nil where the project can't be edited.
+    var onCopyEditsToPool: ((HorizontalPoolEditCopy) throws -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -20,6 +23,9 @@ struct HorizontalPartUpdatesSheet: View {
     @State private var previews: HorizontalPoolUpdatePreviews?
     @State private var isChoosingSource = false
     @State private var sourcePartID: String?
+    /// A copy of the selected part's edits to its pools, waiting on its
+    /// confirmation.
+    @State private var pendingEditCopy: HorizontalPoolEditCopy?
 
     private var rows: [HorizontalPartLibraryReview] {
         review.parts.filter { showAll || $0.status != .current && $0.status != .projectOnly }
@@ -103,9 +109,16 @@ struct HorizontalPartUpdatesSheet: View {
                 try onChooseSource(sourcePartID, url)
             } catch { self.error = HorizontalCanvasProjectEdit.message(for: error) }
         }
+        .poolEditCopyConfirmation($pendingEditCopy) { copy in
+            do {
+                try onCopyEditsToPool?(copy)
+                error = nil
+            } catch { self.error = HorizontalCanvasProjectEdit.message(for: error) }
+        }
         .onAppear {
             checked = Set(review.parts.filter { $0.canUpdate && !$0.references.isEmpty && !$0.needsConfirmation }.map(\.id))
-            selection = rows.first?.id
+            // Opened for edits to copy to a pool, it opens on one of those.
+            selection = (review.outdatedInUse.isEmpty ? rows.first(where: \.canCopyToPool) : nil)?.id ?? rows.first?.id
         }
         .onChange(of: review.digest) { _, _ in
             checked.formIntersection(Set(review.parts.filter(\.canUpdate).map(\.id)))
@@ -148,7 +161,7 @@ struct HorizontalPartUpdatesSheet: View {
                     .disabled(!part.canUpdate || isReadOnly || isRefreshing)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(part.name).lineLimit(1)
-                        Label(part.sourcePool.map { "\(part.statusTitle) · \($0)" } ?? part.statusTitle, systemImage: part.status.symbol)
+                        Label(part.sourcePool.map { "\(part.statusTitle) · \($0)" } ?? part.statusTitle, systemImage: part.statusSymbol)
                             .font(.caption).foregroundStyle(.secondary)
                         if !part.references.isEmpty {
                             Text(part.references.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary)
@@ -170,6 +183,18 @@ struct HorizontalPartUpdatesSheet: View {
                         Label("Choose Source Library", systemImage: "folder")
                     }
                     .disabled(isRefreshing)
+                }
+                if onCopyEditsToPool != nil, selected.canCopyToPool {
+                    // What was edited here can go the other way, to its pool.
+                    Button {
+                        do {
+                            pendingEditCopy = try HorizontalPoolEditCopier.plan(partIDs: [selected.id], review: review)
+                        } catch { self.error = HorizontalCanvasProjectEdit.message(for: error) }
+                    } label: {
+                        Label("Copy Changes to \(selected.poolCopyTargetNames.joined(separator: " and "))…", systemImage: "arrow.up.circle")
+                    }
+                    .disabled(isReadOnly || isRefreshing)
+                    .help("Write this project's edits of \(selected.poolCopyChanges.map(\.title).joined(separator: ", ")) into the pool they were cached from")
                 }
                 if selected.changes.isEmpty {
                     Text(selected.statusTitle).foregroundStyle(.secondary)

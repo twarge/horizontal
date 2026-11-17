@@ -90,6 +90,13 @@ struct HorizontalPoolPartActions {
     /// then `placeDecalUnavailableReason` says why.
     var placeDecal: ((HorizontalPoolLibraryItem) -> Void)? = nil
     var placeDecalUnavailableReason: String? = nil
+    /// The project pool's items that were edited in the project and can go
+    /// back to the pools they were cached from, the reverse of an update:
+    /// nil until the project's parts have been checked.
+    var itemEdits: HorizontalPoolItemEdits? = nil
+    /// Makes such a copy, once it is confirmed here; nil where the project
+    /// can't be changed.
+    var copyEditsToPool: ((HorizontalPoolEditCopy) throws -> Void)? = nil
 }
 
 /// The library browser: Horizon's pool manager for this app. Browses every
@@ -141,6 +148,8 @@ struct HorizontalPoolBrowserView: View {
     @State private var isCreatingPool = false
     @State private var pendingDeletion: HorizontalPoolItemDeletion?
     @State private var deletionMessage: String?
+    @State private var pendingEditCopy: HorizontalPoolEditCopy?
+    @State private var editCopyMessage: String?
     @ObservedObject private var poolUpdater = HorizontalPoolUpdater.shared
     @State private var addPoolFailurePath: String?
     @State private var scanGeneration = 0
@@ -547,6 +556,8 @@ struct HorizontalPoolBrowserView: View {
                 selectedItemID = nil
             }
         })
+        .modifier(HorizontalPoolItemEditCopyPrompt(pending: $pendingEditCopy, message: $editCopyMessage,
+                                                   copy: partActions?.copyEditsToPool))
         // A pool registered elsewhere, such as the default pool's clone, is
         // browsed as soon as it is.
         .onChange(of: registry.pools) { _, _ in
@@ -1144,10 +1155,7 @@ struct HorizontalPoolBrowserView: View {
             .customizationID("tags")
 
             TableColumn("Pool", value: \.poolsLabel) { item in
-                tableText(item.poolsLabel)
-                    .help(item.pools.count > 1
-                          ? "This row is \(item.poolName)'s copy. Also in \(item.pools.dropFirst().joined(separator: ", "))."
-                          : "")
+                poolCell(item)
             }
             .width(min: 110, ideal: 160)
             .customizationID("pool")
@@ -1204,7 +1212,7 @@ struct HorizontalPoolBrowserView: View {
             }
 
             TableColumn("Pool", sortUsing: HorizontalParametricRowComparator(key: HorizontalParametricRowComparator.pool)) { row in
-                tableText(row.item.poolsLabel)
+                poolCell(row.item)
             }
             .width(min: 90, ideal: 140)
             .customizationID("pool")
@@ -1316,6 +1324,17 @@ struct HorizontalPoolBrowserView: View {
             default:
                 EmptyView()
             }
+            // The reverse of an update: what was edited here goes to its pool.
+            let editTargets = partActions?.copyEditsToPool == nil ? [] : partActions?.itemEdits?.targetNames(for: item) ?? []
+            if !editTargets.isEmpty {
+                Button("Copy Changes to \(editTargets.joined(separator: " and "))…") {
+                    do {
+                        pendingEditCopy = try partActions?.itemEdits?.plan(for: item)
+                    } catch {
+                        editCopyMessage = HorizontalCanvasProjectEdit.message(for: error)
+                    }
+                }
+            }
             Button("Move to Trash…", role: .destructive) {
                 do {
                     pendingDeletion = try HorizontalPoolItemDeletion.plan(for: item, index: index)
@@ -1378,6 +1397,26 @@ struct HorizontalPoolBrowserView: View {
             .lineLimit(1)
             .truncationMode(.tail)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The pools holding a row's item. A row of the project pool that was
+    /// edited there, and whose pool could take the edit, is marked as the
+    /// Parts pane marks its part.
+    @ViewBuilder
+    private func poolCell(_ item: HorizontalPoolLibraryItem) -> some View {
+        let editTargets = partActions?.itemEdits?.targetNames(for: item) ?? []
+        if editTargets.isEmpty {
+            tableText(item.poolsLabel)
+                .help(item.pools.count > 1
+                      ? "This row is \(item.poolName)'s copy. Also in \(item.pools.dropFirst().joined(separator: ", "))."
+                      : "")
+        } else {
+            HStack(spacing: 4) {
+                HorizontalPoolItemEditMark(targets: editTargets)
+                tableText(item.poolsLabel)
+            }
+            .help(HorizontalPoolItemEditMark.help(editTargets))
+        }
     }
 
     // MARK: - Actions

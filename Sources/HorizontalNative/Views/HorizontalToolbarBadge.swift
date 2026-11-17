@@ -32,11 +32,12 @@ extension View {
 }
 
 extension HorizontalPartLibraryMonitor {
-    /// The parts the info bar is about — out of date, or in no attached
-    /// pool — as the Parts pane's badge counts them.
+    /// The parts the info bar is about — out of date, edited here with
+    /// their pools left as they were, or in no attached pool — as the Parts
+    /// pane's badge counts them.
     var attentionCount: Int {
         guard let review else { return 0 }
-        return review.outdatedInUse.count + review.notInAttachedPoolInUse.count
+        return review.outdatedInUse.count + review.editedInUse.count + review.notInAttachedPoolInUse.count
     }
 }
 

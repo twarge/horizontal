@@ -899,7 +899,9 @@ def list_part_updates(path: str | None = None, pool_path: str | None = None,
     Each part names its source_pool, the pool it is kept up to date from; in_attached_pool is false for a part
     made in the project (projectOnly) and one no attached pool holds. A change names its file (path), the fields
     that differ and their sizes (before_bytes, null for a new item, and after_bytes); include_contents adds the
-    texts. missing_pools names a pool that a pool the project draws
+    texts. A change that is locally_modified was edited in the project; source_changed says its pool's copy changed
+    too since the project took it. can_copy_to_pool marks an edit its pool could take (the app's Copy Changes to
+    Pool writes it there; no tool does). missing_pools names a pool that a pool the project draws
     from includes and that this process couldn't find: parts from it read sourceUnavailable. A worker (a disk
     context) can't see the pools registered in the app; it finds an included pool checked out near the project,
     and otherwise pool_path, or HORIZONTAL_POOLS (colon-separated directories) in this server's environment,
