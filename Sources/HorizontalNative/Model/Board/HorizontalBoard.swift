@@ -2483,6 +2483,14 @@ struct HorizontalBoard {
         )
     }
 
+    /// The pool decal `decalID` as the loader reads it from the project pool,
+    /// for drawing a board decal again at another angle, flip or scale; nil
+    /// when the pool has none to read.
+    static func poolDecalJSON(_ decalID: String, poolURL: URL) -> JSONDictionary? {
+        var cache = [String: JSONDictionary]()
+        return loadDecal(decalID, poolURL: poolURL, cache: &cache)
+    }
+
     private static func parseSingleBoardDecal(
         id: String,
         decalID: String,

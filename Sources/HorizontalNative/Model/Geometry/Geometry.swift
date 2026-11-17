@@ -1543,7 +1543,8 @@ struct HorizontalBoardDecal: Identifiable, Hashable {
     /// The rest of what the board file has for it (Horizon's
     /// BoardDecal::serialize): its placement's angle, the flip, which is its
     /// placement's mirror too, and the scale. A decal placed on the canvas is
-    /// written with them; one the file has keeps the file's.
+    /// written with them, and the inspector changes them
+    /// (`BoardDecalPlacementEdit`); the geometry above is drawn with them.
     var angle = 0
     var flip = false
     var scale = 1.0

@@ -2121,14 +2121,14 @@ enum HorizontalProjectJSONApplicator {
     }
 
     /// A board decal is written where the board has it (Horizon's
-    /// BoardDecal::serialize: { decal, placement, flip, scale }). The canvas
-    /// moves and deletes decals and changes nothing else of one the file has,
-    /// so only its placement's shift is written; its angle and mirror, the
-    /// flip and the scale stay as the file has them. One placed on the canvas
-    /// is written whole. A decal whose pool item could not be read is not
-    /// loaded, so its entry is kept, and a deletion comes through
-    /// `removedIDs`. A board that never had a decal gets no `decals`, as
-    /// Horizon writes none.
+    /// BoardDecal::serialize: { decal, placement, flip, scale }). Of one the
+    /// file has, its placement's shift is written, and the angle, the flip
+    /// (which is the placement's mirror too) and the scale where the
+    /// inspector changed them: what reads as the board has it stays as the
+    /// file wrote it. One placed on the canvas is written whole. A decal
+    /// whose pool item could not be read is not loaded, so its entry is
+    /// kept, and a deletion comes through `removedIDs`. A board that never
+    /// had a decal gets no `decals`, as Horizon writes none.
     private static func patchDecals(
         _ json: inout JSONDictionary,
         decals: [HorizontalBoardDecal],
@@ -2154,6 +2154,18 @@ enum HorizontalProjectJSONApplicator {
             }
             var placement = item["placement"] as? JSONDictionary ?? [:]
             placement["shift"] = jsonPoint(position)
+            // Read as the loader reads them (`parseSingleBoardDecal`).
+            let read = HorizontalPlacementTransform(json: placement, mirrorOverride: item.bool("flip"))
+            if read?.angle != decal.angle {
+                placement["angle"] = decal.angle
+            }
+            if read?.mirrored != decal.flip {
+                placement["mirror"] = decal.flip
+                item["flip"] = decal.flip
+            }
+            if (item.double("scale") ?? 1) != decal.scale {
+                item["scale"] = decal.scale
+            }
             item["placement"] = placement
             map[itemKey] = item
         }

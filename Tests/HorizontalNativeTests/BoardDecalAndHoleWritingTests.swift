@@ -93,7 +93,8 @@ final class BoardDecalAndHoleWritingTests: XCTestCase {
             id: "decal-1", decalID: decalID, name: "Logo",
             polygons: [HorizontalPolygon(id: "decal-1/polygon/p", vertices: square, layer: HorizontalBoardLayers.topSilkscreen)],
             lines: [], arcs: [], texts: [],
-            position: HorizontalPoint(x: Double(20 * mm), y: Double(5 * mm))
+            position: HorizontalPoint(x: Double(20 * mm), y: Double(5 * mm)),
+            angle: 900, scale: 2.0
         )]
         return board
     }

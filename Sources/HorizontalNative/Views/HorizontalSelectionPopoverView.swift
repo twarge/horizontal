@@ -6,6 +6,8 @@ enum HorizontalSelectionPropertyValue: Equatable {
     case bool(Bool)
     case length(Double)
     case angle(Int)
+    /// How many times its own size, 1 being as drawn: a board decal's scale.
+    case scale(Double)
     case layer(Int?)
     case choice(String)
     case readOnly(String)
@@ -59,6 +61,9 @@ enum HorizontalSelectionPropertyEditor: Equatable {
     case bool
     case length
     case angle
+    /// A plain number above zero, a multiple of the object's own size
+    /// (Horizon's scale property).
+    case scale
     case layer([HorizontalSelectionPropertyOption])
     case choice([HorizontalSelectionPropertyOption])
     /// A choice among a few, shown side by side: where a value comes from,
@@ -833,6 +838,8 @@ struct HorizontalSelectionPopoverView: View {
             "mm"
         case .angle:
             "deg"
+        case .scale:
+            "×"
         default:
             ""
         }
@@ -992,6 +999,15 @@ struct HorizontalSelectionPopoverView: View {
             ) { degrees in
                 sendChange(.angle(Int((degrees / 360.0) * 65_536.0)), property: property, group: group, item: item)
             }
+        case .scale:
+            NumericPropertyField(
+                value: scaleDisplayValue(property),
+                fractionDigits: 3,
+                font: editorMonospacedFont,
+                accepts: { $0 > 0 }
+            ) { scale in
+                sendChange(.scale(scale), property: property, group: group, item: item)
+            }
         case .layer(let options):
             Picker("", selection: layerBinding(for: property, group: group, item: item)) {
                 ForEach(options) { option in
@@ -1110,6 +1126,13 @@ struct HorizontalSelectionPopoverView: View {
         return 0
     }
 
+    private func scaleDisplayValue(_ property: HorizontalSelectionProperty) -> Double {
+        if case .scale(let value) = property.value {
+            return value
+        }
+        return 1
+    }
+
     private func layerBinding(
         for property: HorizontalSelectionProperty,
         group: HorizontalSelectionDetailGroup,
@@ -1167,6 +1190,8 @@ struct HorizontalSelectionPopoverView: View {
         case .angle(let value):
             let degrees = Double(value) / 65_536.0 * 360.0
             return degrees.formatted(.number.precision(.fractionLength(1))) + " deg"
+        case .scale(let value):
+            return value.formatted(.number.precision(.fractionLength(0...3))) + "×"
         case .layer(let value):
             return value.map(String.init) ?? "None"
         case .pinFunctions(let value):
@@ -1190,11 +1215,13 @@ struct HorizontalSelectionPopoverView: View {
 /// a width starting at 0 could never be changed. Commits on Return or focus loss,
 /// and only what was typed: a field that kept the old value while the model
 /// changed under it (an undo, the route inspector's rules) would otherwise put
-/// the old value back when it lost focus.
+/// the old value back when it lost focus. A number `accepts` turns down is
+/// treated as one that doesn't parse: the field takes the model's value again.
 struct NumericPropertyField: View {
     let value: Double
     let fractionDigits: Int
     let font: Font
+    var accepts: (Double) -> Bool = { _ in true }
     let onCommit: (Double) -> Void
 
     @State private var text: String = ""
@@ -1243,7 +1270,7 @@ struct NumericPropertyField: View {
             return
         }
         let trimmed = text.trimmingCharacters(in: .whitespaces)
-        guard let parsed = Double(trimmed), parsed.isFinite else {
+        guard let parsed = Double(trimmed), parsed.isFinite, accepts(parsed) else {
             // Reject invalid input by restoring the model value.
             sync(value)
             return

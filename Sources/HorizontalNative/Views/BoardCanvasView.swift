@@ -3038,9 +3038,7 @@ struct BoardCanvasView: View {
             guard let decal = board.decals.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
                 return []
             }
-            return [
-                readOnlyProperty("name", "Name", decal.name),
-            ].compactMap { $0 }
+            return BoardDecalPlacementEdit.properties(of: decal)
         case .padstackShape:
             return padstackShapeProperties(for: ref)
         case .blockSymbolPort, .busLabel, .busRipper, .drawingArc, .drawingLine, .junction, .lineNet, .netLabel, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .symbolPin:
@@ -9670,7 +9668,15 @@ struct BoardCanvasView: View {
                 board: &board,
                 changedComponentRefdes: &changedComponentRefdes
             )
-        case .blockSymbolPort, .boardDecal, .boardPanel, .busLabel, .busRipper, .connectionLine, .drawingArc, .drawingLine, .junction, .lineNet, .netLabel, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .symbolPin:
+        case .boardDecal:
+            // Position, Angle, Flipped and Scale (`BoardDecalPlacementEdit`).
+            if !BoardDecalPlacementEdit.apply(value, propertyID: propertyID, to: ref, board: &board, poolURL: poolURL) {
+                #if os(macOS)
+                NSSound.beep()
+                #endif
+                showCanvasNote("Decal: its pool item can't be read, so it stays as it is")
+            }
+        case .blockSymbolPort, .boardPanel, .busLabel, .busRipper, .connectionLine, .drawingArc, .drawingLine, .junction, .lineNet, .netLabel, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .symbolPin:
             break
         }
     }
@@ -10524,13 +10530,7 @@ struct BoardCanvasView: View {
     }
 
     private func shifted(_ decal: HorizontalBoardDecal, by delta: HorizontalPoint) -> HorizontalBoardDecal {
-        var decal = decal
-        decal.polygons = decal.polygons.map { shifted($0, by: delta) }
-        decal.lines = decal.lines.map { shifted($0, by: delta) }
-        decal.arcs = decal.arcs.map { shifted($0, by: delta) }
-        decal.texts = decal.texts.map { shifted($0, by: delta) }
-        decal.position = decal.position.map { $0 + delta }
-        return decal
+        BoardDecalPlacementEdit.shifted(decal, by: delta)
     }
 
     private func shifted(_ plane: HorizontalPlane, by delta: HorizontalPoint) -> HorizontalPlane {

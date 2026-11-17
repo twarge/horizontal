@@ -26,7 +26,8 @@
 - [ ] Swap placement, paste placement.
 - [ ] Scale, and Move by keyboard (both disabled "to do" entries in the board's
       right-click menu).
-- [ ] Rotate and mirror dimensions and decals; they can only be moved.
+- [ ] Rotate and mirror dimensions and decals with R and E; they can only be
+      moved (a decal's inspector sets its angle, flip and scale).
 - [ ] Highlight a net class.
 - [ ] Panels and included boards: they load and draw, but can't be moved,
       placed or managed.

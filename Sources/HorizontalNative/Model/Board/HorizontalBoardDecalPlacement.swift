@@ -102,4 +102,32 @@ extension HorizontalBoardDecal {
             "scale": scale,
         ]
     }
+
+    /// Whether the board's own file places it, so where and how it lies are
+    /// the board's to change: not a panel's copy of another board's decal (a
+    /// slash in its id), which that board's file places.
+    var isPlacedByBoard: Bool {
+        position != nil && !id.contains("/")
+    }
+
+    /// It at another angle, flip or scale, drawn again from its pool item as
+    /// the loader will draw it from the file: the item it is to be cached
+    /// from, for one placed from a pool the project pool lacks, or else the
+    /// project pool's. It lies on whole nanometres, as the file holds it.
+    /// Nil when it has no place of its own or its pool item can't be read.
+    func redrawn(angle: Int, flip: Bool, scale: Double, nInnerLayers: Int, projectPoolURL: URL?) -> HorizontalBoardDecal? {
+        guard let position else {
+            return nil
+        }
+        let sourceJSON = cacheSource.flatMap { try? JSONHelper.loadDictionary(from: $0.url) }
+        guard let decalJSON = sourceJSON ?? projectPoolURL.flatMap({ HorizontalBoard.poolDecalJSON(decalID, poolURL: $0) }) else {
+            return nil
+        }
+        let entry = Self.fileEntry(decalID: decalID, position: position, angle: angle, flip: flip, scale: scale)
+        guard var decal = HorizontalBoard.boardDecal(id: id, entry: entry, decalJSON: decalJSON, nInnerLayers: nInnerLayers) else {
+            return nil
+        }
+        decal.cacheSource = cacheSource
+        return decal
+    }
 }
