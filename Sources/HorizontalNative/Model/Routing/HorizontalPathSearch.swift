@@ -31,6 +31,11 @@ struct HorizontalPathSearch {
         var net: String?
         /// The via a layer change uses; nil keeps the path on the layer it starts on.
         var via: HorizontalViaShape?
+        /// Whether a via the path places may stand in a pad of its net. The
+        /// cheapest layer change from a pad is a via in that pad, so without
+        /// this every path that leaves a surface pad for another layer would
+        /// start with one; a board has to be made for those.
+        var viaInPad = false
         var pitch = 25_000.0
         /// How far beyond the ends' box the search may go.
         var window = 2_000_000.0
@@ -107,6 +112,9 @@ struct HorizontalPathSearch {
     private var standingVias: [(centre: HorizontalPoint, radius: Double, layers: Set<Int>)] = []
     /// `standingVias` by the cell each stands exactly on.
     private var standingAtCell: [Int: Int] = [:]
+    /// The positions a via fitted but for standing in a pad of its net,
+    /// which `viaInPad` would have allowed.
+    private(set) var viasKeptOutOfPads = 0
 
     private static let steps: [(dx: Int, dy: Int)] = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)]
 
@@ -237,8 +245,12 @@ struct HorizontalPathSearch {
         if viaState[cell] != 0 { return viaState[cell] == 1 }
         let at = position(cell)
         let candidate = HorizontalBoardProbe.via(at: at, diameter: via.diameter, net: request.net)
-        let fits = !standingVias.contains { hypot(at.x - $0.centre.x, at.y - $0.centre.y) < $0.radius + via.diameter / 2 - 1 }
+        var fits = !standingVias.contains { hypot(at.x - $0.centre.x, at.y - $0.centre.y) < $0.radius + via.diameter / 2 - 1 }
             && via.layers.allSatisfy { probe.firstViolation(candidate, layer: $0) == nil }
+        if fits, !request.viaInPad, probe.ownPad(under: at, diameter: via.diameter, net: request.net, layers: via.layers) != nil {
+            viasKeptOutOfPads += 1
+            fits = false
+        }
         viaState[cell] = fits ? 1 : 2
         return fits
     }

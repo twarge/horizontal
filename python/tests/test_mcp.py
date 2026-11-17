@@ -901,6 +901,10 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         for name in ("list_pads", "items_near"):
             self.assertTrue(tools[name].annotations.read_only_hint, name)
         self.assertIn("check", tools["apply_ops"].input_schema["properties"])
+        self.assertIn("check_ignore", tools["apply_ops"].input_schema["properties"])
+        # The one-op tool a probe points at takes the same check.
+        for name in ("check", "pour", "check_ignore"):
+            self.assertIn(name, tools["place_component"].input_schema["properties"])
         self.assertIn("region", tools["list_tracks"].input_schema["properties"])
 
         # The template's one via, and what is round it.
@@ -929,8 +933,19 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(pair["distance_mm"], 0.05, places=4)
         self.assertEqual(pair["from_ops"], [1])
         self.assertEqual((await self.call("list_vias", project_ref=self.ref))["data"]["total"], 1)
+        self.assertEqual(check["introduced_kinds"]["clearance_copper"], len([f for f in check["introduced"] if f.get("check") == "copper"]))
+        self.assertNotIn("set_aside", check)
         refused = await server.mcp.call_tool("apply_ops", {"project_ref": self.ref, "ops": ops, "check": "delta"})
         self.assertTrue(refused.is_error)
+        # check_ignore leaves a kind out of introduced and counts it; a name
+        # that is no kind is refused.
+        ignored = (await self.call("apply_ops", project_ref=self.ref, ops=ops, dry_run=True, check="delta", pour=True,
+                                   check_ignore=["clearance_copper", "silkscreen"]))["data"]["check"]
+        self.assertEqual([f for f in ignored["introduced"] if f.get("check") == "copper"], [])
+        self.assertEqual(ignored["set_aside"]["clearance_copper"], check["introduced_kinds"]["clearance_copper"])
+        unknown = await server.mcp.call_tool("apply_ops", {"project_ref": self.ref, "ops": ops, "dry_run": True, "check": "delta",
+                                                           "check_ignore": ["labels"]})
+        self.assertTrue(unknown.is_error)
 
         # A placed text says where it draws, in the compact reply too.
         text = (await self.call("apply_ops", project_ref=self.ref, dry_run=True,
@@ -943,6 +958,8 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         tools = {t.name: t for t in await server.mcp.list_tools()}
         for name in ("probe_clearance", "find_via_sites", "find_path", "channel_capacity", "escape_analysis", "find_stubs"):
             self.assertTrue(tools[name].annotations.read_only_hint, name)
+        for name in ("find_via_sites", "find_path"):
+            self.assertIn("via_in_pad", tools[name].input_schema["properties"])
         via = (await self.call("list_vias", project_ref=self.ref))["data"]["vias"][0]
         x, y, size = via["x_mm"], via["y_mm"], via["size_mm"]
         revision = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
@@ -972,10 +989,11 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(found["bends"], 2)
         dry = (await self.call("apply_ops", project_ref=self.ref, ops=found["ops"], dry_run=True, check="delta"))["data"]
         # The fills are as last poured, so the new tracks lie in the GND plane until
-        # pour_planes; of the copper that stays, they come too close to none.
+        # pour_planes: those findings are set aside and counted, not listed. Of the
+        # copper that stays, the tracks come too close to none.
         self.assertEqual(dry["check"]["planes"], "stale")
-        self.assertEqual([f for f in dry["check"]["introduced"]
-                          if f.get("category") == "clearance" and "plane" not in (f["first"]["type"], f["second"]["type"])], [])
+        self.assertGreater(dry["check"]["set_aside"]["stale_fills"], 0)
+        self.assertEqual([f for f in dry["check"]["introduced"] if f.get("category") == "clearance"], [])
         # Fenced in on both sides of the via there is no path, and the fence is named.
         fenced = (await self.call("find_path", project_ref=self.ref, start={"x_mm": x - 2, "y_mm": y},
                                   to=[{"x_mm": x + 2, "y_mm": y}], net="SIG", layers=[0], width_mm=0.2, grid_mm=0.05, window_mm=1,

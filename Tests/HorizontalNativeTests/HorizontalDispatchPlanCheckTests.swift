@@ -143,6 +143,76 @@ final class HorizontalDispatchPlanCheckTests: XCTestCase {
         XCTAssertEqual(joined.int("after"), joined.int("before"), "\(joined)")
     }
 
+    /// A track drawn through another net's pour is copper against the fill
+    /// only until the planes are poured again. On fills as last poured the
+    /// plan sets that finding aside and is ok; poured, there is none.
+    func testATrackThroughAStaleFillIsSetAsideAndNotIntroduced() throws {
+        try open()
+        // A pour of IN1 round the parts, reaching R1's pad 1 (a fill that
+        // reaches no pad of its net is dropped), and OUT1's track from R2's
+        // pad 2 up through it.
+        func box(_ minX: Double, _ minY: Double, _ maxX: Double, _ maxY: Double) -> [JSONDictionary] {
+            [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]].map { ["x_mm": $0[0], "y_mm": $0[1]] }
+        }
+        _ = try client.result("apply", ["ops": [["op": "place_polygon", "layer": 100, "vertices": box(-5, -5, 15, 10)],
+                                                ["op": "place_plane", "net": "IN1", "layer": 0, "vertices": box(-3, -2, 12, 6)]]])
+        _ = try client.result("pour_planes")
+        let planes = try XCTUnwrap(try client.result("list_planes") as? [JSONDictionary])
+        XCTAssertEqual(planes.first?["poured"] as? Bool, true, "\(planes)")
+        let track: JSONDictionary = ["op": "place_track", "from": ["component": component("R2"), "pad": "2"],
+                                     "to": ["x_mm": 5.75, "y_mm": 4.5], "layer": 0, "width_mm": 0.2]
+
+        let stale = try dryRun([track])
+        XCTAssertEqual(stale.string("planes"), "stale")
+        XCTAssertGreaterThanOrEqual(stale.dictionary("set_aside")?.int("stale_fills") ?? 0, 1, "\(stale)")
+        let listed = try XCTUnwrap(stale["introduced"] as? [JSONDictionary])
+        XCTAssertFalse(listed.contains { $0.dictionary("first")?.string("type") == "plane" || $0.dictionary("second")?.string("type") == "plane" },
+                       "\(listed)")
+        XCTAssertEqual(listed.count, 0, "\(listed)")
+        XCTAssertEqual(stale["ok"] as? Bool, true, "\(stale)")
+        XCTAssertTrue((stale.string("note") ?? "").contains("stale_fills"))
+
+        // Poured on both boards, the fill has given way: nothing to set aside.
+        let poured = try dryRun([track], pour: true)
+        XCTAssertEqual(poured.string("planes"), "repoured")
+        XCTAssertNil(poured["set_aside"], "\(poured)")
+        XCTAssertEqual((poured["introduced"] as? [JSONDictionary])?.count, 0, "\(poured)")
+        XCTAssertEqual(poured["ok"] as? Bool, true, "\(poured)")
+    }
+
+    /// check_ignore leaves a kind of finding out of introduced and ok and
+    /// counts it in set_aside; introduced_kinds counts what is listed.
+    func testCheckIgnoreLeavesAKindOutAndCountsIt() throws {
+        let corner = "11111111-1111-4111-8111-111111111111", end = "11111111-1111-4111-8111-111111111112"
+        try fixture.addCopper(
+            junctions: [corner: HorizontalPoint(x: -750_000, y: 2_420_000), end: HorizontalPoint(x: 4_000_000, y: 2_420_000)],
+            tracks: ["22222222-2222-4222-8222-222222222221": (try fixture.padEnd(instance, "R1", 1), fixture.junctionEnd(corner), 0),
+                     "22222222-2222-4222-8222-222222222222": (fixture.junctionEnd(corner), fixture.junctionEnd(end), 0)])
+        try open()
+        // R2 moved to 0.07 mm from the track: a clearance_copper finding a pad.
+        let near: JSONDictionary = ["op": "place_component", "component": component("R2"), "x_mm": 2.5, "y_mm": 1.8]
+        let plain = try dryRun([near])
+        XCTAssertEqual(plain.dictionary("introduced_kinds")?.int("clearance_copper"), 2, "\(plain)")
+        XCTAssertNil(plain["set_aside"])
+        XCTAssertEqual(plain["ok"] as? Bool, false)
+
+        func ignoring(_ kinds: [String]) throws -> JSONDictionary {
+            try client.call("apply", ["ops": [near], "dry_run": true, "check": "delta", "check_ignore": kinds])
+        }
+        let ignored = try XCTUnwrap((try ignoring(["clearance_copper"])["result"] as? JSONDictionary)?.dictionary("check"))
+        XCTAssertEqual(ignored.dictionary("set_aside")?.int("clearance_copper"), 2, "\(ignored)")
+        XCTAssertFalse((ignored["introduced"] as? [JSONDictionary] ?? []).contains { $0.string("check") == "copper" })
+        XCTAssertNil(ignored.dictionary("introduced_kinds")?["clearance_copper"])
+        XCTAssertEqual(ignored["ok"] as? Bool, true, "\(ignored)")
+
+        // "silkscreen" is the short name of its rule; anything else that is
+        // no kind is refused, as is check_ignore without a check.
+        let silkscreen = try XCTUnwrap((try ignoring(["silkscreen"])["result"] as? JSONDictionary)?.dictionary("check"))
+        XCTAssertEqual(silkscreen.dictionary("introduced_kinds")?.int("clearance_copper"), 2, "\(silkscreen)")
+        XCTAssertNotNil(try ignoring(["labels"])["error"])
+        XCTAssertNotNil(try client.call("apply", ["ops": [near], "dry_run": true, "check_ignore": ["silkscreen"]])["error"])
+    }
+
     /// check goes with a dry run, and is no part of the plan: the commit
     /// that names the dry run's digest installs it.
     func testCheckIsForDryRunsAndLeavesThePlanAsItWas() throws {

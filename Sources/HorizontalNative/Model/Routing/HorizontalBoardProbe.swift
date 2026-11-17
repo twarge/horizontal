@@ -193,6 +193,24 @@ struct HorizontalBoardProbe {
         }
     }
 
+    /// The pad of its own net a via at `point` would stand in or against on
+    /// a layer it reaches, by its index in `items`; nil where it stands in
+    /// none. No clearance rule keeps a via off a pad of its net, and a via
+    /// there draws the solder down its hole unless the board is made for it
+    /// (filled and capped), so a search places one only when it is asked to.
+    func ownPad(under point: HorizontalPoint, diameter: Double, net: String?, layers: [Int]) -> Int? {
+        guard let net else { return nil }
+        let disc = HorizontalBoardItem.Shape.disc(point, radius: diameter / 2)
+        let reach = HorizontalRouteClearanceProbe.bounds([point], growth: diameter / 2)
+        for index in items.indices(overlapping: reach) {
+            let item = items.items[index]
+            guard item.kind == .pad || item.kind == .padThroughHole, item.netID == net, layers.contains(where: item.isOn),
+                  !skips(item), HorizontalShapeGap.between(disc, item.shape, limit: 0) != nil else { continue }
+            return index
+        }
+        return nil
+    }
+
     // MARK: - Candidates
 
     static func via(at point: HorizontalPoint, diameter: Double, net: String?) -> Candidate {

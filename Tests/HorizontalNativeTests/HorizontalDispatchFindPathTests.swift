@@ -88,6 +88,56 @@ final class HorizontalDispatchFindPathTests: XCTestCase {
         XCTAssertEqual(dry.dictionary("check")?.dictionary("airwires")?["nets_routed"] as? [String], ["OUT1"])
     }
 
+    /// A path that has to leave a pad for another layer changes layer beside
+    /// the pad and not in it, though the via in the pad is the shorter way.
+    /// via_in_pad asks for that one.
+    func testALayerChangeIsMadeClearOfThePadUnlessAsked() throws {
+        // From R2's pad 2 to a point 3 mm below it, the top fenced off
+        // between them: the short way is straight down through a via in the
+        // pad, the other round by a via beside it.
+        let request: JSONDictionary = ["from": ["component": fixture.flat(instance, "R2"), "pad": "2"], "to": [["x_mm": 5.75, "y_mm": -3]],
+                                       "avoid": [["layer": 0, "box_mm": [4.5, -1.2, 7, -0.8]] as JSONDictionary],
+                                       "window_mm": 1, "layers": [0, -1], "via": "rules"]
+        func inPad(_ via: JSONDictionary) throws -> JSONDictionary? {
+            let candidate: JSONDictionary = ["via": ["net": "OUT1", "x_mm": via.double("x_mm") ?? 0, "y_mm": via.double("y_mm") ?? 0] as JSONDictionary]
+            let reply = try XCTUnwrap(try client.result("probe_clearance", ["candidates": [candidate]]) as? JSONDictionary)
+            return (reply["candidates"] as? [JSONDictionary])?.first?.dictionary("in_pad")
+        }
+        let beside = try find(request)
+        XCTAssertEqual(beside["found"] as? Bool, true, "\(beside)")
+        let vias = try XCTUnwrap(beside["vias"] as? [JSONDictionary])
+        XCTAssertEqual(vias.count, 1)
+        XCTAssertNil(try inPad(vias[0]), "\(vias)")
+
+        var asked = request
+        asked["via_in_pad"] = true
+        let within = try find(asked)
+        XCTAssertEqual(within["found"] as? Bool, true, "\(within)")
+        let first = try XCTUnwrap((within["vias"] as? [JSONDictionary])?.first)
+        XCTAssertNotNil(try inPad(first), "\(first)")
+        XCTAssertLessThan(within.double("length_mm") ?? 99, beside.double("length_mm") ?? 0)
+    }
+
+    /// Where the only room for a via is in the pad, there is no path, and
+    /// the reply says a via fitted there; allowed, the path goes through it.
+    func testNoPathSaysWhenOnlyAViaInThePadWouldDo() throws {
+        // The top fenced off all round R2's pad 2, inside the pad's own edge.
+        let ring: [JSONDictionary] = [[5.25, -1, 5.37, 1], [6.13, -1, 6.25, 1], [5.25, 0.38, 6.25, 0.5], [5.25, -0.5, 6.25, -0.38]]
+            .map { ["layer": 0, "box_mm": $0] }
+        let request: JSONDictionary = ["from": ["component": fixture.flat(instance, "R2"), "pad": "2"], "to": [["x_mm": 5.75, "y_mm": -3]],
+                                       "avoid": ring, "window_mm": 1, "layers": [0, -1], "via": "rules"]
+        let blocked = try find(request)
+        XCTAssertEqual(blocked["found"] as? Bool, false, "\(blocked)")
+        XCTAssertGreaterThan(blocked.int("vias_kept_out_of_pads") ?? 0, 0, "\(blocked)")
+        XCTAssertTrue((blocked.string("note") ?? "").contains("via_in_pad"), "\(blocked)")
+
+        var asked = request
+        asked["via_in_pad"] = true
+        let through = try find(asked)
+        XCTAssertEqual(through["found"] as? Bool, true, "\(through)")
+        XCTAssertEqual((through["vias"] as? [JSONDictionary])?.count, 1)
+    }
+
     /// A connection inside a block instance: the ops name its pads as any
     /// other part's, and committed as they are they bind the track to both
     /// and take the airwire off the instance's own net.

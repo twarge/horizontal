@@ -1047,7 +1047,8 @@ def list_block_instances(path: str | None = None, block: str | None = None) -> l
 def autoroute(net: str, path: str | None = None, layer: int = 0, width_mm: float | None = None,
               max_routes: int = 20, dry_run: bool = False, sync: bool = True,
               check: Annotated[Literal["delta", "full"] | None, Field(description="With dry_run, run the board checks on the board the routes would leave, as apply_ops' check does.")] = None,
-              pour: Annotated[bool, Field(description="With check, pour the planes again first.")] = False) -> dict[str, Any]:
+              pour: Annotated[bool, Field(description="With check, pour the planes again first.")] = False,
+              check_ignore: Annotated[list[str] | None, Field(description="With check, kinds of finding to leave out of introduced, as apply_ops' check_ignore does, e.g. [\"silkscreen\"].")] = None) -> dict[str, Any]:
     """Try to route a net's airwires automatically on one layer. Best effort: each airwire is searched for a clear
     45° path by the interactive router, on its conservative hulls and with the routing offset kept, moving nothing
     and placing no via, so on a dense board it completes a minority and reports the rest; find_path searches one
@@ -1056,7 +1057,8 @@ def autoroute(net: str, path: str | None = None, layer: int = 0, width_mm: float
     routes in one instance of a block it routes the same in the instances laid out like it, unless sync is false."""
     return _edit_call(_resolve(path), "autoroute", net=net, layer=layer, max_routes=max_routes, dry_run=dry_run,
                       **({"width_mm": width_mm} if width_mm is not None else {}), **({} if sync else {"sync": False}),
-                      **({"check": check} if check else {}), **({"pour": True} if pour else {}))
+                      **({"check": check} if check else {}), **({"pour": True} if pour else {}),
+                      **({"check_ignore": check_ignore} if check_ignore else {}))
 
 
 @_tool
@@ -1177,7 +1179,9 @@ def list_holes(path: str | None = None) -> list[dict[str, Any]]:
 def list_keepouts(path: str | None = None) -> list[dict[str, Any]]:
     """Areas copper may not enter, with the polygon bounding each. A keepout with all_copper_layers applies to
     every copper layer; otherwise it applies to the layer its polygon is on. types is the kinds of copper it keeps
-    out (track, pad, pad_th, via, plane, text, net_tie, hole_pth, hole_npth); set_keepout changes them."""
+    out (track, pad, pad_th, via, plane, text, net_tie, hole_pth, hole_npth); set_keepout changes them. It keeps out
+    those kinds and no other, for check, the pour, the probes and the routers alike: one with no types keeps out
+    nothing."""
     return _resolve(path).keepouts()
 
 
@@ -1326,12 +1330,17 @@ def find_via_sites(net: str,
                    margin_mm: Annotated[float, Field(description="Added to what the rules ask.", ge=0, le=10)] = 0,
                    link: Annotated[dict[str, Any] | None, Field(description="Keep only sites a track can join to an anchor: {\"layer\", \"to\": {\"junction\"} | {\"component\", \"pad\"} | {\"via\"} | {\"x_mm\", \"y_mm\"}, \"width_mm\", \"bends\": 0 or 1}.")] = None,
                    ignore: Annotated[list[str] | None, Field(description="Ids of tracks, vias or pads to treat as gone.")] = None,
+                   via_in_pad: Annotated[bool, Field(description="Also list positions that stand in a pad of the net. Off, since a via in a pad draws solder down its hole unless the board is made with filled vias; in_pad_sites counts the ones left out.")] = False,
                    planes: bool = False, limit: int = 50) -> dict[str, Any]:
     """Where near a point can a via of this net go? Tests a grid of positions round near, each on every copper layer
     the via reaches — the far side's pads, holes, keepouts and the board's edge included — and returns the legal ones
     nearest first. Each site gives x_mm, y_mm, distance_mm from near, slack_mm (how much more than the rules and
-    margin it has, at its tightest) and tightest, the limiting item on each layer; in_pad and needs_link as
-    probe_clearance gives them; and, with link, link_mm, the track that joins it to the anchor.
+    margin it has, at its tightest) and tightest, the limiting item on each layer; and, with link, link_mm, the
+    track that joins it to the anchor.
+
+    No rule keeps a via off a pad of its own net, so round a pad the nearest clear positions are all in it. Those
+    are left out and counted in in_pad_sites; via_in_pad lists them too, each with in_pad and needs_link as
+    probe_clearance gives them, for a board made with filled vias.
 
     A list of points hides the shape of the room, so regions gives the connected areas of legal positions: how many
     sites, area_mm2, box_mm, and rows_mm, each row of the area as [y, first x, last x]. total counts every legal
@@ -1343,7 +1352,7 @@ def find_via_sites(net: str,
     x_mm, y_mm, diameter_mm, distance_mm), nearest first: end the track on one rather than placing another."""
     return _resolve(path).find_via_sites(net, near.model_dump(), radius_mm=radius_mm, grid_mm=grid_mm, definition=definition,
                                          diameter_mm=diameter_mm, hole_mm=hole_mm, margin_mm=margin_mm or None, link=link,
-                                         ignore=ignore, planes=planes or None, limit=limit)
+                                         ignore=ignore, planes=planes or None, via_in_pad=via_in_pad or None, limit=limit)
 
 
 @_tool
@@ -1354,6 +1363,7 @@ def find_path(start: Annotated[dict[str, Any], Field(description="Where it start
               width_mm: Annotated[float | None, Field(description="Track width; optional when a track_width rule takes the net.", gt=0)] = None,
               margin_mm: Annotated[float, Field(description="Added to what the rules ask.", ge=0, le=10)] = 0,
               via: Annotated[str | None, Field(description="A via definition, by name, for changing layers, or \"rules\" for the via rule's. Without it the path stays on one layer.")] = None,
+              via_in_pad: Annotated[bool, Field(description="Let a via the path places stand in a pad of the net. Off: the cheapest layer change from a pad is a via in that pad, which draws solder down its hole unless the board is made with filled vias.")] = False,
               avoid: Annotated[list[dict[str, Any]] | None, Field(description="Areas to keep out of: {\"layer\"?, \"box_mm\": [min_x, min_y, max_x, max_y]}.")] = None,
               ignore: Annotated[list[str] | None, Field(description="Ids of tracks, vias or pads to treat as gone: would there be a path if this were ripped up?")] = None,
               grid_mm: Annotated[float | None, Field(description="The search grid's pitch. Finer finds tighter slots and costs the square of it. Left out, 0.025 where the ends are near and the finest of 0.05, 0.1 or 0.2 that suits the distance where they are far; the reply's grid_mm says which.", ge=0.005, le=1)] = None,
@@ -1367,16 +1377,19 @@ def find_path(start: Annotated[dict[str, Any], Field(description="Where it start
     found: path (per layer, points_mm), vias, length_mm, bends, tightest (the closest it comes to anything, with
     slack_mm) and ops, ready for apply_ops — each layer change a place_via before the tracks that leave it. Dry-run
     them with check before committing. reached says which of to it ended on. A via of the net that already stands
-    on the path is used as it is: through_vias lists those, and the ops place none there. No new via overlaps one.
+    on the path is used as it is: through_vias lists those, and the ops place none there. No new via overlaps one,
+    and none stands in a pad of the net unless via_in_pad: the path leaves the pad and changes layer beside it.
     An end on a part inside a block instance is named {component, pad} like any other, and place_track takes it.
 
     not found: reason (blocked, or budget when the search ran out before it could tell) and blocked_by, the items that
     bound what the search could reach from the start (from) and from the ends (to), the longest stretch of wall first,
     each with its id, net and layer. That is the list to consider for rip-up (ignore tries one), or to get past on
     another layer; reached_window_edge says a way round may lie beyond window_mm. Two nets that must cross show up
-    here as each blocked by the other."""
+    here as each blocked by the other. vias_kept_out_of_pads counts the places a via fitted but for standing in a
+    pad of the net, where via_in_pad would have let the path through."""
     return _resolve(path).find_path(start, to, net=net, layers=layers, width_mm=width_mm, margin_mm=margin_mm or None, via=via,
-                                    avoid=avoid, ignore=ignore, grid_mm=grid_mm, window_mm=window_mm, planes=planes or None)
+                                    via_in_pad=via_in_pad or None, avoid=avoid, ignore=ignore, grid_mm=grid_mm, window_mm=window_mm,
+                                    planes=planes or None)
 
 
 @_tool
@@ -1652,7 +1665,8 @@ def list_ops(path: str | None = None) -> list[dict[str, Any]]:
 def apply_ops(ops: list[EditOperation] = [], path: str | None = None, dry_run: bool = False,
               pool_items: list[dict[str, Any]] | None = None, block: str | None = None, sync: bool = True,
               check: Annotated[Literal["delta", "full"] | None, Field(description="With dry_run, run the board checks on the board the batch would leave. \"delta\": what it introduces and resolves. \"full\": every finding of that board as well.")] = None,
-              pour: Annotated[bool, Field(description="With check, pour the planes again first, on the board as it is and as planned. Without it the fills are as last poured and the reply says planes: stale.")] = False) -> dict[str, Any]:
+              pour: Annotated[bool, Field(description="With check, pour the planes again first, on the board as it is and as planned. Without it the fills are as last poured and the reply says planes: stale.")] = False,
+              check_ignore: Annotated[list[str] | None, Field(description="With check, kinds of finding to leave out of introduced and ok, counted in set_aside instead: \"silkscreen\", or a rule kind as board_rules lists them (clearance_copper_keepout, track_width, board_connectivity, …), or short and plane_over_pad.")] = None) -> dict[str, Any]:
     """Apply edit operations. Each op is {"op": name, ...params}; see list_ops. Components and nets may be named by
     refdes or net name, or by id; an unnamed net has only that. Every op that acts on one thing names it by its own
     field (line, track, junction, …) or by id. Wherever an op takes an id — a component, net, wire, junction, symbol
@@ -1676,10 +1690,18 @@ def apply_ops(ops: list[EditOperation] = [], path: str | None = None, dry_run: b
     the plan removes; a clearance one says now_distance_mm, how far apart the two then are, or now: gone), unchanged
     and counts, airwires (before, after, nets that gained one and nets_routed that lost one), stretched (each track
     end a moved part carried with it: track, end, pad, was_mm, now_mm) and ok, true when nothing is introduced and
-    no airwire added. Clearance to the planes' fills and the silkscreen rule depend on the pour: pour: true pours
-    both boards first (planes: repoured), which costs what pour_planes costs; without it planes reads stale.
-    check: "full" adds findings, everything check would say of the planned board. The workflow for copper and
-    placement is: probe, dry run with check, commit by plan_digest.
+    no airwire added. introduced_kinds counts what is listed by kind, the rule each comes under, so a long list
+    that was cut still says what it holds.
+
+    Clearance to the planes' fills and the silkscreen rule depend on the pour. Without pour the fills are as last
+    poured (planes: stale), and new copper through a plane of another net touches a fill the next pour will take
+    out of its way: those findings are not listed and do not make ok false; set_aside.stale_fills counts them.
+    pour: true pours both boards first (planes: repoured), which costs what pour_planes costs, and measures what
+    is left. check_ignore leaves kinds of finding out the same way, counted in set_aside by kind: ["silkscreen"]
+    for a routing pass on a board whose labels have not been tidied, where every track that passes under a
+    reference designator is otherwise a finding. check: "full" adds findings, everything check would say of the
+    planned board, nothing set aside. The workflow for copper and placement is: probe, dry run with check, commit
+    by plan_digest, pour_planes.
 
     block selects which block to edit; without it, the top one. A sub-block's components are instantiated
     wherever that block is used, so it has no board of its own and board operations on one are refused.
@@ -1764,10 +1786,10 @@ def apply_ops(ops: list[EditOperation] = [], path: str | None = None, dry_run: b
     if not ops and (dry_run or not _edit_options.get().get("plan_digest")):
         raise ValueError("Pass ops, or commit a dry run by its plan_digest alone.")
     encoded = None if not ops else [op.model_dump(exclude_unset=True, by_alias=True) if isinstance(op, BaseModel) else op for op in ops]
-    if (check or pour) and not dry_run:
-        raise ValueError("check and pour go with dry_run: they report on a plan. The check tool reads the board as committed.")
+    if (check or pour or check_ignore) and not dry_run:
+        raise ValueError("check, pour and check_ignore go with dry_run: they report on a plan. The check tool reads the board as committed.")
     return _edit(_resolve(path), encoded, dry_run=dry_run, pool_items=pool_items, block=block, sync=None if sync else False,
-                 check=check, pour=True if pour else None)
+                 check=check, pour=True if pour else None, check_ignore=check_ignore or None)
 
 
 @_tool
@@ -1795,12 +1817,20 @@ def connect_pin(refdes: str, pin: str, net: str, path: str | None = None, create
 
 @_tool
 def place_component(refdes: str, path: str | None = None, x_mm: float | None = None, y_mm: float | None = None, angle_deg: float | None = None, bottom: bool | None = None,
-                    dry_run: bool = False) -> dict[str, Any]:
+                    dry_run: bool = False,
+                    check: Annotated[Literal["delta", "full"] | None, Field(description="With dry_run, run the board checks on the board the move would leave, as apply_ops' check does: what it introduces and resolves, and the track ends it stretches.")] = None,
+                    pour: Annotated[bool, Field(description="With check, pour the planes again first.")] = False,
+                    check_ignore: Annotated[list[str] | None, Field(description="With check, kinds of finding to leave out of introduced, as apply_ops' check_ignore does.")] = None) -> dict[str, Any]:
     """Place a component's package on the board, or move or rotate it if it is already placed; dry_run previews it and
-    gives the plan_digest a commit takes. Its connections stay airwires until something routes them: place_track and
-    place_via draw copper one segment at a time, and copy_group_layout clones the routing an already-laid-out group has."""
+    gives the plan_digest a commit takes, and with check says what the move does to the board first: the findings it
+    introduces and resolves, and stretched, the track ends on its pads that go with it. Its connections stay airwires
+    until something routes them: place_track and place_via draw copper one segment at a time, and copy_group_layout
+    clones the routing an already-laid-out group has."""
+    if (check or pour or check_ignore) and not dry_run:
+        raise ValueError("check, pour and check_ignore go with dry_run: they report on a plan. The check tool reads the board as committed.")
     fields = {k: v for k, v in {"x_mm": x_mm, "y_mm": y_mm, "angle_deg": angle_deg, "bottom": bottom}.items() if v is not None}
-    return _edit(_resolve(path), [{"op": "place_component", "component": refdes, **fields}], dry_run=dry_run)
+    return _edit(_resolve(path), [{"op": "place_component", "component": refdes, **fields}], dry_run=dry_run,
+                 check=check, pour=True if pour else None, check_ignore=check_ignore or None)
 
 
 @_tool

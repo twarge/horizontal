@@ -268,23 +268,16 @@ enum HorizontalDispatchProbe {
     /// in or against the pad a track has to.
     static func padContact(at point: HorizontalPoint, diameter: Double, net: String?, layers: [Int], probe: HorizontalBoardProbe,
                            board: HorizontalBoard) -> JSONDictionary {
-        guard let net else { return [:] }
-        let disc = HorizontalBoardItem.Shape.disc(point, radius: diameter / 2)
-        let reach = HorizontalRouteClearanceProbe.bounds([point], growth: diameter / 2)
-        for index in probe.items.indices(overlapping: reach) {
-            let item = probe.items.items[index]
-            guard item.kind == .pad || item.kind == .padThroughHole, item.netID == net, layers.contains(where: item.isOn),
-                  HorizontalShapeGap.between(disc, item.shape, limit: 0) != nil else { continue }
-            let parts = item.id.split(separator: "/").map(String.init)
-            let centre = parts.count >= 3 ? board.packagePadPositions["\(parts[0])/\(parts[2])"] : nil
-            let onCentre = centre.map { hypot($0.x - point.x, $0.y - point.y) < 1 } ?? false
-            var contact: JSONDictionary = ["in_pad": ["pad": item.label, "id": item.id, "on_center": onCentre] as JSONDictionary]
-            if !onCentre {
-                contact["needs_link"] = true
-            }
-            return contact
+        guard let index = probe.ownPad(under: point, diameter: diameter, net: net, layers: layers) else { return [:] }
+        let item = probe.items.items[index]
+        let parts = item.id.split(separator: "/").map(String.init)
+        let centre = parts.count >= 3 ? board.packagePadPositions["\(parts[0])/\(parts[2])"] : nil
+        let onCentre = centre.map { hypot($0.x - point.x, $0.y - point.y) < 1 } ?? false
+        var contact: JSONDictionary = ["in_pad": ["pad": item.label, "id": item.id, "on_center": onCentre] as JSONDictionary]
+        if !onCentre {
+            contact["needs_link"] = true
         }
-        return [:]
+        return contact
     }
 
     // MARK: - A part somewhere else
@@ -517,6 +510,11 @@ enum HorizontalDispatchProbe {
                 "That is \(side * side) positions to test; at most 400000. Use a coarser grid_mm or a smaller radius_mm.")
         }
         let limit = min(max(params.int("limit") ?? 50, 1), 2000)
+        // A via in a pad of its net passes every clearance, and round a pad
+        // those are the nearest positions there are: listed only when asked
+        // for, counted otherwise, so the sites are ones any board can take.
+        let viaInPad = params.bool("via_in_pad") ?? false
+        var inPad = 0
 
         struct Link {
             var layer: Int
@@ -578,7 +576,11 @@ enum HorizontalDispatchProbe {
                 let candidate = HorizontalBoardProbe.via(at: point, diameter: shape.diameter, net: net)
                 if onStandingVia(point) { continue }
                 if shape.layers.allSatisfy({ probe.firstViolation(candidate, layer: $0) == nil }), linked(point) != nil {
-                    legal[row * side + column] = true
+                    if !viaInPad, probe.ownPad(under: point, diameter: shape.diameter, net: net, layers: shape.layers) != nil {
+                        inPad += 1
+                    } else {
+                        legal[row * side + column] = true
+                    }
                 } else {
                     let distance = hypot(dx, dy)
                     if blockedNearest == nil || distance < (blockedNearest?.distance ?? 0) { blockedNearest = (distance, point) }
@@ -671,6 +673,10 @@ enum HorizontalDispatchProbe {
         if !existing.isEmpty {
             result["existing_vias"] = existing.map(\.json)
             result["existing_vias_note"] = "Vias of this net already here. A position overlapping one is not a site: end the track on that via instead of placing another."
+        }
+        if inPad > 0 {
+            result["in_pad_sites"] = inPad
+            result["in_pad_note"] = "\(inPad) more positions are clear but stand in a pad of the net, where a via draws solder down its hole unless the board is made with filled vias: via_in_pad lists them too."
         }
         if ranked.isEmpty, let miss = blockedNearest {
             // Nothing is legal: what stops the nearest position, layer by layer.

@@ -203,6 +203,36 @@ final class HorizontalDispatchProbeTests: XCTestCase {
         XCTAssertEqual((without["sites"] as? [JSONDictionary])?.first?.double("distance_mm") ?? 1, 0, accuracy: 1e-9)
     }
 
+    /// Round a pad the nearest clear positions are all in the pad. They are
+    /// counted and left out unless via_in_pad asks for them, so the sites
+    /// listed are ones any board can take.
+    func testViaSitesStayOutOfThePadsOfTheNetUnlessAsked() throws {
+        try open()
+        // R1's pad 1 is 0.8 × 0.9 mm at (−0.75, 0); the via is 0.35 across.
+        func sites(_ more: JSONDictionary = [:]) throws -> JSONDictionary {
+            var params: JSONDictionary = ["net": "IN1", "near": ["x_mm": -0.75, "y_mm": 0], "radius_mm": 1.5, "diameter_mm": 0.35,
+                                          "grid_mm": 0.05, "limit": 2000]
+            params.merge(more) { _, new in new }
+            return try XCTUnwrap(try client.result("find_via_sites", params) as? JSONDictionary)
+        }
+        let plain = try sites()
+        let listed = try XCTUnwrap(plain["sites"] as? [JSONDictionary])
+        XCTAssertFalse(listed.isEmpty)
+        XCTAssertTrue(listed.allSatisfy { $0["in_pad"] == nil }, "\(listed.prefix(3))")
+        // The nearest is the via's radius clear of the pad's edge.
+        XCTAssertGreaterThan(listed[0].double("distance_mm") ?? 0, 0.4 + 0.175)
+        let left = try XCTUnwrap(plain.int("in_pad_sites"))
+        XCTAssertGreaterThan(left, 0)
+        XCTAssertNotNil(plain["in_pad_note"])
+
+        let asked = try sites(["via_in_pad": true])
+        let all = try XCTUnwrap(asked["sites"] as? [JSONDictionary])
+        XCTAssertEqual(all.first?.double("distance_mm") ?? 1, 0, accuracy: 1e-9)
+        XCTAssertEqual(all.first?.dictionary("in_pad")?["on_center"] as? Bool, true)
+        XCTAssertNil(asked["in_pad_sites"])
+        XCTAssertEqual(asked.int("total"), (plain.int("total") ?? 0) + left)
+    }
+
     /// link keeps only the via sites a track can join to an anchor.
     func testViaSitesCanBeKeptToThoseATrackCanJoin() throws {
         let anchor = "33333333-3333-4333-8333-333333333331"

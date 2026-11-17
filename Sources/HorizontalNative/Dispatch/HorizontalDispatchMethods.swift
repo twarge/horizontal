@@ -236,7 +236,7 @@ enum HorizontalDispatchMethods {
                      "width_mm": "Track width (optional; the first track_width rule by order that takes the net, on the layer, else required).",
                      "max_routes": "Stop after this many airwires; default 20, maximum 200.",
                      "expected_revision": "The revision this was planned against.",
-                     "operation_id": "Caller-chosen id for this mutation.", "dry_run": "Report without writing (default false).", "check": "With dry_run, run the board checks on the board this would leave: \"delta\" or \"full\", as apply's.", "pour": "With check, pour the planes again first (default false).",
+                     "operation_id": "Caller-chosen id for this mutation.", "dry_run": "Report without writing (default false).", "check": "With dry_run, run the board checks on the board this would leave: \"delta\" or \"full\", as apply's.", "pour": "With check, pour the planes again first (default false).", "check_ignore": "With check, kinds of finding to leave out of introduced, as apply's.",
                      "sync": "Route the same in the block instances laid out like the one routed (default true)."],
             handler: autoroute
         ),
@@ -359,6 +359,7 @@ enum HorizontalDispatchMethods {
                      "link": "{layer, to, width_mm, bends}: keep only sites a track of that width can join to the anchor `to` ({junction}, {component, pad}, {via} or {x_mm, y_mm}) on that layer, straight (bends 0) or with one 45° corner (bends 1, the default) (optional).",
                      "ignore": "Ids of tracks, vias or pads to treat as gone (optional).",
                      "planes": "Also keep clear of the planes' fills as last poured (default false).",
+                     "via_in_pad": "Also list positions that stand in a pad of the net (default false: they are counted in in_pad_sites, since a via in a pad needs a board made with filled vias).",
                      "limit": "Maximum sites to return, nearest first; default 50, maximum 2000."],
             handler: HorizontalDispatchProbe.findViaSites
         ),
@@ -373,6 +374,7 @@ enum HorizontalDispatchMethods {
                      "width_mm": "Track width (optional when a track_width rule takes the net).",
                      "margin_mm": "Added to what the rules ask (optional; default 0).",
                      "via": "A via definition, by name, for changing layers, or \"rules\" for the via rule's (optional; without it the path stays on one layer).",
+                     "via_in_pad": "Let a via the path places stand in a pad of the net (default false: a layer change is made clear of the pads, and a via of the net that already stands in one is still gone through).",
                      "avoid": "Array of {layer?, box_mm: [min_x, min_y, max_x, max_y]} the path keeps out of (optional).",
                      "ignore": "Ids of tracks, vias or pads to treat as gone, for a rip-up question (optional).",
                      "grid_mm": "The search grid's pitch (optional; default 0.025 where the ends are near, and the finest of 0.05, 0.1 or 0.2 that suits the distance where they are far — the reply's grid_mm says which).",
@@ -478,7 +480,8 @@ enum HorizontalDispatchMethods {
                 "pool_items": "Pool items to install in the same transaction.",
                 "dry_run": "Validate and report without writing (default false).",
                 "check": "With dry_run, also run the board checks on the board the batch would leave and say what it changes: \"delta\" for the findings it introduces and resolves, \"full\" for every finding of that board as well. The reply's check also counts airwires before and after and lists the tracks a moved part stretched.",
-                "pour": "With check, pour the planes again first, on the board as it is and as the batch would leave it, so clearance to fills and the silkscreen rule are measured against copper that is there (default false: the fills stay as last poured, and the reply says planes are stale).",
+                "pour": "With check, pour the planes again first, on the board as it is and as the batch would leave it, so clearance to fills and the silkscreen rule are measured against copper that is there (default false: the fills stay as last poured, the reply says planes are stale, and a finding against a fill is counted in set_aside.stale_fills rather than listed, since a pour takes the fill out of the way).",
+                "check_ignore": "With check, kinds of finding to leave out of introduced and ok, counted in set_aside instead: \"silkscreen\", or a rule kind as board_rules lists them (clearance_copper_keepout, track_width, …), or short and plane_over_pad. For a routing pass on a board whose silkscreen is not done.",
                 "sync": "Make the batch's edits of a block instance's parts and copper in the instances laid out like it too (default true); the reply's synced says what that did."
             ],
             handler: applyOperations

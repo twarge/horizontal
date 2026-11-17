@@ -364,7 +364,10 @@ struct HorizontalBoardItems {
         func id(_ id: String) -> String? { id.isEmpty ? nil : id }
         if case .keepout(let name) = a.kind {
             guard classB.isCopper else { return nil }
-            guard a.keepoutPatchTypes.isEmpty || a.keepoutPatchTypes.contains(classB.patchType.jsonString) else { return nil }
+            // A keepout bars the kinds of copper it lists and no other, as
+            // the clearance check and the pour read it: one that lists none
+            // bars nothing.
+            guard a.keepoutPatchTypes.contains(classB.patchType.jsonString) else { return nil }
             let rule = rules.clearanceCopperKeepout(net: b.netID, keepoutClass: name)
             return (Double(rule.clearance(classB.patchType)), .clearanceCopperKeepout, id(rule.id))
         }

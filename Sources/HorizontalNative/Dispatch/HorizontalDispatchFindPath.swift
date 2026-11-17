@@ -62,6 +62,7 @@ enum HorizontalDispatchFindPath {
             from: from.point, fromLayers: (from.layers ?? []).filter(ordered.contains),
             targets: targets.map { .init(point: $0.point, layers: ($0.layers ?? []).filter(ordered.contains)) },
             layers: ordered, width: width, net: net, via: via)
+        request.viaInPad = params.bool("via_in_pad") ?? false
         if let window = params.double("window_mm") {
             guard window >= 0 else { throw HorizontalDispatchError.invalidParams("window_mm cannot be negative.") }
             request.window = window * nm
@@ -114,6 +115,7 @@ enum HorizontalDispatchFindPath {
             result["reason"] = "budget"
             result["blocked_by"] = ["from": blockers(fromSide), "to": [JSONDictionary]()] as JSONDictionary
             result["note"] = "The search ran out of budget before it could say there is no path; a coarser grid_mm or a smaller window_mm settles it, as does a way point: route to a via_site part of the way first."
+                + keptOutOfPads(search)
         case .blocked(let fromSide, let toSide, let reachedWindowEdge):
             result["found"] = false
             result["reason"] = "blocked"
@@ -121,6 +123,8 @@ enum HorizontalDispatchFindPath {
             result["reached_window_edge"] = reachedWindowEdge
             result["note"] = "blocked_by lists what bounds the area reachable from each end, the longest stretch of wall first: what to move or rip up (ignore tries it), or to go round on another layer."
                 + (reachedWindowEdge ? " The search reached the edge of its window, so a way round may lie beyond it: window_mm widens it." : "")
+                + keptOutOfPads(search)
+            if search.viasKeptOutOfPads > 0 { result["vias_kept_out_of_pads"] = search.viasKeptOutOfPads }
         case .found(let path):
             // Measured again on the copper as it would be drawn.
             var tightest: HorizontalBoardProbe.Measurement?
@@ -163,6 +167,14 @@ enum HorizontalDispatchFindPath {
         }
         result["search_ms"] = Int((Date().timeIntervalSince(started) * 1000).rounded())
         return result
+    }
+
+    /// What to say of a search that found nothing and passed over places a
+    /// via fitted because they were in a pad of the net.
+    private static func keptOutOfPads(_ search: HorizontalPathSearch) -> String {
+        search.viasKeptOutOfPads > 0
+            ? " No via was tried in a pad of the net, though one fitted: via_in_pad allows that, for a board made with filled vias."
+            : ""
     }
 
     /// The ops that draw a path: its segments in order, each layer change a

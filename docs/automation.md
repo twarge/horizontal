@@ -59,8 +59,8 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `list_pads` | pads as the board draws them, turned and flipped: `at_mm`, the box the copper fills, the padstack's size, layers, net, the solder mask opening and how far it reaches outside the copper, holes, and the vias standing in each with whether they are on its centre. `get_component` with `include_pads` carries the same rows |
 | `items_near` | what is round a point, or in a box, on each layer: tracks, vias, pads, fills, unplated holes, keepouts and the board's edge, each with its id, net, layers and its copper's distance from the point. `list_tracks` and `list_vias` take the same `region` |
 | `probe_clearance` | whether candidate vias, tracks or parts would fit, many a call, without building ops: the tightest gap on each layer and the item that sets it, and every gap the rules would refuse |
-| `find_via_sites` | the legal positions for a via of a net round a point, each tested on every layer the via reaches, nearest first, with the connected areas of legal positions; or the nearest miss and what blocks it |
-| `find_path` | one connection searched on a fine grid against exact shapes, on one layer or several joined by vias, and not committed: the path with the ops that draw it, or `blocked_by`, the items bounding what it could reach from each end |
+| `find_via_sites` | the legal positions for a via of a net round a point, each tested on every layer the via reaches, nearest first, with the connected areas of legal positions; or the nearest miss and what blocks it. Positions in a pad of the net are counted, and listed only with `via_in_pad` |
+| `find_path` | one connection searched on a fine grid against exact shapes, on one layer or several joined by vias, and not committed: the path with the ops that draw it, or `blocked_by`, the items bounding what it could reach from each end. It places no via in a pad of the net unless `via_in_pad` |
 | `channel_capacity` | along a line across a corridor, the stretches a track's centre may lie on and how many tracks fit in each, layer by layer |
 | `escape_analysis` | for a part's pad field or a region: the gates in its perimeter and what each holds, the gates each net reaches, whether all can get out at once, and which pairs of nets cannot share a layer |
 | `find_stubs` | dead-end runs of track with what each end touches, vias joined on fewer than two layers, tracks inside one pad |
@@ -515,11 +515,30 @@ checks on the staged board and on the board as it is and gives:
   otherwise `"stale"` (or `"none"`), because clearance to fills and the
   silkscreen rule depend on the pour. `ok` is true when nothing is introduced
   and no airwire added.
+- `introduced_kinds`: how many of `introduced` come under each rule
+  (`clearance_copper`, `clearance_silkscreen_exposed_copper`,
+  `board_connectivity`, …; `short` and `plane_over_pad` for the two copper
+  checks that are Horizontal's own), so a list cut at 200 still says what it
+  holds.
+- `set_aside`: findings the plan brings that are counted here and not listed,
+  and do not make `ok` false. `stale_fills` is those against a plane's fill
+  while `planes` is `"stale"`: new copper through a plane of another net
+  touches a fill that the next pour takes out of its way, so on fills as last
+  poured every such track would read as a short. `pour: true` measures what a
+  pour leaves instead. The rest are the kinds `check_ignore` names.
+
+`check_ignore` is a list of kinds to leave out of `introduced`: `"silkscreen"`
+(short for `clearance_silkscreen_exposed_copper`), a rule kind as `board_rules`
+lists them, or `short` and `plane_over_pad`. It is for a routing pass on a
+board whose silkscreen has not been tidied, where every track that passes
+under a reference designator is a finding of its own. `"full"`'s `findings`
+sets nothing aside.
 
 A finding is matched between the two boards by its kind, its check and the
 ids of what it is about, not by where it is. Both boards are checked whole;
-the board as it is is checked once a revision. `check` and `pour` are no part
-of the plan, so the commit that names the dry run's `plan_digest` installs it.
+the board as it is is checked once a revision. `check`, `pour` and
+`check_ignore` are no part of the plan, so the commit that names the dry run's
+`plan_digest` installs it.
 `place_board_text`'s change gives `box_mm` and `runs`, as `list_board_texts`
 does for every text, so a label is placed by dry run.
 
@@ -538,6 +557,22 @@ already standing on the path is used as it is (`through_vias`), and neither
 `find_path` nor `find_via_sites` offers a via that would overlap one
 (`existing_vias` lists them). The same request on the same revision gives the
 same answer.
+
+**Vias and pads.** No clearance rule keeps a via off a pad of its own net, and
+from a surface pad the cheapest change of layer is a via in that pad, which
+draws solder down its hole unless the board is made with filled vias. So
+`find_path` places no via in a pad of the net: the path leaves the pad and
+changes layer beside it. A via of the net that already stands in a pad is
+still gone through. `find_via_sites` leaves such positions out and counts
+them in `in_pad_sites`. `via_in_pad: true` allows them in both, and a
+`find_path` that found nothing says in `vias_kept_out_of_pads` how many
+places a via fitted but for that. `probe_clearance` judges a via where it is
+told to and marks it `in_pad`.
+
+**Keepouts.** A keepout bars the kinds of copper its `types` list and no
+other, for the clearance check, the pour, the probes and the routers alike;
+one that lists none bars nothing. (The routers and the probes used to keep
+tracks out of a keepout with no types, which the check then passed.)
 
 **What the silkscreen rule measures.** To copper the solder mask leaves bare,
 which is any copper inside a mask opening, and the opening is wider than the

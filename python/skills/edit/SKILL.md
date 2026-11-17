@@ -66,11 +66,15 @@ Placing and routing: **probe, dry run with `check`, commit.**
    - `find_via_sites` finds where a via fits round a point; `find_path` finds one connection's path and returns the ops, or `blocked_by`: what to rip up or go round.
    - `channel_capacity` says how many tracks fit through a gap. `escape_analysis` says, before any routing, whether a part's nets can get out and which pairs cannot share a layer.
    - Pass `margin_mm` (0.005 is enough). Copper exactly at a rule is fragile.
-3. Dry-run the ops with `check: "delta"`. `introduced` must be empty or expected, `airwires` must go the right way, and `stretched` lists every track a moved part dragged. Add `pour: true` when planes or silkscreen are near: both depend on the fill.
+3. Dry-run the ops with `check: "delta"`. `introduced` must be empty or expected, `airwires` must go the right way, and `stretched` lists every track a moved part dragged.
+   - Findings against a plane's fill as last poured are not in `introduced`: the next pour moves the fill. `set_aside.stale_fills` counts them. Add `pour: true` to see what a pour would leave, when planes or silkscreen are near.
+   - On a board whose silkscreen is not tidied yet, pass `check_ignore: ["silkscreen"]` so labels over new tracks don't bury the copper findings, and say in your report that silkscreen was left for later.
 4. Commit by `plan_digest`, then `pour_planes` if the board has planes.
 
 - The silkscreen rule measures to the solder mask opening, not the pad, and a track entering a pad is bare from the opening's edge.
 - A via joins a pad only on the pad's centre; anywhere else in it, it needs a track (`needs_link`).
+- `find_path` and `find_via_sites` keep new vias out of the pads of their net. Pass `via_in_pad: true` only when the board is made with filled vias, such as a fine-pitch BGA with vias in the ball pads.
+- Where a block is used more than once and its instances are laid out alike, copper drawn in one is drawn in the others: count the edit once per instance, and check each instance's surroundings.
 - `find_stubs` before removing a "stub": an end on no junction can still lie in copper and carry the net.
 - `render_board` with `grid_mm` puts millimetre axes on the picture; `highlight` and `overlay` show items and candidates.
 

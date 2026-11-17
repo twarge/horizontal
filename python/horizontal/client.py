@@ -508,12 +508,12 @@ class Project:
 
     def find_via_sites(self, net: str, near: dict[str, float], **options: Any) -> dict[str, Any]:
         """Legal via positions round a point, nearest first. options: radius_mm, grid_mm, definition, diameter_mm,
-        hole_mm, margin_mm, link, ignore, planes, limit."""
+        hole_mm, margin_mm, link, ignore, planes, via_in_pad, limit."""
         return self._call("find_via_sites", net=net, near=near, **{k: v for k, v in options.items() if v is not None})
 
     def find_path(self, start: dict[str, Any], to: list[dict[str, Any]], **options: Any) -> dict[str, Any]:
         """A legal path for one connection, or what blocks it; nothing is committed. options: net, layers, width_mm,
-        margin_mm, via, avoid, ignore, grid_mm, window_mm, planes."""
+        margin_mm, via, via_in_pad, avoid, ignore, grid_mm, window_mm, planes."""
         return self._call("find_path", **{"from": start, "to": to}, **{k: v for k, v in options.items() if v is not None})
 
     def channel_capacity(self, width_mm: float, **options: Any) -> dict[str, Any]:
@@ -646,11 +646,11 @@ class Project:
               operation_id: str | None = None, plan_digest: str | None = None,
               pool_items: list[dict[str, Any]] | None = None, block: str | None = None,
               detail: str | None = None, sync: bool | None = None, check: str | None = None,
-              pour: bool | None = None) -> dict[str, Any]:
+              pour: bool | None = None, check_ignore: list[str] | None = None) -> dict[str, Any]:
         """Apply edit operations; each is {"op": name, ...params}. Writes only changed files. ops None commits the
         dry run plan_digest names, at the revision it was made. With dry_run, check ("delta" or "full") runs the
         board checks on the board the batch would leave and reports what it introduces and resolves; pour pours
-        the planes again first.
+        the planes again first, and check_ignore names kinds of finding to leave out of introduced.
         detail="compact" returns ids and counts without echoing the ops or the project summary. A dry run's
         preview gives each file's changed JSON paths; detail="files" adds its whole text before and after."""
         # A commit may name its dry run by plan_digest alone and send no ops.
@@ -663,6 +663,7 @@ class Project:
         if sync is not None: params["sync"] = sync
         if check is not None: params["check"] = check
         if pour: params["pour"] = True
+        if check_ignore: params["check_ignore"] = list(check_ignore)
         result = self._call("apply", **params)
         if not dry_run and "project" in result:
             self.summary = result["project"]

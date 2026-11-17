@@ -17,6 +17,12 @@ enum HorizontalDispatchPlanCheck {
             /// The ids of what it is about: tracks, vias, pads' paths, packages.
             var objects: [String]
             var clearance: HorizontalClearanceFinding?
+            /// The rule it comes under, as board_rules names it
+            /// (clearance_copper, track_width, …); "short" and
+            /// "plane_over_pad" for Horizontal's own two copper checks.
+            var kind: String
+            /// One side of it is a plane's fill.
+            var againstFill = false
         }
 
         var findings: [Finding] = []
@@ -38,6 +44,29 @@ enum HorizontalDispatchPlanCheck {
             throw HorizontalDispatchError.invalidParams("check goes with dry_run: it reports on a plan, and a commit's board is what the check method reads.")
         }
         return mode
+    }
+
+    /// The kinds of finding `check_ignore` may name.
+    static let kinds = HorizontalBoardRuleKind.allCases.map(\.rawValue) + ["short", "plane_over_pad"]
+
+    /// The kinds a dry run asks to have left out of `introduced`: a
+    /// routing pass on a board whose silkscreen is not done yet has no use
+    /// for a finding at every label a new track passes under.
+    static func ignoredKinds(_ params: JSONDictionary) throws -> Set<String> {
+        guard let value = params["check_ignore"] else { return [] }
+        guard params["check"] != nil else {
+            throw HorizontalDispatchError.invalidParams("check_ignore goes with check: it names kinds of finding to leave out of its introduced.")
+        }
+        var ignored = Set<String>()
+        for name in value as? [String] ?? [] {
+            let kind = name == "silkscreen" ? HorizontalBoardRuleKind.clearanceSilkscreenExposedCopper.rawValue : name
+            guard kinds.contains(kind) else {
+                throw HorizontalDispatchError.invalidParams(
+                    "check_ignore names \(name), which is no kind of finding: silkscreen, or a rule kind as board_rules lists them (\(kinds.joined(separator: ", "))).")
+            }
+            ignored.insert(kind)
+        }
+        return ignored
     }
 
     /// The checks on `board`, re-poured first when `pour`. `connect` runs the
@@ -66,7 +95,9 @@ enum HorizontalDispatchPlanCheck {
         for finding in results.clearance {
             guard let json = HorizontalDispatchChecks.clearanceMessages([finding]).first?.json else { continue }
             state.findings.append(.init(key: finding.id, json: json, level: "error",
-                                        objects: [finding.first.id, finding.second.id].filter { !$0.isEmpty }, clearance: finding))
+                                        objects: [finding.first.id, finding.second.id].filter { !$0.isEmpty }, clearance: finding,
+                                        kind: finding.ruleKind.rawValue,
+                                        againstFill: finding.first.type == .plane || finding.second.type == .plane))
         }
         var seen = Set<String>()
         for finding in results.findings {
@@ -102,14 +133,16 @@ enum HorizontalDispatchPlanCheck {
                 copy += 1
             }
             state.findings.append(.init(key: key, json: json, level: finding.level.rawValue,
-                                        objects: finding.objectIDs + finding.componentIDs, clearance: nil))
+                                        objects: finding.objectIDs + finding.componentIDs, clearance: nil,
+                                        kind: finding.kind?.rawValue ?? finding.check,
+                                        againstFill: finding.check == "plane_over_pad"))
         }
         return state
     }
 
     /// The `check` block of a dry run's reply.
     static func run(entry: HorizontalDispatchProjectEntry, staged: HorizontalProject, result: JSONDictionary,
-                    mode: String, pour: Bool) -> JSONDictionary {
+                    mode: String, pour: Bool, ignoring ignored: Set<String> = []) -> JSONDictionary {
         guard let current = entry.project.board, let planned = staged.board else {
             return ["note": "The project has no board, so there is nothing for the board checks to read."]
         }
@@ -131,10 +164,27 @@ enum HorizontalDispatchPlanCheck {
         }
 
         let beforeKeys = Set(before.findings.map(\.key)), afterKeys = Set(after.findings.map(\.key))
-        let introduced = after.findings.filter { !beforeKeys.contains($0.key) }.map { finding -> JSONDictionary in
-            var json = finding.json
-            json["from_ops"] = fromOps(finding)
-            return json
+        // What the plan breaks, less two kinds of finding that say nothing
+        // of it. One against a fill as last poured: a pour takes the fill
+        // out of the way of new copper, so on fills that are stale every
+        // track through a plane of another net reads as a short until then.
+        // And the kinds the caller asked to have left out. Both are counted
+        // in set_aside, so nothing goes unsaid.
+        let stale = after.planes == "stale"
+        var setAside = [String: Int]()
+        var kinds = [String: Int]()
+        var introduced = [JSONDictionary]()
+        for finding in after.findings where !beforeKeys.contains(finding.key) {
+            if stale, finding.againstFill {
+                setAside["stale_fills", default: 0] += 1
+            } else if ignored.contains(finding.kind) {
+                setAside[finding.kind, default: 0] += 1
+            } else {
+                var json = finding.json
+                json["from_ops"] = fromOps(finding)
+                introduced.append(json)
+                kinds[finding.kind, default: 0] += 1
+            }
         }
         var afterItems: HorizontalBoardItems?
         let resolved = before.findings.filter { !afterKeys.contains($0.key) }.map { finding -> JSONDictionary in
@@ -172,6 +222,9 @@ enum HorizontalDispatchPlanCheck {
 
         var check: JSONDictionary = ["mode": mode, "planes": after.planes]
         capped(introduced, "introduced", into: &check)
+        // By kind, so a list that was cut still says what it holds.
+        if !kinds.isEmpty { check["introduced_kinds"] = kinds }
+        if !setAside.isEmpty { check["set_aside"] = setAside }
         capped(resolved, "resolved", into: &check)
         check["unchanged"] = counts(unchanged)
         check["counts"] = ["before": counts(before.findings), "after": counts(after.findings)] as JSONDictionary
@@ -185,8 +238,8 @@ enum HorizontalDispatchPlanCheck {
             capped(after.findings.map(\.json), "findings", into: &check)
         }
         check["ok"] = introduced.isEmpty && after.airwireCount <= before.airwireCount
-        if after.planes == "stale" {
-            check["note"] = "The planes' fills are as last poured, so clearance to them and the silkscreen rule, which measures to copper the mask leaves bare, fills included, may be measured against copper that will move. pour: true pours them again on both boards first."
+        if stale {
+            check["note"] = "The planes' fills are as last poured. A finding against a fill is not in introduced, since a pour takes the fill out of the way of new copper: set_aside.stale_fills counts those. The silkscreen rule, which measures to copper the mask leaves bare, fills included, may be measured against copper that will move. pour: true pours the planes again on both boards first and measures what is left; pour_planes after the commit."
         }
         return check
     }

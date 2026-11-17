@@ -198,13 +198,14 @@ enum HorizontalDispatchMutation {
             // check and pour ask a dry run what its plan does to the board;
             // they are no part of the plan, and its commit does not send them.
             var payload = params.filter { !["handle", "include_metadata", "operation_id", "plan_digest", "deadline_unix_ms", "detail", "dry_run",
-                                            "expected_revision", "check", "pour"].contains($0.key) }
+                                            "expected_revision", "check", "pour", "check_ignore"].contains($0.key) }
             if let ops { payload["ops"] = ops }
             payload["revision"] = entry.revision
             return HorizontalProjectTransaction.digest(try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]))
         }
         let requestKey = try planKeys(nil)
         let checkMode = try HorizontalDispatchPlanCheck.mode(params)
+        let checkIgnored = try HorizontalDispatchPlanCheck.ignoredKinds(params)
         var result: JSONDictionary
         let after: HorizontalDispatchSnapshot
         let staged: HorizontalProject
@@ -297,7 +298,7 @@ enum HorizontalDispatchMutation {
         if dryRun, let checkMode {
             clock = Date()
             result["check"] = HorizontalDispatchPlanCheck.run(entry: entry, staged: staged, result: result, mode: checkMode,
-                                                              pour: params.bool("pour") ?? false)
+                                                              pour: params.bool("pour") ?? false, ignoring: checkIgnored)
             lap("check_ms")
         }
         if dryRun {

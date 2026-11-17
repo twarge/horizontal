@@ -255,6 +255,17 @@ extension RouterIndexTests {
         XCTAssertTrue(index.obstacles.isEmpty)
     }
 
+    /// A keepout that lists no kind of copper bars none: the clearance check
+    /// and the pour pass over it, and so does the router.
+    func testAKeepoutThatListsNoCopperIsNotAnObstacle() {
+        let square = [HorizontalPoint(x: 0, y: 0), HorizontalPoint(x: 1_000_000, y: 0),
+                      HorizontalPoint(x: 1_000_000, y: 1_000_000), HorizontalPoint(x: 0, y: 1_000_000)]
+        let index = HorizontalRouterIndex(world: boardWorld(keepouts: [
+            .init(points: square, layerMin: 0, layerMax: 0, keepoutClass: "", copperPatchTypes: []),
+        ]))
+        XCTAssertTrue(index.obstacles.isEmpty)
+    }
+
     /// The board outline becomes one obstacle PER EDGE. As a single hull it
     /// would be the whole board and collide with every track inside it — which
     /// is why it was left out of the index entirely until now.

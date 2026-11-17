@@ -291,7 +291,7 @@ final class BlockLayoutDispatchClient {
         if method != "open_project" {
             params["handle"] = handle
         }
-        if ["apply", "sync_block_layout", "autoroute"].contains(method), params["dry_run"] as? Bool != true, params["expected_revision"] == nil {
+        if ["apply", "sync_block_layout", "autoroute", "pour_planes"].contains(method), params["dry_run"] as? Bool != true, params["expected_revision"] == nil {
             let handle = self.handle
             params["expected_revision"] = try HorizontalDispatchSession.shared.perform { try $0.entry(handle: handle).revision }
             params["operation_id"] = UUID().uuidString

@@ -205,4 +205,31 @@ final class HorizontalBoardItemsTests: XCTestCase {
         XCTAssertEqual(HorizontalBoardItems.required(try item("v"), try item("other"), layer: 0, rules: board.rules)?.ruleID, "rule-cu")
         XCTAssertEqual(HorizontalBoardItems.required(edge, try item("other"), layer: 0, rules: board.rules)?.kind, .clearanceCopperOther)
     }
+
+    /// A keepout bars the kinds of copper it lists and no other, as the
+    /// clearance check and the pour read it: one that lists vias asks
+    /// nothing of a track, and one that lists none asks nothing of anything.
+    func testAKeepoutAsksOnlyOfTheCopperItLists() throws {
+        var fixture = Fixture()
+        fixture.vias = [Fixture.via("v", at: p(5, 5), net: "net-a")]
+        fixture.tracks = [Fixture.track("t", p(1, 1), p(2, 1), net: "net-a")]
+        func keepout(_ id: String, types: [String]) -> HorizontalKeepout {
+            let ring = HorizontalPolygon(id: "\(id)-polygon", vertices: [p(0, 0), p(8, 0), p(8, 8), p(0, 8)], layer: HorizontalBoardLayers.topCopper)
+            return HorizontalKeepout(id: id, polygonID: ring.id, polygon: ring, keepoutClass: "", allCopperLayers: false,
+                                     exposedCopperOnly: false, copperPatchTypes: types)
+        }
+        fixture.keepouts = [keepout("vias", types: ["via"]), keepout("none", types: [])]
+        let board = fixture.board
+        let items = HorizontalBoardItems(board: board)
+        func item(_ id: String) throws -> HorizontalBoardItem { try XCTUnwrap(items.items.first { $0.id == id }) }
+        XCTAssertNotNil(HorizontalBoardItems.required(try item("vias"), try item("v"), layer: 0, rules: board.rules))
+        XCTAssertNil(HorizontalBoardItems.required(try item("vias"), try item("t"), layer: 0, rules: board.rules))
+        XCTAssertNil(HorizontalBoardItems.required(try item("none"), try item("v"), layer: 0, rules: board.rules))
+        XCTAssertNil(HorizontalBoardItems.required(try item("t"), try item("none"), layer: 0, rules: board.rules))
+        // So a probe for a via finds only the first in its way.
+        let probe = HorizontalBoardProbe(board: board, items: items)
+        let blocker = probe.firstViolation(HorizontalBoardProbe.via(at: p(4, 4), diameter: 0.35 * mm, net: "net-b"), layer: 0)
+        XCTAssertEqual(blocker, items.items.firstIndex { $0.id == "vias" }.map(HorizontalBoardProbe.Obstacle.item))
+        XCTAssertNil(probe.firstViolation(HorizontalBoardProbe.track([p(3, 3), p(4, 3)], width: 0.2 * mm, net: "net-b"), layer: 0))
+    }
 }

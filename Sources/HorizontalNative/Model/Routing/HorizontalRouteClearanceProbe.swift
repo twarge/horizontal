@@ -203,8 +203,9 @@ final class HorizontalRouteClearanceProbe {
             }
         }
 
-        for keepout in board.keepouts
-        where keepout.copperPatchTypes.isEmpty || keepout.copperPatchTypes.contains("track") {
+        // Only a keepout that lists tracks bars one; one that lists nothing
+        // bars nothing, as the clearance check and the pour read it.
+        for keepout in board.keepouts where keepout.copperPatchTypes.contains("track") {
             let points = keepout.polygon.renderVertices(arcPrecision: 24)
             guard points.count >= 3 else { continue }
             let layer = keepout.polygon.layer ?? top

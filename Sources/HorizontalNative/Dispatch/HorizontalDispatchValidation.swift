@@ -18,13 +18,13 @@ enum HorizontalDispatchValidation {
         let booleans: Set<String> = ["include_metadata", "include_unconnected", "include_no_populate", "dry_run",
                                      "mirrored", "redo", "allow_project_changes", "smashed", "airwires", "full",
                                      "include_contents", "connected", "compact", "blank_board", "sync",
-                                     "include_pads", "outline", "silkscreen", "pour", "package_texts", "planes"]
+                                     "include_pads", "outline", "silkscreen", "pour", "package_texts", "planes", "via_in_pad"]
         let objects: Set<String> = ["region", "options", "at", "near", "link", "from", "cut", "starts"]
         // The board's own reads name layers by number, as every op does;
         // render_board names its drawing layers by name.
         let numberedLayers = method != "render_board"
         let arrays: Set<String> = ["ops", "items", "pool_items", "components", "nets", "layers", "layer_ids", "sections", "panes", "parts", "remove", "pads", "targets",
-                                   "candidates", "ignore", "to", "avoid", "between", "highlight", "overlay"]
+                                   "candidates", "ignore", "to", "avoid", "between", "highlight", "overlay", "check_ignore"]
         for (key, value) in params {
             // escape_analysis maps each net to where it has to end; elsewhere
             // targets is a list of names.

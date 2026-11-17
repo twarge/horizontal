@@ -104,9 +104,11 @@ final class HorizontalRouterIndex {
 
         for (index, keepout) in world.keepouts.enumerated() {
             // A keepout that does not exclude tracks is not an obstacle to a
-            // router laying track; one that bars only planes is common.
-            guard keepout.copperPatchTypes.isEmpty
-                    || keepout.copperPatchTypes.contains("track") else { continue }
+            // router laying track; one that bars only planes is common. One
+            // that lists no kind of copper bars none, as the clearance check
+            // and the pour read it: the router used to keep out of those,
+            // refusing a route the check would have passed.
+            guard keepout.copperPatchTypes.contains("track") else { continue }
             // A concave keepout is over-approximated by its octagon, so the
             // router avoids more than required. That refuses legal routes rather
             // than allowing illegal ones, which is the right way to be wrong.

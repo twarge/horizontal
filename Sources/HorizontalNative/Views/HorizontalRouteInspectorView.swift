@@ -377,7 +377,7 @@ final class HorizontalRouteInspectorModel: ObservableObject {
         let ruleWidth = HorizontalRouteWidth.fromRules(net: net, layer: input.layer, rules: rules, tracks: board.tracks).width
 
         let keepoutClasses = Array(Set(board.keepouts
-            .filter { $0.copperPatchTypes.isEmpty || $0.copperPatchTypes.contains("track") }
+            .filter { $0.copperPatchTypes.contains("track") }
             .map(\.keepoutClass))).sorted()
         let spacingKey = "\(net ?? "-")|\(input.layer)|\(input.rulesRevision)|\(keepoutClasses)"
         let spacing: HorizontalRouteSpacing
