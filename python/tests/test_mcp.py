@@ -896,6 +896,110 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
                                   operation_id=str(uuid.uuid4())))["data"]
         self.assertEqual((poured["poured"], poured["fragments"]), (2, 0))
 
+    async def test_a_dry_run_checks_its_plan_and_reads_say_where_things_are(self):
+        tools = {t.name: t for t in await server.mcp.list_tools()}
+        for name in ("list_pads", "items_near"):
+            self.assertTrue(tools[name].annotations.read_only_hint, name)
+        self.assertIn("check", tools["apply_ops"].input_schema["properties"])
+        self.assertIn("region", tools["list_tracks"].input_schema["properties"])
+
+        # The template's one via, and what is round it.
+        via = (await self.call("list_vias", project_ref=self.ref))["data"]["vias"][0]
+        near = (await self.call("items_near", project_ref=self.ref, at={"x_mm": via["x_mm"], "y_mm": via["y_mm"]},
+                                radius_mm=0.5))["data"]
+        # The planes' fills run over it, so it is one of several things there.
+        self.assertIn(("via", via["id"], 0), [(item["kind"], item["id"], item["distance_mm"]) for item in near["items"]])
+        box = {"min_x_mm": via["x_mm"] - 0.1, "min_y_mm": via["y_mm"] - 0.1, "max_x_mm": via["x_mm"] + 0.1, "max_y_mm": via["y_mm"] + 0.1}
+        self.assertEqual((await self.call("list_vias", project_ref=self.ref, region=box))["data"]["total"], 1)
+        self.assertEqual((await self.call("list_pads", project_ref=self.ref))["data"], {"total": 0, "truncated": False, "pads": []})
+        both = await server.mcp.call_tool("items_near", {"project_ref": self.ref, "at": {"x_mm": 0, "y_mm": 0}, "region": box})
+        self.assertTrue(both.is_error)
+
+        # A via of another net a hair from it: the dry run says so, with the
+        # op that did it, and nothing is written.
+        gap = via["size_mm"] + 0.05
+        ops = [{"op": "ensure_net", "name": "SIG"},
+               {"op": "place_via", "x_mm": via["x_mm"] + gap, "y_mm": via["y_mm"], "net": "SIG",
+                "diameter_mm": via["size_mm"], "hole_mm": via["hole_mm"]}]
+        dry = (await self.call("apply_ops", project_ref=self.ref, ops=ops, dry_run=True, check="delta", pour=True))["data"]
+        check = dry["check"]
+        self.assertEqual(check["planes"], "repoured")
+        self.assertFalse(check["ok"])
+        pair = next(f for f in check["introduced"] if f.get("check") == "copper" and f["second"]["type"] == "via" and f["first"]["type"] == "via")
+        self.assertAlmostEqual(pair["distance_mm"], 0.05, places=4)
+        self.assertEqual(pair["from_ops"], [1])
+        self.assertEqual((await self.call("list_vias", project_ref=self.ref))["data"]["total"], 1)
+        refused = await server.mcp.call_tool("apply_ops", {"project_ref": self.ref, "ops": ops, "check": "delta"})
+        self.assertTrue(refused.is_error)
+
+        # A placed text says where it draws, in the compact reply too.
+        text = (await self.call("apply_ops", project_ref=self.ref, dry_run=True,
+                                ops=[{"op": "place_board_text", "text": "REV B", "layer": 20, "x_mm": 1, "y_mm": 1}]))["data"]["changes"][0]
+        self.assertEqual(text["runs"], "right")
+        self.assertLess(text["box_mm"]["min_x_mm"], 1.5)
+        self.assertGreater(text["box_mm"]["max_x_mm"], 3)
+
+    async def test_probes_and_searches_answer_before_anything_is_placed(self):
+        tools = {t.name: t for t in await server.mcp.list_tools()}
+        for name in ("probe_clearance", "find_via_sites", "find_path", "channel_capacity", "escape_analysis", "find_stubs"):
+            self.assertTrue(tools[name].annotations.read_only_hint, name)
+        via = (await self.call("list_vias", project_ref=self.ref))["data"]["vias"][0]
+        x, y, size = via["x_mm"], via["y_mm"], via["size_mm"]
+        revision = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
+        await self.call("apply_ops", project_ref=self.ref, ops=[{"op": "ensure_net", "name": "SIG"}],
+                        expected_revision=revision, operation_id=str(uuid.uuid4()))
+
+        # A via of another net on top of the board's own is refused, one clear of it is not.
+        probed = (await self.call("probe_clearance", project_ref=self.ref, candidates=[
+            {"via": {"x_mm": x + 0.1, "y_mm": y, "net": "SIG", "diameter_mm": 0.4}},
+            {"via": {"x_mm": x + 3, "y_mm": y, "net": "SIG", "diameter_mm": 0.4}},
+            {"track": {"layer": 0, "net": "SIG", "width_mm": 0.2, "points_mm": [[x - 2, y], [x + 2, y]]}}]))["data"]
+        self.assertEqual([c["ok"] for c in probed["candidates"]], [False, True, False])
+        self.assertEqual(probed["candidates"][0]["violations"][0]["item"]["id"], via["id"])
+
+        # Via sites round it leave a hole where it stands.
+        sites = (await self.call("find_via_sites", project_ref=self.ref, net="SIG", near={"x_mm": x, "y_mm": y},
+                                 radius_mm=1, grid_mm=0.1, diameter_mm=0.4, limit=3))["data"]
+        self.assertGreater(sites["total"], 0)
+        self.assertGreater(sites["sites"][0]["distance_mm"], size / 2 + 0.2)
+        self.assertGreaterEqual(sites["sites"][0]["slack_mm"], 0)
+
+        # A path across it goes round, and its ops check clean on a dry run.
+        found = (await self.call("find_path", project_ref=self.ref, start={"x_mm": x - 2, "y_mm": y},
+                                 to=[{"x_mm": x + 2, "y_mm": y}], net="SIG", layers=[0], width_mm=0.2, grid_mm=0.05))["data"]
+        self.assertTrue(found["found"], found)
+        self.assertGreater(found["length_mm"], 4)
+        self.assertGreaterEqual(found["bends"], 2)
+        dry = (await self.call("apply_ops", project_ref=self.ref, ops=found["ops"], dry_run=True, check="delta"))["data"]
+        # The fills are as last poured, so the new tracks lie in the GND plane until
+        # pour_planes; of the copper that stays, they come too close to none.
+        self.assertEqual(dry["check"]["planes"], "stale")
+        self.assertEqual([f for f in dry["check"]["introduced"]
+                          if f.get("category") == "clearance" and "plane" not in (f["first"]["type"], f["second"]["type"])], [])
+        # Fenced in on both sides of the via there is no path, and the fence is named.
+        fenced = (await self.call("find_path", project_ref=self.ref, start={"x_mm": x - 2, "y_mm": y},
+                                  to=[{"x_mm": x + 2, "y_mm": y}], net="SIG", layers=[0], width_mm=0.2, grid_mm=0.05, window_mm=1,
+                                  avoid=[{"box_mm": [x - 0.5, y - 4, x + 0.5, y + 4]}]))["data"]
+        self.assertFalse(fenced["found"])
+        self.assertIn("avoid", [b["kind"] for b in fenced["blocked_by"]["from"]])
+
+        # A cut through the via has a gap each side of it.
+        cut = (await self.call("channel_capacity", project_ref=self.ref, width_mm=0.2, net="SIG", layers=[0],
+                               cut={"from_mm": [x - 1, y], "to_mm": [x + 1, y]}))["data"]
+        self.assertEqual(len(cut["layers"][0]["gaps"]), 2)
+        self.assertEqual(cut["layers"][0]["gaps"][0]["bounded_by"][1]["id"], via["id"])
+
+        # A net started in a box round nothing reaches every side of it.
+        escape = (await self.call("escape_analysis", project_ref=self.ref, width_mm=0.2, layers=[0], grid_mm=0.1,
+                                  region={"min_x_mm": x + 5, "min_y_mm": y - 1, "max_x_mm": x + 7, "max_y_mm": y + 1},
+                                  starts={"SIG": {"x_mm": x + 6, "y_mm": y}}))["data"]
+        self.assertTrue(escape["feasible"])
+        self.assertEqual({g["side"] for g in escape["gates"]}, {"north", "east", "south", "west"})
+        self.assertEqual(len(escape["reach"][0]["gates"]["0"]), 4)
+
+        stubs = (await self.call("find_stubs", project_ref=self.ref))["data"]
+        self.assertEqual((stubs["stub_count"], stubs["in_pad_count"]), (0, 0))
+
     async def test_hierarchy_stackup_and_autoroute_are_advertised(self):
         tools = {t.name: t for t in await server.mcp.list_tools()}
         self.assertTrue(tools["list_block_instances"].annotations.read_only_hint)

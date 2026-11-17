@@ -497,7 +497,17 @@ final class HorizontalDispatchProjectEntry {
     func invalidateIndex() {
         cachedIndex = nil
         cachedPoolIndex = nil
+        cachedBoardItems = nil
+        cachedBoardCheck = nil
     }
+
+    /// The board's items as the checks measure them
+    /// (`HorizontalDispatchBoardGeometry.items`), for the revision in `key`.
+    var cachedBoardItems: (key: String, items: HorizontalBoardItems)?
+    /// The board checks' findings on the board as it is, which every dry run
+    /// with `check` compares its staged board against
+    /// (`HorizontalDispatchPlanCheck`).
+    var cachedBoardCheck: (key: String, state: HorizontalDispatchPlanCheck.State)?
 
     private var cachedPoolIndex: HorizontalDispatchPoolIndex?
 

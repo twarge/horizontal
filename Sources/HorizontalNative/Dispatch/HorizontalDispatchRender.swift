@@ -93,6 +93,7 @@ enum HorizontalDispatchRender {
         mirrored: Bool,
         region: HorizontalRect? = nil,
         airwires: [HorizontalSegment]? = nil,
+        annotations: HorizontalRenderAnnotations? = nil,
         dpi: Double,
         maxPixels: Int
     ) throws -> Image {
@@ -103,10 +104,12 @@ enum HorizontalDispatchRender {
         // fabrication drawings, which shouldn't gain them; they go on the
         // raster instead, on the page the exporter laid out.
         let mapping = { (pageSize: CGSize) in PageMapping(bounds: boardPageBounds(board), margin: 36, pageSize: pageSize) }
-        let overlay = airwires.map { segments in
-            { (context: CGContext, pageSize: CGSize, pixelsPerPoint: CGFloat) in
-                drawAirwires(segments, in: context, mapping: mapping(pageSize), pixelsPerPoint: pixelsPerPoint)
+        let notes = annotations.flatMap { $0.isEmpty ? nil : $0 }
+        let overlay: ((CGContext, CGSize, CGFloat) -> Void)? = airwires == nil && notes == nil ? nil : { context, pageSize, pixelsPerPoint in
+            if let airwires {
+                drawAirwires(airwires, in: context, mapping: mapping(pageSize), pixelsPerPoint: pixelsPerPoint)
             }
+            notes?.draw(in: context, mapping: mapping(pageSize), pixelsPerPoint: pixelsPerPoint)
         }
         let selected = try resolveBoardLayers(project: project, names: layerNames, ids: layerIDs)
         let pdfURL = try exportPDF(project: project, section: .boardDrawing) { settings in

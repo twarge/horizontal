@@ -73,7 +73,8 @@ enum HorizontalDispatchMethods {
         .init(
             name: "get_component",
             summary: "One component in full: pins with their nets, symbol placements (each with its custom_value and drawn_value, what its $VALUE text draws), board placement.",
-            params: ["handle": "Project handle.", "refdes": "Reference designator, e.g. U1.", "id": "Component uuid (alternative to refdes)."],
+            params: ["handle": "Project handle.", "refdes": "Reference designator, e.g. U1.", "id": "Component uuid (alternative to refdes).",
+                     "include_pads": "Also list its pads on the board as list_pads gives them: where each is, its size, mask opening, holes and the vias in it (default false)."],
             handler: getComponent
         ),
         .init(name: "list_nets", summary: "Every net with class, flags, pin count, routed length, and its diff pair partner if it has one.", params: ["handle": "Project handle."], handler: { session, params in
@@ -235,17 +236,18 @@ enum HorizontalDispatchMethods {
                      "width_mm": "Track width (optional; the first track_width rule by order that takes the net, on the layer, else required).",
                      "max_routes": "Stop after this many airwires; default 20, maximum 200.",
                      "expected_revision": "The revision this was planned against.",
-                     "operation_id": "Caller-chosen id for this mutation.", "dry_run": "Report without writing (default false).",
+                     "operation_id": "Caller-chosen id for this mutation.", "dry_run": "Report without writing (default false).", "check": "With dry_run, run the board checks on the board this would leave: \"delta\" or \"full\", as apply's.", "pour": "With check, pour the planes again first (default false).",
                      "sync": "Route the same in the block instances laid out like the one routed (default true)."],
             handler: autoroute
         ),
         .init(
             name: "list_board_texts",
-            summary: "Free text on the board layers, with the ids remove_board_text takes and place_board_text takes to move or change one. The reference designators Horizon smashed out of packages are left out unless smashed is passed or a text or component search asks for them: on a populated board they are most of its texts, and each belongs to its package. A text that draws something other than what it stores (\"$RD\", \"$project_title\") says what in drawn.",
+            summary: "Free text on the board layers, with the ids remove_board_text takes and place_board_text takes to move or change one. Each says where it draws: box_mm, the box its strokes fill, and runs, the way it runs from its position (a mirrored text on the bottom runs left). The reference designators Horizon smashed out of packages are left out unless smashed is passed or a text or component search asks for them: on a populated board they are most of its texts, and each belongs to its package. A text that draws something other than what it stores (\"$RD\", \"$project_title\") says what in drawn.",
             params: ["handle": "Project handle.", "layer": "Only texts on this layer (optional).",
                      "smashed": "Also list texts smashed out of packages, marked from_smash with the package that carries them and the refdes of its part (default: only when searching with text or component; false keeps them out of a text search).",
                      "component": "Only the texts smashed out of this component's package, by refdes or id (optional; implies smashed).",
-                     "text": "Only texts containing this, as stored or as drawn, ignoring case, smashed ones included unless smashed is false (optional)."],
+                     "text": "Only texts containing this, as stored or as drawn, ignoring case, smashed ones included unless smashed is false (optional).",
+                     "package_texts": "Also list the texts packages draw themselves, which no board text stands for until the package is smashed: marked smashed false, with the package and refdes, an id of package/text/id that no op takes, and where they draw (default: when smashed ones are listed)."],
             handler: listBoardTexts
         ),
         .init(
@@ -298,7 +300,8 @@ enum HorizontalDispatchMethods {
                      "layer": "Only tracks on this layer number (optional).", "limit": "Maximum tracks to return; default 200, maximum 5000.",
                      "component": "Only tracks with an end on this component's pads, by refdes or id (optional).",
                      "pads": "With component, only these of its pads, by name or uuid (optional).",
-                     "connected": "With component, every track joined to its pads through junctions and vias, out to the next pad, rather than only those ending on them (default false)."],
+                     "connected": "With component, every track joined to its pads through junctions and vias, out to the next pad, rather than only those ending on them (default false).",
+                     "region": "Only tracks whose copper reaches into {min_x_mm, min_y_mm, max_x_mm, max_y_mm} (optional)."],
             handler: listTracks
         ),
         .init(
@@ -306,8 +309,117 @@ enum HorizontalDispatchMethods {
             summary: "Vias on the board, with the net, position, the layers each spans, whether it is locked and the padstack or via definition it takes its shape from. One taking its shape from the via rules with no parameters to show for it is marked unresolved.",
             params: ["handle": "Project handle.", "net": "Only vias on this net, by name or id (optional).",
                      "limit": "Maximum vias to return; default 200, maximum 5000.",
-                     "component": "Only vias under this component's package — inside its courtyard, else its pads' bounds — by refdes or id (optional)."],
+                     "component": "Only vias under this component's package — inside its courtyard, else its pads' bounds — by refdes or id (optional).",
+                     "region": "Only vias whose copper reaches into {min_x_mm, min_y_mm, max_x_mm, max_y_mm} (optional)."],
             handler: listVias
+        ),
+        .init(
+            name: "list_pads",
+            summary: "Pads of the packages on the board, as the board draws them: where each is (at_mm), the box its copper fills, its padstack's size and turn, the copper layers it is on, its net, its solder mask opening (which is what the silkscreen rule measures to), its holes and the vias standing in it. Filter by component, net, layer or region; the result says whether it was truncated.",
+            params: ["handle": "Project handle.", "component": "Only this component's pads, by refdes or id (optional).",
+                     "pads": "With component, only these pads, by name or uuid (optional).",
+                     "net": "Only pads on this net, by name or id (optional).",
+                     "layer": "Only pads with copper on this layer number (optional).",
+                     "region": "Only pads whose copper reaches into {min_x_mm, min_y_mm, max_x_mm, max_y_mm} (optional).",
+                     "outline": "Also give each copper shape and mask opening as a polygon, outline_mm, arcs as the checks tessellate them (default false).",
+                     "limit": "Maximum pads to return; default 200, maximum 5000."],
+            handler: HorizontalDispatchBoardGeometry.listPads
+        ),
+        .init(
+            name: "items_near",
+            summary: "What is on the board near a point, or in a box: tracks, net ties, vias, pads, planes' fills, unplated holes, keepouts and the board's edge, each with its id, net, the copper layers it is on and, for a point, how far its copper is from it and where it comes nearest. The shapes are the ones check measures.",
+            params: ["handle": "Project handle.", "at": "{x_mm, y_mm}: the point to look round. This or region.",
+                     "radius_mm": "With at, how far to look (optional; default 1).",
+                     "region": "{min_x_mm, min_y_mm, max_x_mm, max_y_mm}: everything reaching into this box, instead of at.",
+                     "layers": "Only what is on these layer numbers (optional; default every copper layer).",
+                     "silkscreen": "Also list silkscreen lines, arcs and texts (default false).",
+                     "limit": "Maximum items to return, nearest first; default 200, maximum 5000."],
+            handler: HorizontalDispatchBoardGeometry.itemsNear
+        ),
+        .init(
+            name: "probe_clearance",
+            summary: "Would this via, track or part fit here? Tests candidate shapes against the board as it is, without building ops or changing anything: each comes back ok or not, with the tightest gap on each layer and the item that sets it, and every gap the rules would refuse. A through via is tested on every layer it reaches, pads on the far side included. One call carries many candidates.",
+            params: ["handle": "Project handle.",
+                     "candidates": "Array of {\"via\": {x_mm, y_mm, net, definition | diameter_mm, hole_mm}}, {\"track\": {layer, net, width_mm, points_mm: [[x, y], …]}} or {\"component\": {refdes, x_mm, y_mm, angle_deg, bottom}}: the part's pads and holes where they would be, the tracks bound to them stretched, and its silkscreen against the mask openings.",
+                     "margin_mm": "Added to what the rules ask (optional; default 0).",
+                     "ignore": "Ids of tracks, vias or pads to treat as gone, for a rip-up question (optional).",
+                     "planes": "Also measure against the planes' fills as last poured (default false: a pour gives way to new copper)."],
+            handler: HorizontalDispatchProbe.probeClearance
+        ),
+        .init(
+            name: "find_via_sites",
+            summary: "Where near a point can a via of a net go? Tests a grid of positions round it, each on every copper layer the via reaches, and returns the legal ones nearest first, each with its tightest gap and limiting item on every layer, and the connected areas of legal positions with their size. When none is legal it names the nearest miss and what blocks it.",
+            params: ["handle": "Project handle.", "net": "The net the via would carry, by name or id.",
+                     "near": "{x_mm, y_mm}: where to look round.", "radius_mm": "How far to look (optional; default 1).",
+                     "grid_mm": "The pitch of the positions tested (optional; default 0.025).",
+                     "definition": "A board via definition to take the size and span from, by name or uuid (optional).",
+                     "diameter_mm": "The via's diameter, where no definition or via rule gives it (optional).",
+                     "hole_mm": "Its drill (optional).",
+                     "margin_mm": "Added to what the rules ask (optional; default 0).",
+                     "link": "{layer, to, width_mm, bends}: keep only sites a track of that width can join to the anchor `to` ({junction}, {component, pad}, {via} or {x_mm, y_mm}) on that layer, straight (bends 0) or with one 45° corner (bends 1, the default) (optional).",
+                     "ignore": "Ids of tracks, vias or pads to treat as gone (optional).",
+                     "planes": "Also keep clear of the planes' fills as last poured (default false).",
+                     "limit": "Maximum sites to return, nearest first; default 50, maximum 2000."],
+            handler: HorizontalDispatchProbe.findViaSites
+        ),
+        .init(
+            name: "find_path",
+            summary: "Is there a legal path for this connection on these layers, and if not, what blocks it? Searches a fine grid against the board's exact shapes with the clearance the rules ask of each, on one layer or several joined by vias, and commits nothing. A path comes back as a polyline per layer with its length, bends, tightest gap and the ops that draw it; no path comes back as blocked_by, the items bounding what the search could reach from each end.",
+            params: ["handle": "Project handle.",
+                     "from": "Where it starts: {component, pad}, {junction}, {via} or {x_mm, y_mm}.",
+                     "to": "Array of ends, any of which will do: the same forms, or {via_site: {x_mm, y_mm}}.",
+                     "net": "Net name or id (optional; taken from the ends when one names it).",
+                     "layers": "The copper layer numbers the path may use (optional; default the layer the start is on).",
+                     "width_mm": "Track width (optional when a track_width rule takes the net).",
+                     "margin_mm": "Added to what the rules ask (optional; default 0).",
+                     "via": "A via definition, by name, for changing layers, or \"rules\" for the via rule's (optional; without it the path stays on one layer).",
+                     "avoid": "Array of {layer?, box_mm: [min_x, min_y, max_x, max_y]} the path keeps out of (optional).",
+                     "ignore": "Ids of tracks, vias or pads to treat as gone, for a rip-up question (optional).",
+                     "grid_mm": "The search grid's pitch (optional; default 0.025).",
+                     "window_mm": "How far beyond the ends' box the search may go (optional; default 2).",
+                     "planes": "Also keep clear of the planes' fills as last poured (default false)."],
+            handler: HorizontalDispatchFindPath.findPath
+        ),
+        .init(
+            name: "channel_capacity",
+            summary: "How many tracks fit through a gap? Along a line drawn across a corridor, for each layer: the gaps between obstacles, the stretch of the line a track's centre may lie on in each, how many tracks of the width fit side by side there, and what bounds it.",
+            params: ["handle": "Project handle.",
+                     "cut": "{from_mm: [x, y], to_mm: [x, y]}: the line across the corridor. This or between.",
+                     "between": "Two item ids — tracks, vias, pads by their package/pad/id — to measure between, from the nearest point of one to the other's, instead of cut.",
+                     "layers": "The copper layer numbers to measure on (optional; default every one, or with between those the two share).",
+                     "width_mm": "The width of the tracks to fit.",
+                     "net": "The net of those tracks, which its own copper does not obstruct (optional).",
+                     "spacing_mm": "What tracks side by side keep between them (optional; default the rules' track to track clearance).",
+                     "margin_mm": "Added to what the rules ask (optional; default 0).",
+                     "ignore": "Ids of tracks, vias or pads to treat as gone (optional).",
+                     "planes": "Also keep clear of the planes' fills as last poured (default false)."],
+            handler: HorizontalDispatchChannels.channelCapacity
+        ),
+        .init(
+            name: "escape_analysis",
+            summary: "Can these nets leave this part, on which layers, and which pairs must cross? Without routing anything: the gates in the perimeter of a component's pad field (or of a region) on each layer with what each holds, the gates each net reaches, whether every net can have a gate at once or which gates are too few, and, for nets given targets, the pairs that cannot share a layer and a layer for each net that keeps them apart.",
+            params: ["handle": "Project handle.", "component": "The part whose pad field to leave, by refdes or id. This, or region with starts.",
+                     "region": "{min_x_mm, min_y_mm, max_x_mm, max_y_mm} to leave instead of a component's pad field.",
+                     "starts": "With region: {net: where it enters or begins}, each {component, pad}, {junction}, {via} or {x_mm, y_mm}.",
+                     "nets": "The nets to analyse, by name or id (optional with component; default its nets that still have airwires).",
+                     "targets": "{net: where it has to end}, in the same forms: the crossing test is run for nets that have one (optional).",
+                     "layers": "The copper layer numbers to consider (optional; default every one).",
+                     "width_mm": "The width of the tracks that leave.",
+                     "via": "A via definition, by name, or \"rules\": where it fits in a pad, the pad's net can start on the layers it reaches (optional).",
+                     "ring_mm": "With component, how far outside its pads the perimeter is drawn (optional; default 0.3).",
+                     "grid_mm": "The pitch of the flood and of the crossing test's searches (optional; default 0.05).",
+                     "window_mm": "How far beyond its ends a crossing test's search may go (optional; default 2).",
+                     "margin_mm": "Added to what the rules ask (optional; default 0).",
+                     "ignore": "Ids of tracks, vias or pads to treat as gone (optional)."],
+            handler: HorizontalDispatchChannels.escapeAnalysis
+        ),
+        .init(
+            name: "find_stubs",
+            summary: "Copper that goes nowhere: dead-end runs of track with their length and what each end touches (by junction, and by the copper the end lies in, since a run on no shared junction can still be carrying its net), vias that copper of their net meets on fewer than two layers, and tracks lying wholly inside one pad.",
+            params: ["handle": "Project handle.", "net": "Only this net's, by name or id (optional).",
+                     "region": "Only what reaches into {min_x_mm, min_y_mm, max_x_mm, max_y_mm} (optional).",
+                     "limit": "Maximum of each list to return; default 200, maximum 5000."],
+            handler: HorizontalDispatchStubs.findStubs
         ),
         .init(
             name: "list_texts",
@@ -365,6 +477,8 @@ enum HorizontalDispatchMethods {
                 "block": "Block uuid or name to edit (optional; default the top block). A sub-block has no board, so board operations are refused for one.",
                 "pool_items": "Pool items to install in the same transaction.",
                 "dry_run": "Validate and report without writing (default false).",
+                "check": "With dry_run, also run the board checks on the board the batch would leave and say what it changes: \"delta\" for the findings it introduces and resolves, \"full\" for every finding of that board as well. The reply's check also counts airwires before and after and lists the tracks a moved part stretched.",
+                "pour": "With check, pour the planes again first, on the board as it is and as the batch would leave it, so clearance to fills and the silkscreen rule are measured against copper that is there (default false: the fills stay as last poured, and the reply says planes are stale).",
                 "sync": "Make the batch's edits of a block instance's parts and copper in the instances laid out like it too (default true); the reply's synced says what that did."
             ],
             handler: applyOperations
@@ -462,6 +576,9 @@ enum HorizontalDispatchMethods {
                 "layer_ids": "Integer IDs from board_info.drawing_layers. Mutually exclusive with layers; empty uses defaults.",
                 "mirrored": "View from the bottom (default false).",
                 "region": "Optional {min_x_mm, min_y_mm, max_x_mm, max_y_mm} to render only that part of the board.",
+                "grid_mm": "Draw a grid at this pitch with its lines labelled in board millimetres along the left and bottom edges; the pitch is widened by 2, 5, 10… to keep it to about forty lines (optional).",
+                "highlight": "Ids of tracks, vias, pads (package/pad/id), planes or holes to pick out in magenta (optional).",
+                "overlay": "Shapes that are not on the board, drawn in orange: {via: {x_mm, y_mm, diameter_mm}}, {track: {points_mm, width_mm}} or {box_mm: [min_x, min_y, max_x, max_y]} (optional).",
                 "dpi": "Resolution (default 150).",
                 "max_pixels": "Cap on the longer side (default 4096).",
                 "output_path": "Write the PNG here instead of returning it base64-encoded."
@@ -1004,6 +1121,13 @@ enum HorizontalDispatchMethods {
             }
             return pinJSON
         }
+        if params.bool("include_pads") == true {
+            if let board = entry.project.board, let package = component.boardPlacement?.instanceID, !package.isEmpty {
+                json["pads"] = HorizontalDispatchBoardGeometry.padsJSON(package: package, board: board)
+            } else {
+                json["pads"] = [JSONDictionary]()
+            }
+        }
         return json
     }
 
@@ -1270,6 +1394,11 @@ enum HorizontalDispatchMethods {
             "net_classes": classes.map { ["id": $0.key, "name": $0.value] as JSONDictionary }
                 .sorted { ($0.string("name") ?? "") < ($1.string("name") ?? "") },
             "stackup": stackup,
+            // What the rules give every pad and via: the solder mask opening
+            // is this much outside the copper, and copper inside an opening
+            // is what the silkscreen rule calls exposed.
+            "parameters_mm": board.ruleParameters.mapValues { HorizontalDispatchJSON.mm(Double($0)) },
+            "via_solder_mask_expansion_mm": HorizontalDispatchJSON.mm(board.ruleViaMaskExpansion),
             "note": rules.isEmpty
                 ? "This board declares no rules, so nothing here constrains a route. Horizon falls back to its own defaults."
                 : "Rules are given as the file states them; check validates them."
@@ -1760,12 +1889,46 @@ enum HorizontalDispatchMethods {
     @Sendable private static func renderBoard(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
         let layers = params["layers"] as? [String]
+        var annotations = HorizontalRenderAnnotations(gridMM: params.double("grid_mm"), region: try regionParam(params),
+                                                      mirrored: params.bool("mirrored") ?? false)
+        if let gridMM = annotations.gridMM, gridMM <= 0 { throw HorizontalDispatchError.invalidParams("grid_mm is more than 0.") }
+        if let ids = params["highlight"] as? [String], !ids.isEmpty {
+            let wanted = Set(ids.map { $0.lowercased() })
+            annotations.highlight = try HorizontalDispatchBoardGeometry.items(entry).items.filter { wanted.contains($0.id.lowercased()) }.map(\.shape)
+            guard !annotations.highlight.isEmpty else {
+                throw HorizontalDispatchError.notFound("highlight names no track, via, pad, plane or hole on the board; the ids are the ones list_tracks, list_vias and items_near give.")
+            }
+        }
+        for (index, candidate) in (params["overlay"] as? [JSONDictionary] ?? []).enumerated() {
+            func point(_ json: JSONDictionary) -> HorizontalPoint? {
+                guard let x = json.double("x_mm"), let y = json.double("y_mm") else { return nil }
+                return HorizontalPoint(x: x * 1_000_000, y: y * 1_000_000)
+            }
+            if let via = candidate.dictionary("via"), let at = point(via) {
+                annotations.overlay.append(.disc(at, radius: (via.double("diameter_mm") ?? 0.5) * 500_000))
+            } else if let track = candidate.dictionary("track"), let raw = track["points_mm"] as? [[Any]] {
+                let points = raw.compactMap { pair -> HorizontalPoint? in
+                    guard pair.count == 2, let x = (pair[0] as? NSNumber)?.doubleValue, let y = (pair[1] as? NSNumber)?.doubleValue else { return nil }
+                    return HorizontalPoint(x: x * 1_000_000, y: y * 1_000_000)
+                }
+                annotations.overlay.append(.path(points, halfWidth: (track.double("width_mm") ?? 0.2) * 500_000))
+            } else if let box = candidate["box_mm"] as? [Any], box.count == 4 {
+                let n = box.compactMap { ($0 as? NSNumber)?.doubleValue }.map { $0 * 1_000_000 }
+                guard n.count == 4 else { throw HorizontalDispatchError.invalidParams("overlay[\(index)].box_mm is [min_x, min_y, max_x, max_y].") }
+                annotations.overlay.append(.path([HorizontalPoint(x: n[0], y: n[1]), HorizontalPoint(x: n[2], y: n[1]), HorizontalPoint(x: n[2], y: n[3]),
+                                                  HorizontalPoint(x: n[0], y: n[3]), HorizontalPoint(x: n[0], y: n[1])], halfWidth: 0))
+            } else {
+                throw HorizontalDispatchError.invalidParams(
+                    "overlay[\(index)] is {\"via\": {x_mm, y_mm, diameter_mm}}, {\"track\": {points_mm, width_mm}} or {\"box_mm\": [min_x, min_y, max_x, max_y]}.")
+            }
+        }
         let image = try HorizontalDispatchRender.renderBoard(
             project: try entry.snapshot?.materializedProject() ?? entry.project,
             layerNames: layers,
             layerIDs: params["layer_ids"] as? [Int],
             mirrored: params.bool("mirrored") ?? false,
             region: try regionParam(params),
+            annotations: annotations,
             dpi: params.double("dpi") ?? 150,
             maxPixels: params.int("max_pixels") ?? 4096
         )
@@ -2812,6 +2975,13 @@ enum HorizontalDispatchMethods {
         return json
     }
 
+    /// What a list cut short says of itself, so half a board is not taken
+    /// for the whole of it.
+    static func truncationNote(shown: Int, of total: Int, what: String, filters: String) -> String {
+        "TRUNCATED: these are the first \(shown) of \(total) \(what), in net order, and the other \(total - shown) are not here. "
+            + "Filter by \(filters), or raise limit (at most 5000)."
+    }
+
     private static func readLimit(_ params: JSONDictionary) -> Int {
         min(max(params.int("limit") ?? 200, 1), 5000)
     }
@@ -3016,7 +3186,36 @@ enum HorizontalDispatchMethods {
                 drawn[String(text.id[range.upperBound...]).lowercased()] = text.text
             }
         }
-        return json.dictionaryMap("texts").compactMap { id, item -> JSONDictionary? in
+        let extents = entry.project.board.map(HorizontalDispatchBoardGeometry.textExtents) ?? [:]
+        // A package's own texts are no board texts: nothing in the file
+        // stands for one until its package is smashed. They are drawn, and
+        // checked, all the same.
+        var ownTexts = [JSONDictionary]()
+        if params.bool("package_texts") ?? smashed, let board = entry.project.board {
+            for drawn in HorizontalBoardTextExtents.drawnTexts(of: board) where !drawn.text.fromSmash {
+                guard let package = drawn.packageID, layer == nil || layer == drawn.text.layer else { continue }
+                let refdes = refdesByPackage[package]
+                if let owner, refdes?.caseInsensitiveCompare(owner) != .orderedSame { continue }
+                let stored = drawn.text.placeholder?.stored ?? drawn.text.text
+                if let needle, !stored.localizedCaseInsensitiveContains(needle), !drawn.text.text.localizedCaseInsensitiveContains(needle) { continue }
+                var row: JSONDictionary = [
+                    "id": drawn.text.id, "text": stored,
+                    "layer": drawn.text.layer as Any? as Any,
+                    "layer_name": drawn.text.layer.map { HorizontalBoardLayers.name(for: $0) } as Any? as Any,
+                    "x_mm": HorizontalDispatchJSON.mm(drawn.text.position.x), "y_mm": HorizontalDispatchJSON.mm(drawn.text.position.y),
+                    "angle_deg": HorizontalDispatchJSON.degrees(drawn.text.angle), "mirror": drawn.text.mirrored,
+                    "size_mm": HorizontalDispatchJSON.mm(drawn.text.size), "width_mm": HorizontalDispatchJSON.mm(drawn.text.width),
+                    "origin": drawn.text.origin.rawValue, "font": drawn.text.font.rawValue,
+                    "from_smash": false, "from_package": true, "smashed": false, "package": package,
+                    "note": "The package draws this itself; smash the package to get a board text place_board_text can move."
+                ]
+                if stored != drawn.text.text { row["drawn"] = drawn.text.text }
+                if let refdes { row["refdes"] = refdes }
+                row.merge(HorizontalDispatchBoardGeometry.json(HorizontalBoardTextExtents.extent(of: drawn.text))) { current, _ in current }
+                ownTexts.append(row)
+            }
+        }
+        return (json.dictionaryMap("texts").compactMap { id, item -> JSONDictionary? in
             let textLayer = item.int("layer")
             guard layer == nil || layer == textLayer else { return nil }
             guard smashed || item.bool("from_smash") != true else { return nil }
@@ -3048,8 +3247,11 @@ enum HorizontalDispatchMethods {
             ]
             if let shown { row["drawn"] = shown }
             if let refdes { row["refdes"] = refdes }
+            if let extent = extents[id.lowercased()] {
+                row.merge(HorizontalDispatchBoardGeometry.json(extent)) { current, _ in current }
+            }
             return row
-        }.sorted(by: textOrder)
+        } + ownTexts).sorted(by: textOrder)
     }
 
     /// The component a text listing is narrowed to, by refdes or id.
@@ -3307,8 +3509,13 @@ enum HorizontalDispatchMethods {
             let keyed = Dictionary(tracks.map { ($0.key.lowercased(), $0.value) }, uniquingKeysWith: { first, _ in first })
             onPads = trackIDs(onPads: Set(pads.map { "\(filter.package)/\($0)" }), tracks: keyed, connected: params.bool("connected") ?? false)
         }
+        let region = try HorizontalDispatchBoardGeometry.region(params)
         let matched = tracks.compactMap { id, item -> JSONDictionary? in
             guard onPads?.contains(id.lowercased()) ?? true else { return nil }
+            if let region {
+                guard let segment = resolved[id.lowercased()],
+                      HorizontalDispatchBoardGeometry.reaches(.path(segment.pathPoints, halfWidth: segment.width / 2), into: region) else { return nil }
+            }
             let netID = resolved[id.lowercased()]?.netID?.lowercased()
             guard wanted == nil || wanted == netID else { return nil }
             let trackLayer = item.int("layer")
@@ -3331,7 +3538,9 @@ enum HorizontalDispatchMethods {
             return json
         }.sorted { ($0.string("net_name") ?? "", $0.string("id") ?? "") < ($1.string("net_name") ?? "", $1.string("id") ?? "") }
         let limit = readLimit(params)
-        return ["total": matched.count, "truncated": matched.count > limit, "tracks": Array(matched.prefix(limit))] as JSONDictionary
+        var reply: JSONDictionary = ["total": matched.count, "truncated": matched.count > limit, "tracks": Array(matched.prefix(limit))]
+        if matched.count > limit { reply["note"] = Self.truncationNote(shown: limit, of: matched.count, what: "tracks", filters: "net, layer, component or region") }
+        return reply
     }
 
     /// Where a package sits on the board: its courtyard outlines, or the box
@@ -3356,8 +3565,12 @@ enum HorizontalDispatchMethods {
         let area = try packageFilter(entry, params).map { filter in
             entry.project.board.map { packageArea(filter.package, board: $0) } ?? []
         }
+        let region = try HorizontalDispatchBoardGeometry.region(params)
         let matched = try boardJSON(entry).dictionaryMap("vias").compactMap { id, item -> JSONDictionary? in
             let via = resolved[id.lowercased()]
+            if let region {
+                guard let via, HorizontalDispatchBoardGeometry.reaches(.disc(via.position, radius: via.size / 2), into: region) else { return nil }
+            }
             if let area {
                 guard let via, area.contains(where: { HorizontalBoardOutlines.contains(via.position, in: $0) }) else { return nil }
             }
@@ -3396,7 +3609,9 @@ enum HorizontalDispatchMethods {
             return json
         }.sorted { ($0.string("net_name") ?? "", $0.string("id") ?? "") < ($1.string("net_name") ?? "", $1.string("id") ?? "") }
         let limit = readLimit(params)
-        return ["total": matched.count, "truncated": matched.count > limit, "vias": Array(matched.prefix(limit))] as JSONDictionary
+        var reply: JSONDictionary = ["total": matched.count, "truncated": matched.count > limit, "vias": Array(matched.prefix(limit))]
+        if matched.count > limit { reply["note"] = Self.truncationNote(shown: limit, of: matched.count, what: "vias", filters: "net, component or region") }
+        return reply
     }
 
     @Sendable private static func listTexts(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {

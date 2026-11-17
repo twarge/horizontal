@@ -56,6 +56,14 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `find_dangling` | drawing that connects nothing: wiring islands that reach no pin, port or bus ripper (even when a label or power symbol names a net), wire ends stopping at a bare junction, and wires whose ends name nothing — with ids and positions |
 | `find_overlaps` | what looks connected and is not: a wire over a pin it does not end on, a junction on a pin with no wire to it, junctions on one spot no wire joins, and a wire ending part way along another |
 | `list_tracks`, `list_vias` | copper, filtered by net or layer; a track end is a pad (naming the component) or a junction, and `locked` says whether the app's Lock holds it. Both wrap their answer in `total`/`truncated`, because a board has thousands |
+| `list_pads` | pads as the board draws them, turned and flipped: `at_mm`, the box the copper fills, the padstack's size, layers, net, the solder mask opening and how far it reaches outside the copper, holes, and the vias standing in each with whether they are on its centre. `get_component` with `include_pads` carries the same rows |
+| `items_near` | what is round a point, or in a box, on each layer: tracks, vias, pads, fills, unplated holes, keepouts and the board's edge, each with its id, net, layers and its copper's distance from the point. `list_tracks` and `list_vias` take the same `region` |
+| `probe_clearance` | whether candidate vias, tracks or parts would fit, many a call, without building ops: the tightest gap on each layer and the item that sets it, and every gap the rules would refuse |
+| `find_via_sites` | the legal positions for a via of a net round a point, each tested on every layer the via reaches, nearest first, with the connected areas of legal positions; or the nearest miss and what blocks it |
+| `find_path` | one connection searched on a fine grid against exact shapes, on one layer or several joined by vias, and not committed: the path with the ops that draw it, or `blocked_by`, the items bounding what it could reach from each end |
+| `channel_capacity` | along a line across a corridor, the stretches a track's centre may lie on and how many tracks fit in each, layer by layer |
+| `escape_analysis` | for a part's pad field or a region: the gates in its perimeter and what each holds, the gates each net reaches, whether all can get out at once, and which pairs of nets cannot share a layer |
+| `find_stubs` | dead-end runs of track with what each end touches, vias joined on fewer than two layers, tracks inside one pad |
 | `list_net_labels`, `list_power_symbols` | what names a net on a page, with the ids their remove ops take |
 | `list_block_instances` | the blocks this block uses, their wired ports, and where each is drawn; for the top block's instances, `board`: how many of its parts are placed, the instances laid out like it (`in_sync_with`) and the parts that differ from each (`differs_from`) |
 | `autoroute` | best-effort automatic routing of one net's airwires |
@@ -471,13 +479,74 @@ itself with `sync`.
 
 ### Routing is manual, and autoroute is honest about it
 
-`autoroute` tries a net's airwires on one layer. It walks around one obstacle
-at a time and gives up after trying both ways past each, so on a dense board it
-completes a few percent and reports the rest — the harness in
-`RouterRealBoardHarnessTests` measures exactly this and prints the numbers to
+`autoroute` tries a net's airwires on one layer. Each goes to the interactive
+router's finder (`docs/push-shove-router.md`): the plain elbow, then a bounded
+grid search around what is in the way, pulled taut. It moves nothing and
+places no via, and it works on octagonal hulls with the routing offset kept,
+so on a dense board many airwires have no path it can see — the harness in
+`RouterRealBoardHarnessTests` measures this and prints the numbers to
 `/tmp/router-harness.txt`. What it does write has been checked clear of the
 board's clearances; what it cannot route stays an airwire, is listed in
 `unrouted` with what blocked it, and `place_track` draws those by hand.
+
+### Layout assistance: probe, dry run with check, commit
+
+Placing and routing by hand through this surface used to mean learning an
+edit's legality from `check` after committing it. These reads and the dry
+run's `check` answer beforehand, and all of them measure with the engine's own
+shapes and rules (`HorizontalBoardItems`, `HorizontalBoardProbe`): a track's
+centreline and width, a pad's polygon, a via's disc, the clearance the rules
+give each pair on each layer. Nothing here is a second geometry, and a caller
+has no reason to rebuild one from the project files.
+
+**A dry run can check its plan.** `apply` (and `autoroute`) with `dry_run`
+takes `check`: `"delta"` or `"full"`. The reply's `check` runs the board
+checks on the staged board and on the board as it is and gives:
+
+- `introduced`, each finding as `check` words it (`first`, `second`,
+  `distance_mm`, `clearance_mm`, `x_mm`, `y_mm`) with `from_ops`, the ops whose
+  items it names; `resolved`, with `now_distance_mm` where the pair is still
+  there, or `now: "gone"`; `unchanged` and `counts`.
+- `airwires`: `before`, `after`, the `nets` that gained one and `nets_routed`
+  that lost one.
+- `stretched`: each track end a moved part carried with it — `track`, `end`,
+  `pad`, `was_mm`, `now_mm`.
+- `planes`: `"repoured"` with `pour: true`, which pours both boards first;
+  otherwise `"stale"` (or `"none"`), because clearance to fills and the
+  silkscreen rule depend on the pour. `ok` is true when nothing is introduced
+  and no airwire added.
+
+A finding is matched between the two boards by its kind, its check and the
+ids of what it is about, not by where it is. Both boards are checked whole;
+the board as it is is checked once a revision. `check` and `pour` are no part
+of the plan, so the commit that names the dry run's `plan_digest` installs it.
+`place_board_text`'s change gives `box_mm` and `runs`, as `list_board_texts`
+does for every text, so a label is placed by dry run.
+
+**Probes** (`probe_clearance`, `find_via_sites`, `find_path`,
+`channel_capacity`, `escape_analysis`) take `margin_mm`, added to what the
+rules ask, and `ignore`, ids to treat as gone. They leave planes' fills out
+unless `planes`: a pour gives way to new copper, so a fill is no obstacle to a
+route. `find_path` is not the interactive router: it tests grid positions
+against exact shapes, so a slot a few micrometres wider than a track needs is
+found, and it costs a second where the router costs a frame. A request too
+large for its budget is refused with what to change. The same request on the
+same revision gives the same answer.
+
+**What the silkscreen rule measures.** To copper the solder mask leaves bare,
+which is any copper inside a mask opening, and the opening is wider than the
+pad (`list_pads` gives `mask_opening` and `mask_expansion_mm`; `board_rules`
+gives `parameters_mm`). A track or pour entering a pad is bare from the
+opening's edge.
+
+**Known limits.** `render_board` draws a grid, highlights and an overlay but
+does not colour by net. `escape_analysis`'s crossing test is evidence, not
+proof: each net is routed with the other's shortest path drawn. A component
+candidate in `probe_clearance` measures copper and, conservatively,
+silkscreen against mask openings; a dry run of `place_component` with `check`
+measures the board as it would be. In a hierarchical design `place_track`
+cannot name an instance's pad by component, so `find_path`'s ops end such a
+connection on a junction or a point.
 
 ### Curves
 

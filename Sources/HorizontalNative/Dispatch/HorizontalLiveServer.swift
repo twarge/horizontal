@@ -147,7 +147,8 @@ enum HorizontalLiveServer {
     /// Capture on the main actor, then evaluate model-only queries on the
     /// connection queue. Rendering/export retain their audited main-actor path.
     static func prepareRead(line: String, expectedToken: String) -> (@Sendable () -> String)? {
-        let eligible: Set<String> = ["project_info", "project_files", "list_sheets", "list_components", "get_component", "list_nets", "get_net", "netlist", "bom", "list_parts", "board_info", "list_groups", "analysis_snapshot"]
+        let eligible: Set<String> = ["project_info", "project_files", "list_sheets", "list_components", "get_component", "list_nets", "get_net", "netlist", "bom", "list_parts", "board_info", "list_groups", "analysis_snapshot", "list_pads", "items_near",
+                                     "probe_clearance", "find_via_sites", "find_path", "channel_capacity", "escape_analysis", "find_stubs"]
         guard let data = line.data(using: .utf8),
               var request = (try? JSONSerialization.jsonObject(with: data)) as? JSONDictionary,
               request.string("auth") == expectedToken, let method = request.string("method"), eligible.contains(method),

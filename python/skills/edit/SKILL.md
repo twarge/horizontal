@@ -56,13 +56,29 @@ Changing a pad's net leaves its tracks on the old net. That is a silent short, b
 - Before you reconnect pins or swap footprints, use `list_tracks` on every affected net and `remove_track` each track that lands on a pad whose net changes.
 - On long trunks, remove only the stubs at the changed pads.
 - Look for vias left under a footprint that lost its exposed pad.
-- Don't guess positions in a dense layout. Leave new packages unplaced (`check` lists them) and say what needs placing and routing.
+- Don't guess positions in a dense layout, and don't work geometry out from the project files: the engine has it. Leave new packages unplaced (`check` lists them) and say what needs placing and routing, or place and route with the loop below.
+
+Placing and routing: **probe, dry run with `check`, commit.**
+
+1. Read where things are. `list_pads` gives each pad's place, size, layers and solder mask opening; `items_near` gives what is round a point on each layer; `list_board_texts` gives each text's `box_mm`.
+2. Probe before building ops.
+   - `probe_clearance` tests candidate vias, tracks and part positions, many a call. A through via is tested on every layer, the far side's pads included.
+   - `find_via_sites` finds where a via fits round a point; `find_path` finds one connection's path and returns the ops, or `blocked_by`: what to rip up or go round.
+   - `channel_capacity` says how many tracks fit through a gap. `escape_analysis` says, before any routing, whether a part's nets can get out and which pairs cannot share a layer.
+   - Pass `margin_mm` (0.005 is enough). Copper exactly at a rule is fragile.
+3. Dry-run the ops with `check: "delta"`. `introduced` must be empty or expected, `airwires` must go the right way, and `stretched` lists every track a moved part dragged. Add `pour: true` when planes or silkscreen are near: both depend on the fill.
+4. Commit by `plan_digest`, then `pour_planes` if the board has planes.
+
+- The silkscreen rule measures to the solder mask opening, not the pad, and a track entering a pad is bare from the opening's edge.
+- A via joins a pad only on the pad's centre; anywhere else in it, it needs a track (`needs_link`).
+- `find_stubs` before removing a "stub": an end on no junction can still lie in copper and carry the net.
+- `render_board` with `grid_mm` puts millimetre axes on the picture; `highlight` and `overlay` show items and candidates.
 
 ## 7. Verify
 
 - `render_sheet` with `region` crops over every area you touched.
 - `find_dangling` across all sheets should match the baseline.
-- `check` with `full: true`: new findings should be only the expected ones (unplaced packages, unrouted connections).
+- `check` with `full: true`: new findings should be only the expected ones (unplaced packages, unrouted connections). For copper, the dry run's `check` already said what each batch introduced.
 - Use `get_net` or `netlist` on each changed net, and compare with the intended connections pin by pin.
 
 ## 8. Save and record

@@ -750,7 +750,8 @@ def get_component(refdes: str | None = None, path: str | None = None, id: str | 
                   connected: Annotated[bool | None, Field(description="true: only pins on a net; false: only pins on none.")] = None,
                   group_pins: Annotated[bool, Field(description="Instead of the pin list, pin_groups: supply and ground pins by the net each is tied to, no-connects, pins on no net, and a count of signal pins — how a part's power is wired, at a glance.")] = False,
                   all_pins: Annotated[bool, Field(description="Every pin even on a large part; otherwise a part with more than 64 pins lists only the pins on a net or marked no-connect.")] = False,
-                  alternates: Annotated[bool, Field(description="List each pin's alternates — the functions set_pin_alternate can choose, e.g. SPI1_SCK/I2S1_CK on an MCU port pin. A pin with one chosen always gives selected and display_name.")] = False) -> dict[str, Any]:
+                  alternates: Annotated[bool, Field(description="List each pin's alternates — the functions set_pin_alternate can choose, e.g. SPI1_SCK/I2S1_CK on an MCU port pin. A pin with one chosen always gives selected and display_name.")] = False,
+                  include_pads: Annotated[bool, Field(description="Also give pads: its pads on the board as list_pads gives them — where each is, its size, layers, mask opening, holes and the vias in it.")] = False) -> dict[str, Any]:
     """One component in full: pins with their nets, symbol placements, board placement, part details. A part with
     more than 64 pins lists only its connected and no-connect pins unless all_pins, and says how many it left out;
     pins, pin_regex and connected narrow the list, and group_pins summarises it. A pin whose function was chosen
@@ -760,7 +761,7 @@ def get_component(refdes: str | None = None, path: str | None = None, id: str | 
     gives custom_value (null for none; set_custom_value sets it) and drawn_value, what its $VALUE text draws. A pin
     drawn on a sheet gives at: where it ends there (the point a wire starts from, in mm) and which way it points
     out of its symbol, as drawn — turned and mirrored."""
-    component = _resolve(path).component(refdes=refdes, id=id)
+    component = _resolve(path).component(refdes=refdes, id=id, include_pads=include_pads)
     every = component.get("pins") or []
     if not alternates:
         for pin in every: pin.pop("alternates", None)
@@ -1044,14 +1045,18 @@ def list_block_instances(path: str | None = None, block: str | None = None) -> l
 
 @_tool
 def autoroute(net: str, path: str | None = None, layer: int = 0, width_mm: float | None = None,
-              max_routes: int = 20, dry_run: bool = False, sync: bool = True) -> dict[str, Any]:
-    """Try to route a net's airwires automatically on one layer. Best effort, and usually not enough: it walks
-    around one obstacle at a time rather than searching, so on a dense board it completes a small minority and
-    reports the rest. Everything it does write has been checked clear of the board's clearances; what it cannot
+              max_routes: int = 20, dry_run: bool = False, sync: bool = True,
+              check: Annotated[Literal["delta", "full"] | None, Field(description="With dry_run, run the board checks on the board the routes would leave, as apply_ops' check does.")] = None,
+              pour: Annotated[bool, Field(description="With check, pour the planes again first.")] = False) -> dict[str, Any]:
+    """Try to route a net's airwires automatically on one layer. Best effort: each airwire is searched for a clear
+    45° path by the interactive router, on its conservative hulls and with the routing offset kept, moving nothing
+    and placing no via, so on a dense board it completes a minority and reports the rest; find_path searches one
+    connection exactly, across layers, and says what blocks it. Everything it does write has been checked clear of the board's clearances; what it cannot
     route stays an airwire, is listed in unrouted with what blocked it, and place_track draws those by hand. What it
     routes in one instance of a block it routes the same in the instances laid out like it, unless sync is false."""
     return _edit_call(_resolve(path), "autoroute", net=net, layer=layer, max_routes=max_routes, dry_run=dry_run,
-                      **({"width_mm": width_mm} if width_mm is not None else {}), **({} if sync else {"sync": False}))
+                      **({"width_mm": width_mm} if width_mm is not None else {}), **({} if sync else {"sync": False}),
+                      **({"check": check} if check else {}), **({"pour": True} if pour else {}))
 
 
 @_tool
@@ -1113,13 +1118,19 @@ def undo(path: str | None = None, redo: bool = False) -> dict[str, Any]:
 def list_board_texts(path: str | None = None, layer: int | None = None,
                      smashed: Annotated[bool | None, Field(description="Also list the reference designators Horizon smashed out of packages — on a populated board, most of its texts. A text or component search looks through them unless this is false.")] = None,
                      text: Annotated[str | None, Field(description="Only texts containing this, as stored or as drawn, ignoring case, e.g. \"$project\" or \"U1\"; smashed texts included unless smashed is false.")] = None,
-                     component: Annotated[str | None, Field(description="Only the texts smashed out of this part's package, by refdes or id; implies smashed.")] = None) -> list[dict[str, Any]]:
+                     component: Annotated[str | None, Field(description="Only the texts smashed out of this part's package, by refdes or id; implies smashed.")] = None,
+                     package_texts: Annotated[bool | None, Field(description="Also list the texts packages draw themselves (smashed false, from_package true). Listed whenever smashed ones are unless this is false.")] = None) -> list[dict[str, Any]]:
     """Free text on the board layers, with the ids remove_board_text takes and place_board_text takes to move or
-    change one. Texts smashed out of packages are left out unless smashed, or a text or component search, asks for them: each is marked from_smash and belongs to the package named in its package field, so it moves
+    change one. Each says where it draws: box_mm is the box its strokes fill, and runs the way it runs from x_mm,
+    y_mm — right, left, up, down or centered; a mirrored text on the bottom runs left. place_board_text's reply
+    gives the same two, so a label can be placed by a dry run rather than by eye. A package's own text (its refdes,
+    usually) is no board text until the package is smashed, so no op moves it, but it is drawn and check measures
+    it: package_texts lists those with the package and refdes, marked smashed false. Texts smashed out of packages are left out unless smashed, or a text or component search, asks for them: each is marked from_smash and belongs to the package named in its package field, so it moves
     and dies with the component, while place_board_text moves it on its own and unsmash takes it away; refdes names
     that part. A text that draws
     something other than what it stores ("$RD", "$project_title") says what in drawn."""
-    return _resolve(path).board_texts(layer=layer, smashed=smashed, text=text, component=component)
+    return _resolve(path).board_texts(layer=layer, smashed=smashed, text=text, component=component,
+                                      package_texts=package_texts)
 
 
 @_tool
@@ -1198,25 +1209,236 @@ def pour_planes(path: str | None = None, dry_run: bool = False) -> dict[str, Any
 def list_tracks(path: str | None = None, net: str | None = None, layer: int | None = None, limit: int = 200,
                 component: Annotated[str | None, Field(description="Only tracks with an end on this part's pads, by refdes or id.")] = None,
                 pads: Annotated[list[str] | None, Field(description="With component, only these of its pads, by name or uuid, e.g. [\"C2\"].")] = None,
-                connected: Annotated[bool | None, Field(description="With component, every track joined to its pads through junctions and vias, out to the next pad — the copper a pin change leaves on the old net.")] = None) -> dict[str, Any]:
+                connected: Annotated[bool | None, Field(description="With component, every track joined to its pads through junctions and vias, out to the next pad — the copper a pin change leaves on the old net.")] = None,
+                region: Annotated[Region | None, Field(description="Only tracks whose copper reaches into this box.")] = None) -> dict[str, Any]:
     """Copper tracks on the board: net, layer, width, and what each end lands on — a pad (naming the component)
-    or a junction. locked marks a track the app's Lock holds: remove_track refuses it. Boards carry thousands, so filter by net, layer or component; truncated says whether the limit
-    cut the answer short, and total says how many matched."""
+    or a junction. locked marks a track the app's Lock holds: remove_track refuses it. Boards carry thousands, so filter by net, layer, component or region; truncated says whether the limit
+    cut the answer short, and total says how many matched. A list that was cut says so in note as well, beginning
+    TRUNCATED: do not take it for the board."""
     params = {k: v for k, v in {"net": net, "layer": layer, "component": component, "pads": pads,
-                                "connected": connected}.items() if v is not None}
+                                "connected": connected, "region": region.model_dump() if region else None}.items() if v is not None}
     return _resolve(path).tracks(limit=limit, **params)
 
 
 @_tool
 def list_vias(path: str | None = None, net: str | None = None, limit: int = 200,
-              component: Annotated[str | None, Field(description="Only vias under this part's package: inside its courtyard, else inside its pads' bounds.")] = None) -> dict[str, Any]:
+              component: Annotated[str | None, Field(description="Only vias under this part's package: inside its courtyard, else inside its pads' bounds.")] = None,
+              region: Annotated[Region | None, Field(description="Only vias whose copper reaches into this box.")] = None) -> dict[str, Any]:
     """Vias on the board: net, position, the layers each spans, and whether its shape comes from a padstack, a
     board via definition or the via rules. net_pinned marks a via whose net was set outright rather than
     inherited through the copper that reaches it. unresolved marks one that takes its shape from the via rules
     but whose parameters leave out its diameter or hole, so it has its padstack's default there, as Horizon draws
     it until the rules are applied. locked marks a via the app's Lock holds: remove_via refuses it."""
-    params = {k: v for k, v in {"net": net, "component": component}.items() if v is not None}
+    params = {k: v for k, v in {"net": net, "component": component,
+                                "region": region.model_dump() if region else None}.items() if v is not None}
     return _resolve(path).vias(limit=limit, **params)
+
+
+@_tool
+def list_pads(path: str | None = None,
+              component: Annotated[str | None, Field(description="Only this part's pads, by refdes or id.")] = None,
+              pads: Annotated[list[str] | None, Field(description="With component, only these pads, by name or uuid, e.g. [\"A1\", \"J10\"].")] = None,
+              net: Annotated[str | None, Field(description="Only pads on this net, by name or id.")] = None,
+              layer: Annotated[int | None, Field(description="Only pads with copper on this layer number.")] = None,
+              region: Annotated[Region | None, Field(description="Only pads whose copper reaches into this box.")] = None,
+              outline: Annotated[bool, Field(description="Also give each copper shape (copper) and mask opening as a polygon, outline_mm, arcs as the checks tessellate them. A BGA's worth is large; ask for the pads you need.")] = False,
+              limit: int = 200) -> dict[str, Any]:
+    """Pads of the packages on the board, as the board draws them — turned, flipped and all — so nothing has to be
+    worked out from the pool files. Each gives refdes and pad, its net, side, the copper layers it is on, at_mm (its
+    centre, where a track ends on it), box_mm (the box its copper fills), shape (the padstack's width_mm and
+    height_mm, the angle it is turned to, and whether it has rounded corners), through_hole and holes, and
+    vias_in_pad: the vias standing in it, each with on_center — a via on the centre is joined to the pad, one
+    anywhere else in it only once a track joins the two.
+
+    mask_opening is the solder mask opening on its side, with mask_expansion_mm how far it reaches outside the
+    copper. The silkscreen rule measures to that opening, not to the pad: any track or pour inside it is bare copper
+    too, so silkscreen that clears the pad can still be too close to the track entering it.
+
+    truncated says whether limit cut the answer short, and total how many matched."""
+    return _resolve(path).pads(component=component, pads=pads, net=net, layer=layer,
+                               region=region.model_dump() if region else None, outline=outline, limit=limit)
+
+
+class BoardPoint(BaseModel):
+    model_config = {"extra": "forbid"}
+    x_mm: float
+    y_mm: float
+
+
+@_tool
+def items_near(path: str | None = None,
+               at: Annotated[BoardPoint | None, Field(description="The point to look round, {x_mm, y_mm}. This or region.")] = None,
+               radius_mm: Annotated[float, Field(description="With at, how far to look.", ge=0, le=1000)] = 1.0,
+               region: Annotated[Region | None, Field(description="Everything reaching into this box, instead of at.")] = None,
+               layers: Annotated[list[StrictInt] | None, Field(description="Only what is on these layer numbers, e.g. [-4] or [0, -100]; default every copper layer.")] = None,
+               silkscreen: Annotated[bool, Field(description="Also list silkscreen lines, arcs and texts.")] = False,
+               limit: int = 200) -> dict[str, Any]:
+    """What is on the board near a point, or in a box: tracks, net ties, vias, pads, the planes' fills, unplated
+    holes, keepouts and the board's edge. Each item gives kind, id (the id list_tracks, list_vias and check use; a
+    pad's is package/pad/id), label, net and net_name, and layers, the copper layers it is on — a through via or
+    pad is on all of them. With at, distance_mm is from the point to the item's copper (0 inside it) and x_mm, y_mm
+    the nearest point of that copper; items come nearest first.
+
+    The shapes are the ones check measures — a track's centreline and width, a pad's polygon, a via's disc, a
+    fill's paths — so a distance here is the distance a finding would report. Planes are as last poured."""
+    if (at is None) == (region is None):
+        raise ValueError("Pass at (with radius_mm) or region, one of them.")
+    return _resolve(path).items_near(at=at.model_dump() if at else None, radius_mm=radius_mm if at else None,
+                                     region=region.model_dump() if region else None, layers=layers,
+                                     silkscreen=silkscreen, limit=limit)
+
+
+@_tool
+def probe_clearance(candidates: Annotated[list[dict[str, Any]], Field(description="Each one of: {\"via\": {\"x_mm\", \"y_mm\", \"net\", \"definition\" or \"diameter_mm\" (and \"hole_mm\")}}; {\"track\": {\"layer\", \"net\", \"width_mm\", \"points_mm\": [[x, y], …]}}; {\"component\": {\"refdes\", \"x_mm\", \"y_mm\", \"angle_deg\", \"bottom\"}}. Up to 2000.", min_length=1, max_length=2000)],
+                    path: str | None = None,
+                    margin_mm: Annotated[float, Field(description="Added to what the rules ask. Copper placed exactly at a rule is fragile; 0.005 is a sensible margin.", ge=0, le=10)] = 0,
+                    ignore: Annotated[list[str] | None, Field(description="Ids of tracks, vias or pads to treat as gone — what would fit if this were ripped up?")] = None,
+                    planes: Annotated[bool, Field(description="Also measure against the planes' fills as last poured. Off, since a pour gives way to new copper when it next runs.")] = False) -> dict[str, Any]:
+    """Would this via, track or part fit here? Tests candidate shapes against the board as it is, without building ops
+    and without changing anything; one call carries many. Each candidate comes back with ok, tightest (on each layer
+    the nearest thing the rules ask a clearance of: item, distance_mm, clearance_mm, slack_mm beyond the rule and the
+    margin, x_mm, y_mm) and violations, every gap the rules would refuse, in the same form.
+
+    A through via is tested on every copper layer it reaches, against pads on the far side, holes, keepouts and the
+    board's edge. A via in a pad of its own net is clear and says in_pad, with on_center; off the centre it also says
+    needs_link, because only a via on a pad's centre is joined to it without a track.
+
+    A component candidate puts the part's pads and holes where they would be, with the tracks bound to its pads
+    stretched to follow (stretched), and measures all of it — a stretched track against the part's own other pads
+    too. silkscreen gives the silkscreen rule on the safe side: the part's silkscreen against the rest's solder mask
+    openings and the rest's against its own, which is never further than the rule measures. For the board exactly as
+    it would be, pours included, dry-run place_component with check.
+
+    The measures are check's own — the same shapes, the same rule for each pair — so what passes here passes there."""
+    return _resolve(path).probe_clearance(candidates, margin_mm=margin_mm or None, ignore=ignore, planes=planes or None)
+
+
+@_tool
+def find_via_sites(net: str,
+                   near: Annotated[BoardPoint, Field(description="Where to look round, {x_mm, y_mm}.")],
+                   path: str | None = None,
+                   radius_mm: Annotated[float, Field(description="How far to look.", gt=0, le=50)] = 1.0,
+                   grid_mm: Annotated[float, Field(description="The pitch of the positions tested.", ge=0.001, le=5)] = 0.025,
+                   definition: Annotated[str | None, Field(description="A board via definition to take the size and span from, by name or uuid.")] = None,
+                   diameter_mm: Annotated[float | None, Field(description="The via's diameter, where no definition or via rule gives it.", gt=0)] = None,
+                   hole_mm: Annotated[float | None, Field(description="Its drill.", gt=0)] = None,
+                   margin_mm: Annotated[float, Field(description="Added to what the rules ask.", ge=0, le=10)] = 0,
+                   link: Annotated[dict[str, Any] | None, Field(description="Keep only sites a track can join to an anchor: {\"layer\", \"to\": {\"junction\"} | {\"component\", \"pad\"} | {\"via\"} | {\"x_mm\", \"y_mm\"}, \"width_mm\", \"bends\": 0 or 1}.")] = None,
+                   ignore: Annotated[list[str] | None, Field(description="Ids of tracks, vias or pads to treat as gone.")] = None,
+                   planes: bool = False, limit: int = 50) -> dict[str, Any]:
+    """Where near a point can a via of this net go? Tests a grid of positions round near, each on every copper layer
+    the via reaches — the far side's pads, holes, keepouts and the board's edge included — and returns the legal ones
+    nearest first. Each site gives x_mm, y_mm, distance_mm from near, slack_mm (how much more than the rules and
+    margin it has, at its tightest) and tightest, the limiting item on each layer; in_pad and needs_link as
+    probe_clearance gives them; and, with link, link_mm, the track that joins it to the anchor.
+
+    A list of points hides the shape of the room, so regions gives the connected areas of legal positions: how many
+    sites, area_mm2, box_mm, and rows_mm, each row of the area as [y, first x, last x]. total counts every legal
+    position; truncated says whether limit cut the list. When nothing is legal, nearest_miss names the nearest
+    position and what blocks it on each layer."""
+    return _resolve(path).find_via_sites(net, near.model_dump(), radius_mm=radius_mm, grid_mm=grid_mm, definition=definition,
+                                         diameter_mm=diameter_mm, hole_mm=hole_mm, margin_mm=margin_mm or None, link=link,
+                                         ignore=ignore, planes=planes or None, limit=limit)
+
+
+@_tool
+def find_path(start: Annotated[dict[str, Any], Field(description="Where it starts: {\"component\", \"pad\"}, {\"junction\"}, {\"via\"} or {\"x_mm\", \"y_mm\"}.")],
+              to: Annotated[list[dict[str, Any]], Field(description="One or more ends, any of which will do: the same forms, or {\"via_site\": {\"x_mm\", \"y_mm\"}}.", min_length=1)],
+              path: str | None = None, net: str | None = None,
+              layers: Annotated[list[StrictInt] | None, Field(description="The copper layer numbers the path may use, e.g. [-4]; default the layer the start is on.")] = None,
+              width_mm: Annotated[float | None, Field(description="Track width; optional when a track_width rule takes the net.", gt=0)] = None,
+              margin_mm: Annotated[float, Field(description="Added to what the rules ask.", ge=0, le=10)] = 0,
+              via: Annotated[str | None, Field(description="A via definition, by name, for changing layers, or \"rules\" for the via rule's. Without it the path stays on one layer.")] = None,
+              avoid: Annotated[list[dict[str, Any]] | None, Field(description="Areas to keep out of: {\"layer\"?, \"box_mm\": [min_x, min_y, max_x, max_y]}.")] = None,
+              ignore: Annotated[list[str] | None, Field(description="Ids of tracks, vias or pads to treat as gone: would there be a path if this were ripped up?")] = None,
+              grid_mm: Annotated[float, Field(description="The search grid's pitch. Finer finds tighter slots and costs the square of it.", ge=0.005, le=1)] = 0.025,
+              window_mm: Annotated[float, Field(description="How far beyond the ends' box the search may go.", ge=0, le=100)] = 2.0,
+              planes: bool = False) -> dict[str, Any]:
+    """Is there a legal path for this connection on these layers, and if not, what blocks it? One connection, searched
+    and not committed. The search is on a fine grid against the board's exact shapes with the clearance the rules
+    ask of each pair, so a slot a few micrometres wider than the track needs is a slot, and what it returns check
+    passes. Planes' fills are no obstacle: a pour gives way, so pour_planes after committing.
+
+    found: path (per layer, points_mm), vias, length_mm, bends, tightest (the closest it comes to anything, with
+    slack_mm) and ops, ready for apply_ops — each layer change a place_via before the tracks that leave it. Dry-run
+    them with check before committing. reached says which of to it ended on.
+
+    not found: reason (blocked, or budget when the search ran out before it could tell) and blocked_by, the items that
+    bound what the search could reach from the start (from) and from the ends (to), the longest stretch of wall first,
+    each with its id, net and layer. That is the list to consider for rip-up (ignore tries one), or to get past on
+    another layer; reached_window_edge says a way round may lie beyond window_mm. Two nets that must cross show up
+    here as each blocked by the other."""
+    return _resolve(path).find_path(start, to, net=net, layers=layers, width_mm=width_mm, margin_mm=margin_mm or None, via=via,
+                                    avoid=avoid, ignore=ignore, grid_mm=grid_mm, window_mm=window_mm, planes=planes or None)
+
+
+@_tool
+def channel_capacity(width_mm: Annotated[float, Field(description="The width of the tracks to fit.", gt=0)],
+                     path: str | None = None,
+                     cut: Annotated[dict[str, Any] | None, Field(description="A line across the corridor: {\"from_mm\": [x, y], \"to_mm\": [x, y]}. This or between.")] = None,
+                     between: Annotated[list[str] | None, Field(description="Two item ids to measure between, nearest point to nearest point: tracks, vias, or pads by package/pad/id.", min_length=2, max_length=2)] = None,
+                     layers: Annotated[list[StrictInt] | None, Field(description="The copper layer numbers to measure on; default every one, or with between those the two share.")] = None,
+                     net: Annotated[str | None, Field(description="The net of those tracks, whose own copper is no obstacle to them.")] = None,
+                     spacing_mm: Annotated[float | None, Field(description="What tracks side by side keep between them; default the rules' track to track clearance.", ge=0)] = None,
+                     margin_mm: Annotated[float, Field(description="Added to what the rules ask, of the obstacles and between the tracks.", ge=0, le=10)] = 0,
+                     ignore: list[str] | None = None, planes: bool = False) -> dict[str, Any]:
+    """How many tracks fit through this gap? Draw a line across a corridor; for each layer the reply lists the gaps
+    along it between obstacles — from_mm and to_mm, the ends of the stretch a track's centre may lie on, centres_mm
+    its length, tracks how many of the width fit side by side in it, and bounded_by, the item at each end (null where
+    the cut itself ends). tracks under the layer adds them up. The gap arithmetic between a ball's via and the next
+    track, done by the engine with the rule that applies to each."""
+    if (cut is None) == (between is None):
+        raise ValueError("Pass cut or between, one of them.")
+    return _resolve(path).channel_capacity(width_mm, cut=cut, between=between, layers=layers, net=net, spacing_mm=spacing_mm,
+                                           margin_mm=margin_mm or None, ignore=ignore, planes=planes or None)
+
+
+@_tool
+def escape_analysis(width_mm: Annotated[float, Field(description="The width of the tracks that leave.", gt=0)],
+                    path: str | None = None,
+                    component: Annotated[str | None, Field(description="The part whose pad field to leave, by refdes or id. This, or region with starts.")] = None,
+                    region: Region | None = None,
+                    starts: Annotated[dict[str, dict[str, Any]] | None, Field(description="With region: net → where it enters or begins, each {component, pad}, {junction}, {via} or {x_mm, y_mm}.")] = None,
+                    nets: Annotated[list[str] | None, Field(description="The nets to analyse; with component, default its nets that still have airwires.")] = None,
+                    targets: Annotated[dict[str, dict[str, Any]] | None, Field(description="net → where it has to end. The crossing test runs for nets that have one; at most 10.")] = None,
+                    layers: list[StrictInt] | None = None,
+                    via: Annotated[str | None, Field(description="A via definition, by name, or \"rules\": where it fits in a pad, that pad's net can start on the layers it reaches.")] = None,
+                    ring_mm: Annotated[float, Field(description="With component, how far outside its pads the perimeter is drawn.", ge=0, le=20)] = 0.3,
+                    grid_mm: Annotated[float, Field(ge=0.005, le=1)] = 0.05,
+                    window_mm: Annotated[float, Field(ge=0, le=100)] = 2.0,
+                    margin_mm: Annotated[float, Field(ge=0, le=10)] = 0,
+                    ignore: list[str] | None = None) -> dict[str, Any]:
+    """Can these nets leave this part, on which layers, and which pairs must cross — before anything is routed.
+
+    gates: the gaps in the perimeter of the pad field (or of region) on each layer, each with its side, from_mm and
+    to_mm, capacity (the tracks it holds) and what bounds it. reach: for each net, the gates its pad can get to on
+    each layer through the channels between the pads and vias inside, and trapped when it reaches none; a net starts
+    on its pad's layers and those of a via standing on the pad's centre (or of via, where that would fit there).
+    feasible: whether every net can have a gate at once — assignment gives one, else bottleneck names the nets that
+    cannot all get out and the gates, too few, they have between them.
+
+    With targets: paths_alone gives the layers each net has a path to its end on by itself; cannot_share lists the
+    pairs that each have one on a layer and none with the other drawn first, either way round — they must cross
+    there; layer_assignment gives each net a layer that holds no net it must cross, null where the layers ran out.
+    That test is evidence rather than proof, but it is the answer that otherwise arrives as "no path" on the fourth
+    attempt. Starting with BGAs and other regular pad fields; a region with starts takes anything."""
+    if (component is None) == (region is None):
+        raise ValueError("Pass component, or region with starts: one of them.")
+    return _resolve(path).escape_analysis(width_mm, component=component, region=region.model_dump() if region else None,
+                                          starts=starts, nets=nets, targets=targets, layers=layers, via=via,
+                                          ring_mm=ring_mm if component else None, grid_mm=grid_mm, window_mm=window_mm,
+                                          margin_mm=margin_mm or None, ignore=ignore)
+
+
+@_tool
+def find_stubs(path: str | None = None, net: str | None = None, region: Region | None = None, limit: int = 200) -> dict[str, Any]:
+    """Copper that goes nowhere. stubs: runs of track with an end on nothing, each with its tracks, net, length_mm
+    and ends — what each end touches (pad, via, junction with how many tracks, or nothing). An end on no junction with
+    anything else can still lie in a pad or across a track of the board: lies_in names that copper and dead_end is
+    then false, because the run may be carrying its net there — check before removing it. vias_on_one_layer: vias
+    that copper of their net meets on fewer than two of their layers (joined_on), fills as last poured included.
+    tracks_in_a_pad: tracks with both ends inside one pad."""
+    return _resolve(path).find_stubs(net=net, region=region.model_dump() if region else None, limit=limit)
 
 
 @_tool
@@ -1421,7 +1643,9 @@ def list_ops(path: str | None = None) -> list[dict[str, Any]]:
 
 @_tool
 def apply_ops(ops: list[EditOperation] = [], path: str | None = None, dry_run: bool = False,
-              pool_items: list[dict[str, Any]] | None = None, block: str | None = None, sync: bool = True) -> dict[str, Any]:
+              pool_items: list[dict[str, Any]] | None = None, block: str | None = None, sync: bool = True,
+              check: Annotated[Literal["delta", "full"] | None, Field(description="With dry_run, run the board checks on the board the batch would leave. \"delta\": what it introduces and resolves. \"full\": every finding of that board as well.")] = None,
+              pour: Annotated[bool, Field(description="With check, pour the planes again first, on the board as it is and as planned. Without it the fills are as last poured and the reply says planes: stale.")] = False) -> dict[str, Any]:
     """Apply edit operations. Each op is {"op": name, ...params}; see list_ops. Components and nets may be named by
     refdes or net name, or by id; an unnamed net has only that. Every op that acts on one thing names it by its own
     field (line, track, junction, …) or by id. Wherever an op takes an id — a component, net, wire, junction, symbol
@@ -1438,6 +1662,17 @@ def apply_ops(ops: list[EditOperation] = [], path: str | None = None, dry_run: b
     pins, free text on the sheets, board package placement, and copper — tracks and vias. Routing here is manual:
     place_track draws the segment it is told to draw and does not find a path, and nothing autoroutes. check
     reports what is still unrouted.
+
+    check, with dry_run, says what the batch does to the board before it is committed: the reply's check gives
+    introduced (findings the planned board has and this one doesn't, each as the check tool words it — first,
+    second, distance_mm, clearance_mm, x_mm, y_mm — plus from_ops, the ops whose items it names), resolved (findings
+    the plan removes; a clearance one says now_distance_mm, how far apart the two then are, or now: gone), unchanged
+    and counts, airwires (before, after, nets that gained one and nets_routed that lost one), stretched (each track
+    end a moved part carried with it: track, end, pad, was_mm, now_mm) and ok, true when nothing is introduced and
+    no airwire added. Clearance to the planes' fills and the silkscreen rule depend on the pour: pour: true pours
+    both boards first (planes: repoured), which costs what pour_planes costs; without it planes reads stale.
+    check: "full" adds findings, everything check would say of the planned board. The workflow for copper and
+    placement is: probe, dry run with check, commit by plan_digest.
 
     block selects which block to edit; without it, the top one. A sub-block's components are instantiated
     wherever that block is used, so it has no board of its own and board operations on one are refused.
@@ -1522,7 +1757,10 @@ def apply_ops(ops: list[EditOperation] = [], path: str | None = None, dry_run: b
     if not ops and (dry_run or not _edit_options.get().get("plan_digest")):
         raise ValueError("Pass ops, or commit a dry run by its plan_digest alone.")
     encoded = None if not ops else [op.model_dump(exclude_unset=True, by_alias=True) if isinstance(op, BaseModel) else op for op in ops]
-    return _edit(_resolve(path), encoded, dry_run=dry_run, pool_items=pool_items, block=block, sync=None if sync else False)
+    if (check or pour) and not dry_run:
+        raise ValueError("check and pour go with dry_run: they report on a plan. The check tool reads the board as committed.")
+    return _edit(_resolve(path), encoded, dry_run=dry_run, pool_items=pool_items, block=block, sync=None if sync else False,
+                 check=check, pour=True if pour else None)
 
 
 @_tool
@@ -1573,9 +1811,13 @@ def render_sheet(path: str | None = None, sheet: int | None = None, name: str | 
 def render_board(path: str | None = None,
                  layers: Annotated[list[str] | None, Field(description="Names from board_info.drawing_layers; use layers or layer_ids. Empty uses defaults.")] = None,
                  mirrored: bool = False, region: Region | None = None, dpi: float = 110,
-                 layer_ids: Annotated[list[StrictInt] | None, Field(description="Integer IDs from board_info.drawing_layers, e.g. [0, -100]. Empty uses defaults.")] = None) -> dict[str, Any]:
-    """Render the board drawing as a PNG image. Pass layer names from board_info to choose layers; mirrored views it from the bottom; region {min_x_mm, min_y_mm, max_x_mm, max_y_mm} renders only that part."""
-    params = {k: v for k, v in {"layers": layers, "region": region.model_dump() if region else None}.items() if v is not None}
+                 layer_ids: Annotated[list[StrictInt] | None, Field(description="Integer IDs from board_info.drawing_layers, e.g. [0, -100]. Empty uses defaults.")] = None,
+                 grid_mm: Annotated[float | None, Field(description="Draw a grid at this pitch, its lines labelled in board millimetres along the left and bottom edges, so a place in the picture is a coordinate. Widened by 2, 5, 10… to keep to about forty lines.", gt=0)] = None,
+                 highlight: Annotated[list[str] | None, Field(description="Ids of tracks, vias, pads (package/pad/id), planes or holes to pick out in magenta.")] = None,
+                 overlay: Annotated[list[dict[str, Any]] | None, Field(description="Shapes that are not on the board, drawn in orange: {\"via\": {x_mm, y_mm, diameter_mm}}, {\"track\": {points_mm, width_mm}} or {\"box_mm\": [min_x, min_y, max_x, max_y]} — a candidate before it is placed, a path find_path returned.")] = None) -> dict[str, Any]:
+    """Render the board drawing as a PNG image. Pass layer names from board_info to choose layers; mirrored views it from the bottom; region {min_x_mm, min_y_mm, max_x_mm, max_y_mm} renders only that part. grid_mm, highlight and overlay draw over it: a labelled millimetre grid, items picked out, and shapes not yet on the board. It does not colour by net."""
+    params = {k: v for k, v in {"layers": layers, "region": region.model_dump() if region else None, "grid_mm": grid_mm,
+                                "highlight": highlight, "overlay": overlay}.items() if v is not None}
     if layers is not None and layer_ids is not None:
         raise ValueError("Use layers or layer_ids, not both.")
     if layer_ids is not None:

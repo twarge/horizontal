@@ -195,13 +195,16 @@ enum HorizontalDispatchMutation {
         // revision the plan was made at stands in for expected_revision, which
         // a dry run may leave out and a commit has already been checked against.
         let planKeys = { (ops: Any?) throws -> String in
+            // check and pour ask a dry run what its plan does to the board;
+            // they are no part of the plan, and its commit does not send them.
             var payload = params.filter { !["handle", "include_metadata", "operation_id", "plan_digest", "deadline_unix_ms", "detail", "dry_run",
-                                            "expected_revision"].contains($0.key) }
+                                            "expected_revision", "check", "pour"].contains($0.key) }
             if let ops { payload["ops"] = ops }
             payload["revision"] = entry.revision
             return HorizontalProjectTransaction.digest(try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]))
         }
         let requestKey = try planKeys(nil)
+        let checkMode = try HorizontalDispatchPlanCheck.mode(params)
         var result: JSONDictionary
         let after: HorizontalDispatchSnapshot
         let staged: HorizontalProject
@@ -279,6 +282,7 @@ enum HorizontalDispatchMutation {
                 lap("diagnostics_ms")
             }
         }
+        if reused == nil { HorizontalDispatchPlanCheck.annotateTexts(&result, staged: staged) }
         // A file the edit removed (a pool cleanup) is changed too.
         let removed = snapshot.files.filter { after.archive.regularFileData(relativePath: $0) == nil }
         let changed = (after.files.filter { after.archive.regularFileData(relativePath: $0) != snapshot.archive.regularFileData(relativePath: $0) } + removed).sorted()
@@ -289,6 +293,12 @@ enum HorizontalDispatchMutation {
             ?? HorizontalProjectTransaction.digest(try JSONSerialization.data(withJSONObject: plan, options: [.sortedKeys]))
         if let expected = params.string("plan_digest"), expected != planDigest {
             throw HorizontalDispatchError(code: .staleRevision, message: "Dry-run plan does not match this edit.")
+        }
+        if dryRun, let checkMode {
+            clock = Date()
+            result["check"] = HorizontalDispatchPlanCheck.run(entry: entry, staged: staged, result: result, mode: checkMode,
+                                                              pour: params.bool("pour") ?? false)
+            lap("check_ms")
         }
         if dryRun {
             // Kept for the commit that replays this plan, by either spelling of

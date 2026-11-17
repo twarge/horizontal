@@ -188,7 +188,9 @@ class Project:
             _request_deadline.reset(token)
 
     def _perform_call(self, method: str, **params: Any) -> Any:
-        reads = {"get_pool_item", "project_info", "project_files", "list_sheets", "list_components", "get_component", "list_nets", "get_net", "netlist", "bom", "list_parts", "list_texts", "list_symbols", "list_block_instances", "list_net_lines", "list_junctions", "list_net_labels", "list_power_symbols", "list_planes", "list_polygons", "list_holes", "list_keepouts", "list_board_texts", "list_dimensions", "list_buses", "list_net_ties", "list_tracks", "list_vias", "board_rules", "search_pool", "board_info", "check", "list_groups", "analysis_snapshot", "transaction_status", "find_dangling", "find_overlaps", "export_settings"}
+        reads = {"get_pool_item", "project_info", "project_files", "list_sheets", "list_components", "get_component", "list_nets", "get_net", "netlist", "bom", "list_parts", "list_texts", "list_symbols", "list_block_instances", "list_net_lines", "list_junctions", "list_net_labels", "list_power_symbols", "list_planes", "list_polygons", "list_holes", "list_keepouts", "list_board_texts", "list_dimensions", "list_buses", "list_net_ties", "list_tracks", "list_vias", "board_rules", "search_pool", "board_info", "check", "list_groups", "analysis_snapshot", "transaction_status", "find_dangling", "find_overlaps", "export_settings",
+                 "list_pads", "items_near", "probe_clearance", "find_via_sites", "find_path", "channel_capacity",
+                 "escape_analysis", "find_stubs"}
         reads.add("list_part_updates")
         deadline = _request_deadline.get() or (time.monotonic() + self.session.transport.timeout)
         # A connection an earlier call lost is reopened before anything is
@@ -343,8 +345,9 @@ class Project:
         params.update({k: v for k, v in {"sheet_id": sheet_id, "block_id": block_id, "name": name}.items() if v is not None})
         return self._call("list_components", **params)
 
-    def component(self, refdes: str | None = None, id: str | None = None) -> dict[str, Any]:
+    def component(self, refdes: str | None = None, id: str | None = None, include_pads: bool = False) -> dict[str, Any]:
         params = {k: v for k, v in {"refdes": refdes, "id": id}.items() if v is not None}
+        if include_pads: params["include_pads"] = True
         return self._call("get_component", **params)
 
     def nets(self) -> list[dict[str, Any]]:
@@ -407,11 +410,12 @@ class Project:
         return self._call("undo", redo=redo)
 
     def board_texts(self, layer: int | None = None, smashed: bool | None = None, text: str | None = None,
-                    component: str | None = None) -> list[dict[str, Any]]:
-        """Free text on the board layers; smashed adds the texts smashed out of packages, as a text search does
-        unless smashed is False, and component keeps only one part's."""
-        params = {k: v for k, v in {"layer": layer, "smashed": smashed, "text": text,
-                                    "component": component}.items() if v is not None}
+                    component: str | None = None, package_texts: bool | None = None) -> list[dict[str, Any]]:
+        """Free text on the board layers, each with the box it draws in; smashed adds the texts smashed out of
+        packages, as a text search does unless smashed is False, component keeps only one part's, and
+        package_texts adds the ones packages draw themselves."""
+        params = {k: v for k, v in {"layer": layer, "smashed": smashed, "text": text, "component": component,
+                                    "package_texts": package_texts}.items() if v is not None}
         return self._call("list_board_texts", **params)
 
     def export_settings(self, kind: str | None = None) -> dict[str, Any]:
@@ -466,16 +470,66 @@ class Project:
         return result
 
     def tracks(self, net: str | None = None, layer: int | None = None, limit: int = 200, *,
-               component: str | None = None, pads: list[str] | None = None, connected: bool | None = None) -> dict[str, Any]:
-        """Copper tracks, filtered by net, layer or a component's pads; the result says if it was truncated."""
+               component: str | None = None, pads: list[str] | None = None, connected: bool | None = None,
+               region: dict[str, float] | None = None) -> dict[str, Any]:
+        """Copper tracks, filtered by net, layer, a component's pads or a box; the result says if it was truncated."""
         params = {k: v for k, v in {"net": net, "layer": layer, "component": component, "pads": pads,
-                                    "connected": connected}.items() if v is not None}
+                                    "connected": connected, "region": region}.items() if v is not None}
         return self._call("list_tracks", limit=limit, **params)
 
-    def vias(self, net: str | None = None, limit: int = 200, *, component: str | None = None) -> dict[str, Any]:
-        """Vias, with the layers each spans and where its shape comes from; component keeps those under a part."""
-        params = {k: v for k, v in {"net": net, "component": component}.items() if v is not None}
+    def vias(self, net: str | None = None, limit: int = 200, *, component: str | None = None,
+             region: dict[str, float] | None = None) -> dict[str, Any]:
+        """Vias, with the layers each spans and where its shape comes from; component keeps those under a part,
+        region those reaching into a box."""
+        params = {k: v for k, v in {"net": net, "component": component, "region": region}.items() if v is not None}
         return self._call("list_vias", limit=limit, **params)
+
+    def pads(self, component: str | None = None, *, pads: list[str] | None = None, net: str | None = None,
+             layer: int | None = None, region: dict[str, float] | None = None, outline: bool = False,
+             limit: int = 200) -> dict[str, Any]:
+        """Pads as the board draws them: place, size, layers, net, mask opening, holes, vias in them."""
+        params = {k: v for k, v in {"component": component, "pads": pads, "net": net, "layer": layer,
+                                    "region": region}.items() if v is not None}
+        if outline: params["outline"] = True
+        return self._call("list_pads", limit=limit, **params)
+
+    def items_near(self, at: dict[str, float] | None = None, radius_mm: float | None = None, *,
+                   region: dict[str, float] | None = None, layers: list[int] | None = None,
+                   silkscreen: bool = False, limit: int = 200) -> dict[str, Any]:
+        """What is on the board round a point (at, radius_mm) or in a box (region), nearest first."""
+        params = {k: v for k, v in {"at": at, "radius_mm": radius_mm, "region": region,
+                                    "layers": layers}.items() if v is not None}
+        if silkscreen: params["silkscreen"] = True
+        return self._call("items_near", limit=limit, **params)
+
+    def probe_clearance(self, candidates: list[dict[str, Any]], **options: Any) -> dict[str, Any]:
+        """Whether candidate vias, tracks or parts would fit, without building ops. options: margin_mm, ignore, planes."""
+        return self._call("probe_clearance", candidates=candidates, **{k: v for k, v in options.items() if v is not None})
+
+    def find_via_sites(self, net: str, near: dict[str, float], **options: Any) -> dict[str, Any]:
+        """Legal via positions round a point, nearest first. options: radius_mm, grid_mm, definition, diameter_mm,
+        hole_mm, margin_mm, link, ignore, planes, limit."""
+        return self._call("find_via_sites", net=net, near=near, **{k: v for k, v in options.items() if v is not None})
+
+    def find_path(self, start: dict[str, Any], to: list[dict[str, Any]], **options: Any) -> dict[str, Any]:
+        """A legal path for one connection, or what blocks it; nothing is committed. options: net, layers, width_mm,
+        margin_mm, via, avoid, ignore, grid_mm, window_mm, planes."""
+        return self._call("find_path", **{"from": start, "to": to}, **{k: v for k, v in options.items() if v is not None})
+
+    def channel_capacity(self, width_mm: float, **options: Any) -> dict[str, Any]:
+        """How many tracks fit across a cut, or between two items. options: cut, between, layers, net, spacing_mm,
+        margin_mm, ignore, planes."""
+        return self._call("channel_capacity", width_mm=width_mm, **{k: v for k, v in options.items() if v is not None})
+
+    def escape_analysis(self, width_mm: float, **options: Any) -> dict[str, Any]:
+        """Whether nets can leave a part's pad field or a region, and which must cross. options: component, region,
+        starts, nets, targets, layers, via, ring_mm, grid_mm, window_mm, margin_mm, ignore."""
+        return self._call("escape_analysis", width_mm=width_mm, **{k: v for k, v in options.items() if v is not None})
+
+    def find_stubs(self, net: str | None = None, region: dict[str, float] | None = None, limit: int = 200) -> dict[str, Any]:
+        """Dead-end track runs, vias joined on one layer, and tracks inside one pad."""
+        params = {k: v for k, v in {"net": net, "region": region}.items() if v is not None}
+        return self._call("find_stubs", limit=limit, **params)
 
     def block_instances(self, block: str | None = None) -> list[dict[str, Any]]:
         """The blocks a block uses (the top one unless block names another), with their ports and where they
@@ -591,9 +645,12 @@ class Project:
     def apply(self, ops: list[dict[str, Any]] | None, dry_run: bool = False, *, expected_revision: str | None = None,
               operation_id: str | None = None, plan_digest: str | None = None,
               pool_items: list[dict[str, Any]] | None = None, block: str | None = None,
-              detail: str | None = None, sync: bool | None = None) -> dict[str, Any]:
+              detail: str | None = None, sync: bool | None = None, check: str | None = None,
+              pour: bool | None = None) -> dict[str, Any]:
         """Apply edit operations; each is {"op": name, ...params}. Writes only changed files. ops None commits the
-        dry run plan_digest names, at the revision it was made.
+        dry run plan_digest names, at the revision it was made. With dry_run, check ("delta" or "full") runs the
+        board checks on the board the batch would leave and reports what it introduces and resolves; pour pours
+        the planes again first.
         detail="compact" returns ids and counts without echoing the ops or the project summary. A dry run's
         preview gives each file's changed JSON paths; detail="files" adds its whole text before and after."""
         # A commit may name its dry run by plan_digest alone and send no ops.
@@ -604,6 +661,8 @@ class Project:
         if block is not None: params["block"] = block
         if detail is not None: params["detail"] = detail
         if sync is not None: params["sync"] = sync
+        if check is not None: params["check"] = check
+        if pour: params["pour"] = True
         result = self._call("apply", **params)
         if not dry_run and "project" in result:
             self.summary = result["project"]

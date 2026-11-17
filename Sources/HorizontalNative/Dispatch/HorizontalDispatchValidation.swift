@@ -14,13 +14,24 @@ enum HorizontalDispatchValidation {
         let unknown = Set(params.keys).subtracting(allowed)
         guard unknown.isEmpty else { throw HorizontalDispatchError.invalidParams("Unknown parameters: \(unknown.sorted().joined(separator: ", ")).") }
         let integers: Set<String> = ["handle", "sheet", "max_pixels", "limit", "layer"]
-        let numbers: Set<String> = ["dpi", "margin_mm", "deadline_unix_ms", "factor"]
+        let numbers: Set<String> = ["dpi", "margin_mm", "deadline_unix_ms", "factor", "radius_mm", "grid_mm", "diameter_mm", "hole_mm", "width_mm", "window_mm", "spacing_mm", "ring_mm"]
         let booleans: Set<String> = ["include_metadata", "include_unconnected", "include_no_populate", "dry_run",
                                      "mirrored", "redo", "allow_project_changes", "smashed", "airwires", "full",
-                                     "include_contents", "connected", "compact", "blank_board", "sync"]
-        let objects: Set<String> = ["region", "options"]
-        let arrays: Set<String> = ["ops", "items", "pool_items", "components", "nets", "layers", "layer_ids", "sections", "panes", "parts", "remove", "pads", "targets"]
+                                     "include_contents", "connected", "compact", "blank_board", "sync",
+                                     "include_pads", "outline", "silkscreen", "pour", "package_texts", "planes"]
+        let objects: Set<String> = ["region", "options", "at", "near", "link", "from", "cut", "starts"]
+        // The board's own reads name layers by number, as every op does;
+        // render_board names its drawing layers by name.
+        let numberedLayers = method != "render_board"
+        let arrays: Set<String> = ["ops", "items", "pool_items", "components", "nets", "layers", "layer_ids", "sections", "panes", "parts", "remove", "pads", "targets",
+                                   "candidates", "ignore", "to", "avoid", "between", "highlight", "overlay"]
         for (key, value) in params {
+            // escape_analysis maps each net to where it has to end; elsewhere
+            // targets is a list of names.
+            if key == "targets", method == "escape_analysis" {
+                guard value is JSONDictionary else { throw HorizontalDispatchError.invalidParams("targets must be an object of net to end.") }
+                continue
+            }
             if integers.contains(key) { try number(value, key: key, integer: true) }
             else if numbers.contains(key) { try number(value, key: key) }
             else if booleans.contains(key) { try boolean(value, key: key) }
@@ -28,13 +39,15 @@ enum HorizontalDispatchValidation {
                 guard value is JSONDictionary else { throw HorizontalDispatchError.invalidParams("\(key) must be an object.") }
             } else if arrays.contains(key) {
                 guard let array = value as? [Any], array.count <= 10_000 else { throw HorizontalDispatchError.invalidParams("\(key) must be an array of at most 10000 entries.") }
-                if ["ops", "items", "pool_items"].contains(key), !array.allSatisfy({ $0 is JSONDictionary }) {
+                if ["ops", "items", "pool_items", "candidates", "to", "avoid", "overlay"].contains(key), !array.allSatisfy({ $0 is JSONDictionary }) {
                     throw HorizontalDispatchError.invalidParams("\(key) entries must be objects.")
                 }
                 if key == "layer_ids" {
                     for item in array { try number(item, key: "layer_ids entry", integer: true) }
                 }
-                if !["ops", "items", "pool_items", "layer_ids"].contains(key), !array.allSatisfy({ $0 is String }) {
+                if key == "layers", numberedLayers {
+                    for item in array { try number(item, key: "layers entry", integer: true) }
+                } else if !["ops", "items", "pool_items", "layer_ids", "candidates", "to", "avoid", "overlay"].contains(key), !array.allSatisfy({ $0 is String }) {
                     throw HorizontalDispatchError.invalidParams("\(key) entries must be strings.")
                 }
             } else if !(value is String) { throw HorizontalDispatchError.invalidParams("\(key) must be a string.") }
