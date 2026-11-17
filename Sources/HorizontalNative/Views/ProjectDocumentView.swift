@@ -721,6 +721,8 @@ struct ProjectWorkspaceView: View {
     /// Canvases `selectComponents` just changed on another view's behalf.
     /// Their next selection report is the one they were given (104).
     @State private var crossProbedPanes = Set<HorizontalPane>()
+    /// Where the selection was made when no other window shares it.
+    @State private var ownSelectionOrigin: HorizontalSelectionOrigin?
     @State private var selectionPropertyChangeCommands = [HorizontalPane: HorizontalSelectionPropertyChangeCommand]()
     @State private var schematicNetSegmentSelection: HorizontalNetSegmentSelectionSidebarState?
     @State private var schematicNetSegmentSelectionCommand: HorizontalNetSegmentSelectionCommand?
@@ -2577,7 +2579,7 @@ struct ProjectWorkspaceView: View {
                                 selectionToolSettings: selectionToolSettings,
                                 isReadOnly: isReadOnly,
                                 ignoresCanvasMouseEvents: panesWithPointerInsideToolbar.contains(.schematic) || pointerInsideRightSidebar,
-                                onSelectedNetChange: selectNet,
+                                onSelectedNetChange: { selectNet($0, from: .schematic) },
                                 onSelectedComponentChange: { selectComponents($0, from: .schematic) },
                                 onHighlightNetCommand: highlightSelectedNet,
                                 onHighlightComponentCommand: { spotlightFromCanvas($0, from: .schematic) },
@@ -2797,7 +2799,7 @@ struct ProjectWorkspaceView: View {
                                 selectionToolSettings: selectionToolSettings,
                                 isReadOnly: isReadOnly,
                                 ignoresCanvasMouseEvents: panesWithPointerInsideToolbar.contains(.board) || pointerInsideRightSidebar,
-                                onSelectedNetChange: selectNet,
+                                onSelectedNetChange: { selectNet($0, from: .board) },
                                 onSelectedComponentChange: { selectComponents($0, from: .board) },
                                 onHighlightNetCommand: highlightSelectedNet,
                                 onHighlightComponentCommand: { spotlightFromCanvas($0, from: .board) },
@@ -3376,11 +3378,30 @@ struct ProjectWorkspaceView: View {
         }
     }
 
-    private func selectNet(_ netIDs: Set<String>) {
+    /// Where the selection the workspace shows was made, kept where the
+    /// selection is: with the project's other windows when they share it.
+    private var selectionOrigin: HorizontalSelectionOrigin? {
+        get {
+            if let sharedProject {
+                return sharedProject.selectionOrigin
+            }
+            return ownSelectionOrigin
+        }
+        nonmutating set {
+            if let sharedProject {
+                sharedProject.selectionOrigin = newValue
+            } else {
+                ownSelectionOrigin = newValue
+            }
+        }
+    }
+
+    private func selectNet(_ netIDs: Set<String>, from origin: HorizontalPane? = nil) {
         if netIDs != selectedNetIDs {
             highlightedNetIDs.removeAll()
         }
         selectedNetIDs = netIDs
+        selectionOrigin = HorizontalSelectionOrigin(pane: origin, window: windowID)
     }
 
     /// The workspace's component selection, the last one made: what the 3D
@@ -3395,12 +3416,15 @@ struct ProjectWorkspaceView: View {
     /// unplaced column, which scrolls to it, and the pick goes again when the
     /// schematic selects something else — though not on a page change
     /// (`keepingHighlight`), which drops only the schematic's selection.
+    /// Where it was made is kept (`selectionOrigin`), for that page change
+    /// to leave alone a selection the schematic didn't make.
     private func selectComponents(_ componentIDs: Set<String>, from origin: HorizontalPane? = nil,
                                   keepingHighlight: Bool = false) {
         if componentIDs != selectedComponentIDs, !keepingHighlight {
             highlightedComponentIDs.removeAll()
         }
         selectedComponentIDs = componentIDs
+        selectionOrigin = HorizontalSelectionOrigin(pane: origin, window: windowID)
         for pane in HorizontalPane.componentSelectionTargets(from: origin) {
             let named = pane == .schematic ? schematicComponentIDs(componentIDs) : boardComponentIDs(componentIDs)
             if canvasCommandActionsByPane[pane]?.selectComponents?(named) == true {
@@ -3443,7 +3467,8 @@ struct ProjectWorkspaceView: View {
     /// fitted with the part, selected and highlighted on the board and in
     /// the schematic. When the schematic shows a sheet that draws none of
     /// them, it goes to the first sheet that does, as `zoom_to` would; the
-    /// highlight follows a page change where the selection doesn't.
+    /// highlight follows the page change, and so does the selection, which
+    /// the schematic didn't make.
     private func selectComponents(usingPart partID: String) {
         let users = HorizontalDesignIndex(project: project).sortedComponents
             .filter { $0.partID?.caseInsensitiveCompare(partID) == .orderedSame }
@@ -3465,8 +3490,13 @@ struct ProjectWorkspaceView: View {
 
     /// A schematic page change drops the page's selection, and only the
     /// schematic's, but a highlight is by net and component, so it follows
-    /// onto the next page.
+    /// onto the next page. So does a selection made anywhere else, the
+    /// board's say, which is still selected there: it stays the workspace's,
+    /// boxed on the page turned to and what Spotlight takes.
     private func clearSelectionKeepingHighlight() {
+        guard selectionOrigin?.goesWithSchematicPage(in: windowID) == true else {
+            return
+        }
         selectedNetIDs = []
         selectComponents([], from: .schematic, keepingHighlight: true)
     }

@@ -15,6 +15,9 @@ final class HorizontalSharedProject: ObservableObject {
     @Published var highlightedNetIDs = Set<String>()
     @Published var selectedComponentIDs = Set<String>()
     @Published var highlightedComponentIDs = Set<String>()
+    /// Where the selection was made, and in which window. Not published:
+    /// nothing is drawn from it.
+    var selectionOrigin: HorizontalSelectionOrigin?
 
     /// The project as the window that last changed it has it, and which
     /// window that was. Not published: a window follows it through

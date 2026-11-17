@@ -135,6 +135,9 @@ struct HorizontalIPadProjectView: View {
     @State private var selectionDetailsByPane = [HorizontalPane: HorizontalSelectionDetailState]()
     /// Canvases `selectComponents` just changed on another view's behalf (104).
     @State private var crossProbedPanes = Set<HorizontalPane>()
+    /// Where the selection was made, for a schematic page change to leave
+    /// alone one the schematic didn't make, as on the Mac.
+    @State private var selectionOrigin: HorizontalSelectionOrigin?
     @State private var selectionPropertyChangeCommands = [HorizontalPane: HorizontalSelectionPropertyChangeCommand]()
     // Part placement: the part browser sets a request, which the schematic canvas
     // picks up (via its onAppear/onChange) to start the place-on-canvas interaction.
@@ -1732,10 +1735,11 @@ struct HorizontalIPadProjectView: View {
                     crossSelectedComponentIDs: schematicComponentIDs(selectedComponentIDs),
                     selectionToolSettings: selectionToolSettings,
                     isReadOnly: isReadOnly,
-                    onSelectedNetChange: { selectedNetIDs = $0 },
+                    onSelectedNetChange: { selectNets($0, from: .schematic) },
                     onSelectedComponentChange: { selectComponents($0, from: .schematic) },
                     onHighlightNetCommand: { highlightedNetIDs = $0 },
                     onHighlightComponentCommand: { spotlightFromCanvas($0, from: .schematic) },
+                    onSelectionClearedBySheetChange: clearSelectionOfSchematicPage,
                     onSheetChange: { applyEditedSchematicSheet($0) },
                     onMergeNetsSheetChange: { sheet, merges, actionName in
                         applyEditedSchematicSheet(sheet, mergingNets: merges, actionName: actionName)
@@ -1856,7 +1860,7 @@ struct HorizontalIPadProjectView: View {
                     crossSelectedComponentIDs: boardComponentIDs(selectedComponentIDs),
                     selectionToolSettings: selectionToolSettings,
                     isReadOnly: isReadOnly,
-                    onSelectedNetChange: { selectedNetIDs = $0 },
+                    onSelectedNetChange: { selectNets($0, from: .board) },
                     onSelectedComponentChange: { selectComponents($0, from: .board) },
                     onHighlightNetCommand: { highlightedNetIDs = $0 },
                     onHighlightComponentCommand: { spotlightFromCanvas($0, from: .board) },
@@ -2989,7 +2993,7 @@ struct HorizontalIPadProjectView: View {
             highlightedComponentIDs = components
         }
         live.setSelection = { nets, components in
-            selectedNetIDs = nets
+            selectNets(nets)
             selectComponents(components)
         }
         live.visibleBounds = { pane in
@@ -3103,8 +3107,25 @@ struct HorizontalIPadProjectView: View {
         project?.flattenedBlock?.boardComponentIDs(for: componentIDs) ?? componentIDs
     }
 
+    private func selectNets(_ netIDs: Set<String>, from origin: HorizontalPane? = nil) {
+        selectedNetIDs = netIDs
+        selectionOrigin = HorizontalSelectionOrigin(pane: origin)
+    }
+
+    /// The schematic turned its page, which drops its own selection. The
+    /// workspace's goes with it only when the schematic made it: the board's,
+    /// still selected there, stays boxed on the page turned to.
+    private func clearSelectionOfSchematicPage() {
+        guard selectionOrigin?.goesWithSchematicPage() == true else {
+            return
+        }
+        selectNets([], from: .schematic)
+        selectComponents([], from: .schematic)
+    }
+
     private func selectComponents(_ componentIDs: Set<String>, from origin: HorizontalPane? = nil) {
         selectedComponentIDs = componentIDs
+        selectionOrigin = HorizontalSelectionOrigin(pane: origin)
         for pane in HorizontalPane.componentSelectionTargets(from: origin) {
             if canvasActions(for: pane)?.selectComponents?(pane == .schematic ? schematicComponentIDs(componentIDs) : boardComponentIDs(componentIDs)) == true {
                 crossProbedPanes.insert(pane)
