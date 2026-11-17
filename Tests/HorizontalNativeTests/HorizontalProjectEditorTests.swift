@@ -2251,6 +2251,41 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertNotNil(try call("apply", ["ops": [["op": "place_keepout", "vertices": [["x_mm": 0, "y_mm": 0]]]]])["error"])
     }
 
+    /// What a keepout keeps out is given when it is placed and changed after.
+    func testKeepoutTypesAreSetAndChanged() throws {
+        let placed = try apply([["op": "place_keepout", "vertices": square(10)]])
+        let id = try XCTUnwrap((placed["changes"] as? [[String: Any]])?.first?["keepout"] as? String)
+        func listed() throws -> [String: Any] {
+            try XCTUnwrap((try result("list_keepouts") as? [[String: Any]])?.first { $0["id"] as? String == id })
+        }
+        XCTAssertEqual(try listed()["types"] as? [String], ["track", "pad", "pad_th", "via", "plane", "hole_pth"],
+                       "a keepout placed without types keeps out what one defined in the app does")
+
+        _ = try apply([["op": "place_keepout", "vertices": square(20), "types": ["via", "track"]]])
+        XCTAssertTrue(try XCTUnwrap(try result("list_keepouts") as? [[String: Any]])
+            .contains { $0["types"] as? [String] == ["track", "via"] })
+
+        let changed = try apply([["op": "set_keepout", "keepout": id, "types": ["plane"], "keepout_class": "antenna"]])
+        XCTAssertEqual((changed["changes"] as? [[String: Any]])?.first?["types"] as? [String], ["plane"])
+        XCTAssertEqual(try listed()["types"] as? [String], ["plane"])
+        XCTAssertEqual(try listed()["keepout_class"] as? String, "antenna")
+        XCTAssertEqual(try listed()["all_copper_layers"] as? Bool, true, "what the op doesn't name stays")
+        XCTAssertEqual((try listed()["vertices"] as? [[String: Any]])?.count, 4)
+
+        _ = try apply([["op": "set_keepout", "id": id, "all_copper_layers": false, "types": [String]()]])
+        XCTAssertEqual(try listed()["types"] as? [String], [])
+        XCTAssertEqual(try listed()["all_copper_layers"] as? Bool, false)
+
+        // The app reads what was written.
+        _ = try apply([["op": "set_keepout", "keepout": id, "types": ["hole_npth", "track"]]])
+        let board = try XCTUnwrap(try HorizontalProject.load(from: packageURL).board)
+        XCTAssertEqual(board.keepouts.first { $0.id.lowercased() == id }?.copperPatchTypes, ["track", "hole_npth"])
+
+        XCTAssertNotNil(try call("apply", ["ops": [["op": "set_keepout", "keepout": id, "types": ["copper"]]]])["error"])
+        XCTAssertNotNil(try call("apply", ["ops": [["op": "set_keepout", "keepout": id]]])["error"])
+        XCTAssertNotNil(try call("apply", ["ops": [["op": "set_keepout", "keepout": "nope", "types": ["via"]]]])["error"])
+    }
+
     /// Two sheets cannot share a page number: renumbering moves the pages
     /// between, or swaps when asked.
     func testSheetsAreRenumberedByMovingOrSwapping() throws {

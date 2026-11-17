@@ -3424,6 +3424,7 @@ enum HorizontalDispatchMethods {
                 "all_copper_layers": allLayers,
                 "exposed_copper_only": item.bool("exposed_cu_only") ?? false,
                 "keepout_class": item.string("keepout_class") ?? "",
+                "types": item["patch_types_cu"] as? [String] ?? [],
                 "vertices": (polygon?["vertices"] as? [JSONDictionary] ?? []).map { vertex -> JSONDictionary in
                     let position = vertex["position"] as? [Any] ?? []
                     return ["x_mm": HorizontalDispatchJSON.mm(JSONHelper.doubleValue(position.first ?? 0)),

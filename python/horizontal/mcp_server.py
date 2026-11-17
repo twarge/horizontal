@@ -1176,7 +1176,8 @@ def list_holes(path: str | None = None) -> list[dict[str, Any]]:
 @_tool
 def list_keepouts(path: str | None = None) -> list[dict[str, Any]]:
     """Areas copper may not enter, with the polygon bounding each. A keepout with all_copper_layers applies to
-    every copper layer; otherwise it applies to the layer its polygon is on."""
+    every copper layer; otherwise it applies to the layer its polygon is on. types is the kinds of copper it keeps
+    out (track, pad, pad_th, via, plane, text, net_tie, hole_pth, hole_npth); set_keepout changes them."""
     return _resolve(path).keepouts()
 
 

@@ -91,6 +91,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     case placeHole = "place_hole"
     case removeHole = "remove_hole"
     case placeKeepout = "place_keepout"
+    case setKeepout = "set_keepout"
     case removeKeepout = "remove_keepout"
     case placeBoardText = "place_board_text"
     case removeBoardText = "remove_board_text"
@@ -201,6 +202,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .placeHole: "Put a hole through the board — a mounting hole, or a plated one on a net."
         case .removeHole: "Remove a board hole."
         case .placeKeepout: "Mark an area where copper may not go, on one layer or all of them."
+        case .setKeepout: "Change what a keepout keeps out: the kinds of copper, its class, whether it is on every copper layer, whether only exposed copper."
         case .removeKeepout: "Remove a keepout and the polygon bounding it."
         case .placeBoardText: "Write a text on a board layer — silkscreen, assembly, fabrication notes — or change one that is there. As with place_text, an id from list_board_texts changes that text, and x_mm, y_mm or both move it; an id that names no text makes one under it."
         case .removeBoardText: "Remove a board text. A text a package carries belongs to that package."
@@ -223,11 +225,14 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     static let targetFields: [Self: String] = [
         .removeNetLine: "line", .setNetLineEndpoint: "line", .removeJunction: "junction",
         .removeTrack: "track", .setTrackWidth: "track", .removeVia: "via",
-        .removePolygon: "polygon", .removePlane: "plane", .removeHole: "hole", .removeKeepout: "keepout",
+        .removePolygon: "polygon", .removePlane: "plane", .removeHole: "hole", .setKeepout: "keepout", .removeKeepout: "keepout",
         .removeDimension: "dimension", .removeBus: "bus", .removeNetTie: "net_tie",
         .removeBlockInstance: "instance", .removeBlockSymbol: "instance", .setBlockInstance: "instance",
         .renameBlock: "block", .removeBlock: "block"
     ]
+
+    private static let keepoutTypesHelp =
+        "The kinds of copper kept out, a list of: " + HorizontalKeepout.patchTypeIDs.joined(separator: ", ")
 
     var params: [String: String] {
         var params = ownParams
@@ -529,6 +534,13 @@ enum HorizontalEditOperationKind: String, CaseIterable {
             return ["vertices": "Three or more {\"x_mm\", \"y_mm\"} points bounding the area.",
                     "layer": "Copper layer number (optional; omit for every copper layer).",
                     "keepout_class": "Horizon's keepout class name, which its rules match on (optional).",
+                    "exposed_copper_only": "Only exposed copper is kept out (optional).",
+                    "types": Self.keepoutTypesHelp + " (optional; default track, pad, pad_th, via, plane and hole_pth)."]
+        case .setKeepout:
+            return ["keepout": "Keepout id, from list_keepouts.",
+                    "types": Self.keepoutTypesHelp + ", replacing the ones it had (optional).",
+                    "keepout_class": "Horizon's keepout class name, which its rules match on (optional).",
+                    "all_copper_layers": "true for every copper layer, false for its polygon's layer alone (optional).",
                     "exposed_copper_only": "Only exposed copper is kept out (optional)."]
         case .removeKeepout:
             return ["keepout": "Keepout id, from list_keepouts."]
@@ -636,6 +648,12 @@ struct HorizontalEditOperation {
                 guard let pins = value as? [Any], !pins.isEmpty, pins.allSatisfy({ $0 is String }) else {
                     throw HorizontalDispatchError.invalidParams("pins must be a non-empty array of pin names or ids.")
                 }
+            } else if key == "types", kind == .placeKeepout || kind == .setKeepout {
+                guard let types = value as? [Any], types.allSatisfy({ $0 is String }) else {
+                    throw HorizontalDispatchError.invalidParams(
+                        "types must be an array of the kinds of copper kept out: \(HorizontalKeepout.patchTypeIDs.joined(separator: ", "))."
+                    )
+                }
             } else if key == "items", kind == .moveToOtherSheet {
                 guard let list = value as? [Any], !list.isEmpty, list.allSatisfy({ $0 is String }) else {
                     throw HorizontalDispatchError.invalidParams("items must be a non-empty array of ids.")
@@ -677,7 +695,7 @@ struct HorizontalEditOperation {
                        "label_distance_mm", "length_mm", "texts_within_mm", "diameter_mm", "hole_mm", "dx_mm", "dy_mm", "scale",
                        "min_x_mm", "min_y_mm", "max_x_mm", "max_y_mm", "margin_mm"].contains(key) {
                 try HorizontalDispatchValidation.number(value, key: key)
-            } else if ["no_populate", "is_power", "create_net", "bottom", "include_routing", "mirror", "offsheet_refs", "exposed_copper_only",
+            } else if ["no_populate", "is_power", "create_net", "bottom", "include_routing", "mirror", "offsheet_refs", "exposed_copper_only", "all_copper_layers",
                        "force", "cascade", "swap", "remove_routing", "display_all_pads", "no_connect", "disconnect",
                        "unanchored", "stubs", "use_primary_name", "all", "keep_wiring", "board", "is_port", "nc", "show_port", "fill_gaps", "keep", "ignore_unknown",
                        "flip", "fit_ports", "move_texts"].contains(key) {
@@ -1171,6 +1189,8 @@ final class HorizontalProjectEditor {
             change.merge(try removeBoardEntry(params, key: "holes", selector: "hole", label: "hole")) { _, new in new }
         case .placeKeepout:
             change.merge(try placeKeepout(params)) { _, new in new }
+        case .setKeepout:
+            change.merge(try setKeepout(params)) { _, new in new }
         case .removeKeepout:
             change.merge(try removeKeepout(params)) { _, new in new }
         case .placeBoardText:
@@ -6153,9 +6173,33 @@ final class HorizontalProjectEditor {
                 "x_mm": x, "y_mm": y]
     }
 
+    /// A keepout op's `types`: the kinds of copper kept out, checked against
+    /// the ones Horizon knows and put in the order the app writes them. Nil
+    /// when the op gives none.
+    private func keepoutTypes(_ params: JSONDictionary, op: String) throws -> [String]? {
+        guard let value = params["types"], !(value is NSNull) else {
+            return nil
+        }
+        let known = HorizontalKeepout.patchTypeIDs
+        guard let given = value as? [String] else {
+            throw HorizontalDispatchError.invalidParams(
+                "\(op)'s \"types\" is a list of the kinds of copper kept out: \(known.joined(separator: ", "))."
+            )
+        }
+        let types = Set(given.map { $0.lowercased() })
+        let unknown = types.subtracting(known).sorted()
+        guard unknown.isEmpty else {
+            throw HorizontalDispatchError.invalidParams(
+                "\(op) knows no keepout type \(unknown.joined(separator: ", ")). The types are \(known.joined(separator: ", "))."
+            )
+        }
+        return known.filter(types.contains)
+    }
+
     private func placeKeepout(_ params: JSONDictionary) throws -> JSONDictionary {
         let vertices = try polygonVertices(params)
         let layer = params.int("layer")
+        let types = try keepoutTypes(params, op: "place_keepout") ?? HorizontalKeepout.defaultPatchTypes
         // A keepout's shape is a polygon like a plane's; the layer lives on the
         // polygon, and a keepout with none applies to all copper.
         let polygon = try writePolygon(layer: layer ?? HorizontalBoardLayers.topCopper, vertices: vertices)
@@ -6166,11 +6210,47 @@ final class HorizontalProjectEditor {
                             "keepout_class": params.string("keepout_class") ?? "",
                             "all_cu_layers": layer == nil,
                             "exposed_cu_only": params.bool("exposed_copper_only") ?? false,
-                            "patch_types_cu": [String]()]
+                            "patch_types_cu": types]
             board["keepouts"] = keepouts
         }
         return ["keepout": id, "polygon": polygon, "layer": layer as Any? as Any,
-                "all_copper_layers": layer == nil]
+                "all_copper_layers": layer == nil, "types": types]
+    }
+
+    /// Changes a keepout that is there, leaving what the op doesn't name,
+    /// its outline included, as it was.
+    private func setKeepout(_ params: JSONDictionary) throws -> JSONDictionary {
+        guard let reference = params.string("keepout"), !reference.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("set_keepout needs \"keepout\"; list_keepouts returns the ids.")
+        }
+        let keepouts = try board()["keepouts"] as? JSONDictionary ?? [:]
+        guard let match = keepouts.first(where: { $0.key.caseInsensitiveCompare(reference) == .orderedSame }),
+              var item = match.value as? JSONDictionary else {
+            throw HorizontalDispatchError.notFound("No keepout \(reference) on the board.")
+        }
+        let types = try keepoutTypes(params, op: "set_keepout")
+        let keepoutClass = params.string("keepout_class")
+        let allLayers = params.bool("all_copper_layers")
+        let exposedOnly = params.bool("exposed_copper_only")
+        guard types != nil || keepoutClass != nil || allLayers != nil || exposedOnly != nil else {
+            throw HorizontalDispatchError.invalidParams(
+                "set_keepout changes nothing as given: name \"types\", \"keepout_class\", \"all_copper_layers\" or \"exposed_copper_only\"."
+            )
+        }
+        if let types { item["patch_types_cu"] = types }
+        if let keepoutClass { item["keepout_class"] = keepoutClass }
+        if let allLayers { item["all_cu_layers"] = allLayers }
+        if let exposedOnly { item["exposed_cu_only"] = exposedOnly }
+        try updateBoard { board in
+            var keepouts = board["keepouts"] as? JSONDictionary ?? [:]
+            keepouts[match.key] = item
+            board["keepouts"] = keepouts
+        }
+        return ["keepout": match.key,
+                "types": item["patch_types_cu"] as? [String] ?? [],
+                "keepout_class": item.string("keepout_class") ?? "",
+                "all_copper_layers": item.bool("all_cu_layers") ?? false,
+                "exposed_copper_only": item.bool("exposed_cu_only") ?? false]
     }
 
     private func removeKeepout(_ params: JSONDictionary) throws -> JSONDictionary {

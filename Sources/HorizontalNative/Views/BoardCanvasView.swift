@@ -3178,7 +3178,7 @@ struct BoardCanvasView: View {
     ]
     /// What a keepout defined here keeps out, as a package's keepout starts:
     /// the board's copper and its plated holes.
-    static let defaultKeepoutPatchTypes = ["track", "pad", "pad_th", "via", "plane", "hole_pth"]
+    static let defaultKeepoutPatchTypes = HorizontalKeepout.defaultPatchTypes
 
     private func actionProperty(_ id: String, _ title: String, section: String? = nil) -> HorizontalSelectionProperty {
         HorizontalSelectionProperty(id: id, label: title, editor: .action, value: .bool(true), section: section)

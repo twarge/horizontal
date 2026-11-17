@@ -1092,11 +1092,25 @@ class RemoveHole(Targeted):
     hole: StrictStr | None = None
 
 
+KeepoutType = Literal["track", "pad", "pad_th", "via", "plane", "text", "net_tie", "hole_pth", "hole_npth"]
+
+
 class PlaceKeepout(Input):
     op: Literal["place_keepout"]
     vertices: list[ArcVertex] = Field(min_length=3)
     layer: StrictInt | None = None
     keepout_class: str | None = None
+    exposed_copper_only: bool | None = None
+    types: list[KeepoutType] | None = None
+
+
+class SetKeepout(Targeted):
+    target: ClassVar[str] = "keepout"
+    op: Literal["set_keepout"]
+    keepout: StrictStr | None = None
+    types: list[KeepoutType] | None = None
+    keepout_class: str | None = None
+    all_copper_layers: bool | None = None
     exposed_copper_only: bool | None = None
 
 
@@ -1284,7 +1298,7 @@ EditOperation = Annotated[EnsureComponent | RemoveComponent | RemovePlacement | 
                           PlaceBlockSymbol | RemoveBlockSymbol | DisconnectBlockPort | SetBlockInstance |
                           AddBlock | RenameBlock | RemoveBlock | SetNetPort | PlaceBlockPort | RemoveBlockPort | SetBlockSymbolBox | Annotate | SetStackup |
                           AddRule | SetRule | RemoveRule |
-                          PlaceHole | RemoveHole | PlaceKeepout | RemoveKeepout | SetSheetIndex |
+                          PlaceHole | RemoveHole | PlaceKeepout | SetKeepout | RemoveKeepout | SetSheetIndex |
                           PlaceBoardText | RemoveBoardText | PlaceDimension | RemoveDimension | PlaceDecal | RemoveDecal |
                           AddBus | RemoveBus | AddBusMember | RemoveBusMember | RenameBusMember | PlaceBusLabel | PlaceBusRipper |
                           AddNetTie | RemoveNetTie | PlaceNetTie | CopyLayout | SetProjectMeta | SetExportSettings,
