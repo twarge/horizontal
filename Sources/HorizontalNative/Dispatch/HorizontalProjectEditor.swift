@@ -1331,21 +1331,52 @@ final class HorizontalProjectEditor {
         do {
             return try componentID(params)
         } catch let error as HorizontalDispatchError where error.code == .notFound {
-            guard isTopBlock, let flattened = project.flattenedBlock, let reference = params.string("component") else { throw error }
-            let instances = flattened.json.dictionaryMap("components").filter { flattened.componentPaths[$0.key.lowercased()]?.count ?? 0 > 1 }
-            if let match = instances.keys.first(where: { $0.caseInsensitiveCompare(reference) == .orderedSame }) {
-                return match.lowercased()
-            }
-            let named = instances.filter { $0.value.string("refdes") == reference }
-            guard named.count <= 1 else {
-                throw HorizontalDispatchError.invalidParams("\(named.count) components are named \(reference); use the id.")
-            }
-            if let match = named.first { return match.key.lowercased() }
-            if let match = try HorizontalDispatchValidation.id(matchingPrefix: reference, in: instances.keys, kind: "component") {
-                return match.lowercased()
-            }
-            throw error
+            guard let reference = params.string("component"), let match = try instanceComponentID(reference: reference) else { throw error }
+            return match
         }
+    }
+
+    /// The same for a bare reference, as a track end names its part.
+    private func boardComponentID(reference: String) throws -> String {
+        do {
+            return try componentID(reference: reference)
+        } catch let error as HorizontalDispatchError where error.code == .notFound {
+            guard let match = try instanceComponentID(reference: reference) else { throw error }
+            return match
+        }
+    }
+
+    /// The components the board has that the block's file doesn't: each
+    /// instance's use of a sub-block's component, by flat uuid, as the
+    /// flattened block holds it — its refdes and its pins' nets the
+    /// instance's own. Empty off the top block, which alone has a board.
+    private func instanceComponents() -> [String: JSONDictionary] {
+        guard isTopBlock, let flattened = project.flattenedBlock else { return [:] }
+        return flattened.json.dictionaryMap("components").reduce(into: [:]) { result, item in
+            if flattened.componentPaths[item.key.lowercased()]?.count ?? 0 > 1 { result[item.key.lowercased()] = item.value }
+        }
+    }
+
+    /// The flat uuid of the instance component `reference` names, by that
+    /// uuid, its refdes or the uuid's leading digits; nil when it names none.
+    private func instanceComponentID(reference: String) throws -> String? {
+        let instances = instanceComponents()
+        guard !instances.isEmpty else { return nil }
+        if instances[reference.lowercased()] != nil {
+            return reference.lowercased()
+        }
+        let named = instances.filter { $0.value.string("refdes") == reference }
+        guard named.count <= 1 else {
+            throw HorizontalDispatchError.invalidParams("\(named.count) components are named \(reference); use the id.")
+        }
+        if let match = named.first { return match.key }
+        return try HorizontalDispatchValidation.id(matchingPrefix: reference, in: instances.keys, kind: "component")
+    }
+
+    /// A component the board places a package for, by the id
+    /// `boardComponentID` gives: the block's own, or an instance's.
+    private func boardComponent(_ id: String) -> JSONDictionary? {
+        components()[id] ?? instanceComponents()[id.lowercased()]
     }
 
     private func updateComponent(_ id: String, _ body: (inout JSONDictionary) -> Void) throws {
@@ -1588,6 +1619,56 @@ final class HorizontalProjectEditor {
             return match
         }
         throw HorizontalDispatchError.notFound("No net \(reference).")
+    }
+
+    /// The nets the board carries that the block's file doesn't: the nets
+    /// inside block instances, by the flat uuid and the name (`I1/MID`) the
+    /// flattened block gives each. A port wired to a net outside is that
+    /// net, so it is not among them. Empty off the top block.
+    private func instanceNets() -> [String: JSONDictionary] {
+        guard isTopBlock, let flattened = project.flattenedBlock else { return [:] }
+        let own = Set(nets().keys.map { $0.lowercased() })
+        return flattened.json.dictionaryMap("nets").reduce(into: [:]) { result, item in
+            if !own.contains(item.key.lowercased()) { result[item.key.lowercased()] = item.value }
+        }
+    }
+
+    /// The net a board op names: the block's own, or one inside a block
+    /// instance, by flat uuid, by the flattened block's name for it or by the
+    /// uuid's leading digits. Copper on the board is on those too.
+    private func boardNetID(reference: String) throws -> String {
+        do {
+            return try netID(reference: reference)
+        } catch let error as HorizontalDispatchError where error.code == .notFound {
+            let instances = instanceNets()
+            guard !instances.isEmpty else { throw error }
+            if instances[reference.lowercased()] != nil {
+                return reference.lowercased()
+            }
+            let named = instances.filter { ($0.value.string("name") ?? "") == reference }
+            guard named.count <= 1 else {
+                throw HorizontalDispatchError.invalidParams("\(named.count) nets are named \(reference); use the id.")
+            }
+            if let match = named.first { return match.key }
+            if let match = try HorizontalDispatchValidation.id(matchingPrefix: reference, in: instances.keys, kind: "net") {
+                return match
+            }
+            throw error
+        }
+    }
+
+    private func boardNetID(_ params: JSONDictionary) throws -> String {
+        guard let reference = params.string("net"), !reference.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("Missing \"net\" (a name or id).")
+        }
+        return try boardNetID(reference: reference)
+    }
+
+    /// What to call a net of the board in a message: its name, an instance
+    /// net's the flattened block's, else its id.
+    private func boardNetName(_ id: String) -> String {
+        let name = nets()[id]?.string("name") ?? instanceNets()[id.lowercased()]?.string("name") ?? ""
+        return name.isEmpty ? id : name
     }
 
     /// A component's pin, `gate uuid/pin uuid`, onto a net.
@@ -2680,7 +2761,9 @@ final class HorizontalProjectEditor {
             guard params["symbol_instance"] == nil, params["gate"] == nil else {
                 throw HorizontalDispatchError.invalidParams("\(op) with board takes a component: its package has no gates or symbol instances.")
             }
-            return try smashPackage(componentID(params), smashing: smashing)
+            // A package on the board may be an instance's use of a sub-block's
+            // component, which only the flattened block names.
+            return try smashPackage(boardComponentID(params), smashing: smashing)
         }
         guard params["symbol_instance"] == nil || (params["component"] == nil && params["gate"] == nil) else {
             throw HorizontalDispatchError.invalidParams("Name a symbol_instance, or a component and optionally a gate, not both.")
@@ -2746,7 +2829,7 @@ final class HorizontalProjectEditor {
         try updateBoard { board in
             var packages = board["packages"] as? JSONDictionary ?? [:]
             guard let key = packages.keys.sorted().first(where: {
-                (packages[$0] as? JSONDictionary)?.string("component")?.lowercased() == componentID
+                (packages[$0] as? JSONDictionary)?.string("component")?.lowercased() == componentID.lowercased()
             }), var package = packages[key] as? JSONDictionary else {
                 throw HorizontalDispatchError.notFound("\(componentID) has no package on the board; place_component places it.")
             }
@@ -2764,7 +2847,7 @@ final class HorizontalProjectEditor {
                 package["texts"] = present
                 result["texts"] = [String]()
             } else if smashing {
-                let partID = components()[componentID]?.string("part")
+                let partID = boardComponent(componentID)?.string("part")
                 guard let poolPackage = package.string("alternate_package").flatMap({ pool.package($0) })
                     ?? partID.flatMap({ pool.package(forPart: $0) }) else {
                     throw HorizontalDispatchError.notFound("The project pool has no package for \(componentID) to take its texts from.")
@@ -6161,7 +6244,7 @@ final class HorizontalProjectEditor {
         // A hole on a net is plated and joins that net; one without is a
         // mounting hole. Horizon tells them apart by whether the net is there.
         if params.string("net") != nil {
-            item["net"] = try netID(params)
+            item["net"] = try boardNetID(params)
         }
         let id = UUID().uuidString.lowercased()
         try updateBoard { board in
@@ -7535,15 +7618,17 @@ final class HorizontalProjectEditor {
     /// The pad uuid a name or uuid refers to on a component's package, and the
     /// net its pin is on.
     private func padOnComponent(_ reference: String, padReference: String) throws -> (package: String, pad: String, net: String?) {
-        let componentID = try componentID(reference: reference)
-        guard let component = components()[componentID] else {
+        // A part inside a block instance has its package, its pads and its
+        // pins' nets as the flattened block gives them.
+        let componentID = try boardComponentID(reference: reference)
+        guard let component = boardComponent(componentID) else {
             throw HorizontalDispatchError.notFound("No component \(reference).")
         }
         guard let partID = component.string("part")?.lowercased() else {
             throw HorizontalDispatchError.invalidParams("\(reference) has no part, so it has no pads.")
         }
         let packages = (try board()["packages"] as? JSONDictionary ?? [:])
-        guard let placed = packages.first(where: { ($0.value as? JSONDictionary)?.string("component")?.lowercased() == componentID }) else {
+        guard let placed = packages.first(where: { ($0.value as? JSONDictionary)?.string("component")?.lowercased() == componentID.lowercased() }) else {
             throw HorizontalDispatchError.notFound("\(reference) is not placed on the board; place_component it first.")
         }
         let terminals = pool.terminals(partID: partID)
@@ -7754,17 +7839,17 @@ final class HorizontalProjectEditor {
         // Refusing beats writing copper that quietly ties two nets together.
         let ends = [from.net, to.net].compactMap { $0 }
         if let first = ends.first, ends.contains(where: { $0 != first }) {
-            let names = ends.map { nets()[$0]?.string("name") ?? $0 }
+            let names = ends.map(boardNetName)
             throw HorizontalDispatchError.invalidParams(
                 "The two ends are on different nets (\(names.joined(separator: ", "))); a track between them would short them."
             )
         }
         var carried = ends.first
         if let requested = params.string("net") {
-            let resolved = try netID(reference: requested)
+            let resolved = try boardNetID(reference: requested)
             if let carried, carried != resolved {
                 throw HorizontalDispatchError.invalidParams(
-                    "The ends are on \(nets()[carried]?.string("name") ?? carried), not \(requested)."
+                    "The ends are on \(boardNetName(carried)), not \(requested)."
                 )
             }
             carried = resolved
@@ -7964,7 +8049,9 @@ final class HorizontalProjectEditor {
     private func ruleNetDetails() -> [String: HorizontalNetDetails] {
         let classes = block.dictionaryMap("net_classes")
         var details = [String: HorizontalNetDetails]()
-        for (id, net) in nets() {
+        // An instance's nets are the board's too, each in the class the
+        // flattened block gives it, so a rule that matches by class takes them.
+        for (id, net) in nets().merging(instanceNets(), uniquingKeysWith: { own, _ in own }) {
             let classID = net.string("net_class")?.lowercased()
             details[id.lowercased()] = HorizontalNetDetails(
                 id: id.lowercased(), name: net.string("name") ?? "", netClassID: classID,
@@ -8144,7 +8231,7 @@ final class HorizontalProjectEditor {
         guard let reference = params.string("net") else {
             throw HorizontalDispatchError.invalidParams("place_via needs \"net\": a via carries one.")
         }
-        let net = try netID(reference: reference)
+        let net = try boardNetID(reference: reference)
         for key in ["diameter_mm", "hole_mm"] {
             if let value = params.double(key), value <= 0 { throw HorizontalDispatchError.invalidParams("\(key) must be above zero.") }
         }
@@ -8303,7 +8390,7 @@ final class HorizontalProjectEditor {
         guard let layer = params.int("layer") else {
             throw HorizontalDispatchError.invalidParams("place_plane needs a copper \"layer\".")
         }
-        let net = try netID(params)
+        let net = try boardNetID(params)
         let vertices = try polygonVertices(params)
         let polygon = try writePolygon(layer: layer, vertices: vertices)
         let id = UUID().uuidString.lowercased()

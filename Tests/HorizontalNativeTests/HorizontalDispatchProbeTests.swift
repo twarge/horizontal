@@ -173,6 +173,36 @@ final class HorizontalDispatchProbeTests: XCTestCase {
         XCTAssertEqual((pads["pads"] as? [JSONDictionary])?.first?.dictionary("at_mm")?.double("x_mm") ?? 0, 4.25, accuracy: 1e-9)
     }
 
+    /// A via of the net already there is no site for another: positions
+    /// that would overlap it are left out, and the reply lists it.
+    func testAViaOfTheNetIsNoSiteForAnother() throws {
+        let anchor = "33333333-3333-4333-8333-333333333331"
+        try fixture.addCopper(junctions: [anchor: HorizontalPoint(x: -750_000, y: 3_000_000)],
+                              tracks: ["44444444-4444-4444-8444-444444444441": (try fixture.padEnd(instance, "R1", 1), fixture.junctionEnd(anchor), 0)],
+                              vias: ["55555555-5555-4555-8555-555555555551": anchor])
+        try open()
+        let reply = try XCTUnwrap(try client.result("find_via_sites", [
+            "net": "IN1", "near": ["x_mm": -0.75, "y_mm": 3], "radius_mm": 1, "diameter_mm": 0.35, "grid_mm": 0.05, "limit": 2000,
+        ]) as? JSONDictionary)
+        let sites = try XCTUnwrap(reply["sites"] as? [JSONDictionary])
+        XCTAssertFalse(sites.isEmpty)
+        // The standing via is 0.5 mm across and the one asked about 0.35.
+        XCTAssertTrue(sites.allSatisfy { hypot(($0.double("x_mm") ?? 0) + 0.75, ($0.double("y_mm") ?? 0) - 3) >= 0.425 - 1e-9 },
+                      "\(sites.prefix(3))")
+        let existing = try XCTUnwrap(reply["existing_vias"] as? [JSONDictionary])
+        XCTAssertEqual(existing.count, 1)
+        XCTAssertEqual(existing[0].string("id"), "55555555-5555-4555-8555-555555555551")
+        XCTAssertEqual(existing[0].double("x_mm") ?? 0, -0.75, accuracy: 1e-9)
+        XCTAssertEqual(existing[0].double("distance_mm") ?? 1, 0, accuracy: 1e-9)
+        // Treated as gone, where it stands is a site again.
+        let without = try XCTUnwrap(try client.result("find_via_sites", [
+            "net": "IN1", "near": ["x_mm": -0.75, "y_mm": 3], "radius_mm": 1, "diameter_mm": 0.35, "grid_mm": 0.05, "limit": 2000,
+            "ignore": ["55555555-5555-4555-8555-555555555551"],
+        ]) as? JSONDictionary)
+        XCTAssertNil(without["existing_vias"])
+        XCTAssertEqual((without["sites"] as? [JSONDictionary])?.first?.double("distance_mm") ?? 1, 0, accuracy: 1e-9)
+    }
+
     /// link keeps only the via sites a track can join to an anchor.
     func testViaSitesCanBeKeptToThoseATrackCanJoin() throws {
         let anchor = "33333333-3333-4333-8333-333333333331"

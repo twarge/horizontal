@@ -1336,7 +1336,11 @@ def find_via_sites(net: str,
     A list of points hides the shape of the room, so regions gives the connected areas of legal positions: how many
     sites, area_mm2, box_mm, and rows_mm, each row of the area as [y, first x, last x]. total counts every legal
     position; truncated says whether limit cut the list. When nothing is legal, nearest_miss names the nearest
-    position and what blocks it on each layer."""
+    position and what blocks it on each layer.
+
+    A position whose copper would overlap a via of the net that is already there is not a site — no rule keeps a
+    via off its own net, and the two holes would be drilled into each other. existing_vias lists those vias (id,
+    x_mm, y_mm, diameter_mm, distance_mm), nearest first: end the track on one rather than placing another."""
     return _resolve(path).find_via_sites(net, near.model_dump(), radius_mm=radius_mm, grid_mm=grid_mm, definition=definition,
                                          diameter_mm=diameter_mm, hole_mm=hole_mm, margin_mm=margin_mm or None, link=link,
                                          ignore=ignore, planes=planes or None, limit=limit)
@@ -1352,7 +1356,7 @@ def find_path(start: Annotated[dict[str, Any], Field(description="Where it start
               via: Annotated[str | None, Field(description="A via definition, by name, for changing layers, or \"rules\" for the via rule's. Without it the path stays on one layer.")] = None,
               avoid: Annotated[list[dict[str, Any]] | None, Field(description="Areas to keep out of: {\"layer\"?, \"box_mm\": [min_x, min_y, max_x, max_y]}.")] = None,
               ignore: Annotated[list[str] | None, Field(description="Ids of tracks, vias or pads to treat as gone: would there be a path if this were ripped up?")] = None,
-              grid_mm: Annotated[float, Field(description="The search grid's pitch. Finer finds tighter slots and costs the square of it.", ge=0.005, le=1)] = 0.025,
+              grid_mm: Annotated[float | None, Field(description="The search grid's pitch. Finer finds tighter slots and costs the square of it. Left out, 0.025 where the ends are near and the finest of 0.05, 0.1 or 0.2 that suits the distance where they are far; the reply's grid_mm says which.", ge=0.005, le=1)] = None,
               window_mm: Annotated[float, Field(description="How far beyond the ends' box the search may go.", ge=0, le=100)] = 2.0,
               planes: bool = False) -> dict[str, Any]:
     """Is there a legal path for this connection on these layers, and if not, what blocks it? One connection, searched
@@ -1362,7 +1366,9 @@ def find_path(start: Annotated[dict[str, Any], Field(description="Where it start
 
     found: path (per layer, points_mm), vias, length_mm, bends, tightest (the closest it comes to anything, with
     slack_mm) and ops, ready for apply_ops — each layer change a place_via before the tracks that leave it. Dry-run
-    them with check before committing. reached says which of to it ended on.
+    them with check before committing. reached says which of to it ended on. A via of the net that already stands
+    on the path is used as it is: through_vias lists those, and the ops place none there. No new via overlaps one.
+    An end on a part inside a block instance is named {component, pad} like any other, and place_track takes it.
 
     not found: reason (blocked, or budget when the search ran out before it could tell) and blocked_by, the items that
     bound what the search could reach from the start (from) and from the ends (to), the longest stretch of wall first,

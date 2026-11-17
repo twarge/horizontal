@@ -529,9 +529,15 @@ rules ask, and `ignore`, ids to treat as gone. They leave planes' fills out
 unless `planes`: a pour gives way to new copper, so a fill is no obstacle to a
 route. `find_path` is not the interactive router: it tests grid positions
 against exact shapes, so a slot a few micrometres wider than a track needs is
-found, and it costs a second where the router costs a frame. A request too
-large for its budget is refused with what to change. The same request on the
-same revision gives the same answer.
+found, and it costs a second where the router costs a frame. Without
+`grid_mm` it searches at 0.025 mm where the ends are near and at the finest of
+0.05, 0.1 or 0.2 mm that suits the distance where they are far, and the reply's
+`grid_mm` says which; a stated pitch is the one searched, and a request too
+large for it is refused with the pitch that fits. A via of the net
+already standing on the path is used as it is (`through_vias`), and neither
+`find_path` nor `find_via_sites` offers a via that would overlap one
+(`existing_vias` lists them). The same request on the same revision gives the
+same answer.
 
 **What the silkscreen rule measures.** To copper the solder mask leaves bare,
 which is any copper inside a mask opening, and the opening is wider than the
@@ -544,9 +550,15 @@ does not colour by net. `escape_analysis`'s crossing test is evidence, not
 proof: each net is routed with the other's shortest path drawn. A component
 candidate in `probe_clearance` measures copper and, conservatively,
 silkscreen against mask openings; a dry run of `place_component` with `check`
-measures the board as it would be. In a hierarchical design `place_track`
-cannot name an instance's pad by component, so `find_path`'s ops end such a
-connection on a junction or a point.
+measures the board as it would be.
+
+**Block instances.** A part inside a block instance is named on the board by
+the refdes its instance gives it (or its flat uuid), and a net inside one by
+the flattened block's name for it (`ADC0/AIN0-`) or its flat uuid:
+`place_track`, `place_via`, `place_plane` and `place_hole` take both, as the
+reads and probes do, so `find_path`'s ops for such a connection commit as they
+are. A track end given as a point on a pad's centre is a junction there, not
+a connection to the pad: name the pad.
 
 ### Curves
 

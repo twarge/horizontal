@@ -164,6 +164,63 @@ final class HorizontalPathSearchTests: XCTestCase {
         _ = try XCTUnwrap(path(search(board, from: p(10, 5), to: [p(90, 25)]) { _, request in request.pitch = 200_000 }))
     }
 
+    /// A via of the net that stands on the path is the layer change: the
+    /// path goes through it and places none. One off the grid cannot be gone
+    /// through, and the via the path then places keeps clear of it — no rule
+    /// keeps a via off copper of its own net, so nothing else would.
+    func testAViaOfTheNetIsGoneThroughAndNeverPlacedOn() throws {
+        var fixture = Fixture()
+        fixture.rules = Fixture.clearanceRules(0.125)
+        fixture.tracks = [Fixture.track("wall", p(12, -10), p(12, 30), net: "net-b")]
+        fixture.vias = [Fixture.via("own", at: p(11, 5), net: "net-a")]
+        let via = HorizontalViaShape(diameter: 0.35 * mm, hole: 0.15 * mm, layers: [0, -100], definition: nil, definitionID: nil, source: "local")
+        let through = try XCTUnwrap(path(search(fixture.board, from: p(10, 5), to: [p(14, 5)], layers: [0, -100], via: via) { _, request in
+            request.fromLayers = [0]
+        }))
+        XCTAssertEqual(through.legs.map(\.layer), [0, -100])
+        XCTAssertEqual(through.vias, [p(11, 5)])
+        XCTAssertEqual(through.standing, [0])
+        // It is a way down even for a search given no via to place.
+        let unaided = try XCTUnwrap(path(search(fixture.board, from: p(10, 5), to: [p(14, 5)], layers: [0, -100]) { _, request in
+            request.fromLayers = [0]
+        }))
+        XCTAssertEqual(unaided.standing, [0])
+
+        fixture.vias = [Fixture.via("own", at: p(11.01, 5), net: "net-a")]
+        let beside = try XCTUnwrap(path(search(fixture.board, from: p(10, 5), to: [p(14, 5)], layers: [0, -100], via: via) { _, request in
+            request.fromLayers = [0]
+        }))
+        XCTAssertEqual(beside.vias.count, 1)
+        XCTAssertTrue(beside.standing.isEmpty)
+        for point in beside.vias {
+            XCTAssertGreaterThanOrEqual(hypot(point.x - 11.01 * mm, point.y - 5 * mm), 0.35 * mm - 1)
+        }
+        // Treated as gone, it is neither a way through nor in the way.
+        let ripped = try XCTUnwrap(path(search(fixture.board, from: p(10, 5), to: [p(14, 5)], layers: [0, -100], via: via) { probe, request in
+            probe.ignored = ["own"]
+            request.fromLayers = [0]
+        }))
+        XCTAssertTrue(ripped.standing.isEmpty)
+    }
+
+    /// Without a stated pitch a search takes the finest that fits: 25 µm
+    /// for near ends, coarser by doubling as they move apart.
+    func testThePitchThatFitsADistance() {
+        func request(to: HorizontalPoint, layers: [Int] = [0]) -> HorizontalPathSearch.Request {
+            HorizontalPathSearch.Request(from: p(10, 5), targets: [.init(point: to)], layers: layers, width: 0.1 * mm, net: "net-a")
+        }
+        XCTAssertEqual(HorizontalPathSearch.fittedPitch(for: request(to: p(14, 5)), coarsest: 200_000), 25_000)
+        // 84 × 24 mm with the window: 3.2 million positions at 25 µm, 0.8 at 50, 0.2 at 100.
+        XCTAssertEqual(HorizontalPathSearch.fittedPitch(for: request(to: p(90, 25)), coarsest: 200_000), 100_000)
+        XCTAssertEqual(HorizontalPathSearch.fittedPitch(for: request(to: p(90, 25), layers: [0, -100]), coarsest: 200_000), 100_000)
+        XCTAssertEqual(HorizontalPathSearch.fittedPitch(for: request(to: p(90, 25)), coarsest: 50_000), 50_000, "no coarser than asked")
+        XCTAssertLessThanOrEqual(HorizontalPathSearch.cells(spannedBy: {
+            var fitted = request(to: p(90, 25))
+            fitted.pitch = 100_000
+            return fitted
+        }()), 700_000)
+    }
+
     /// Two nets come in from the west edge, A above B. B's end is a pad
     /// against the north edge, over an obstacle; A's is south-east of it.
     /// Each has a path alone. Once either is drawn the other has none on

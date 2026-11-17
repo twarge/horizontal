@@ -756,6 +756,24 @@ struct HorizontalDesignIndex {
         nets[id.lowercased()]?.name ?? flattenedNetNames[id.lowercased()]
     }
 
+    /// The net inside a block instance `reference` names — one the board
+    /// carries and no block's file holds — by its flat uuid, by the name the
+    /// flattened block gives it (`I1/MID`) or by the uuid's leading digits;
+    /// nil when it names none. What a read of the board's copper, or a probe
+    /// of it, is asked about as readily as a net of the top block.
+    func flattenedNetID(_ reference: String) throws -> String? {
+        guard !flattenedNetNames.isEmpty, !reference.isEmpty else { return nil }
+        if flattenedNetNames[reference.lowercased()] != nil {
+            return reference.lowercased()
+        }
+        let named = flattenedNetNames.filter { $0.value.caseInsensitiveCompare(reference) == .orderedSame }.keys.sorted()
+        guard named.count <= 1 else {
+            throw HorizontalDispatchError.ambiguous("More than one net is named \(reference); use its id.", candidates: named)
+        }
+        if let match = named.first { return match }
+        return try HorizontalDispatchValidation.id(matchingPrefix: reference, in: flattenedNetNames.keys, kind: "net")
+    }
+
     /// The uses of a sub-block's component, one per instance.
     func instances(of componentID: String) -> [HorizontalDesignInstance] {
         let id = componentID.lowercased()

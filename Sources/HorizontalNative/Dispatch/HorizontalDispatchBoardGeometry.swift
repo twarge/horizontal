@@ -55,8 +55,15 @@ enum HorizontalDispatchBoardGeometry {
         }
     }
 
+    /// A net of the board by name or id: a block's, or one inside a block
+    /// instance as the flattened block names it.
     static func netID(_ reference: String, entry: HorizontalDispatchProjectEntry) throws -> String {
-        try HorizontalDispatchValidation.net(reference, index: entry.index).id.lowercased()
+        do {
+            return try HorizontalDispatchValidation.net(reference, index: entry.index).id.lowercased()
+        } catch let error as HorizontalDispatchError where error.code == .notFound {
+            guard let flat = try entry.index.flattenedNetID(reference) else { throw error }
+            return flat
+        }
     }
 
     /// The board package a read names by its part: a refdes, the component's

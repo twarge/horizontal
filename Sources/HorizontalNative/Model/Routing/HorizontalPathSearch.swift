@@ -53,8 +53,11 @@ struct HorizontalPathSearch {
 
     struct Path {
         var legs: [Leg]
-        /// One between each leg and the next.
+        /// One between each leg and the next: where the path changes layer.
         var vias: [HorizontalPoint]
+        /// Which of `vias`, by index, are vias of the net already on the
+        /// board: the path changes layer through them and needs none placed.
+        var standing: Set<Int> = []
         /// Which of the request's targets it reached.
         var target: Int
         var length: Double
@@ -96,37 +99,101 @@ struct HorizontalPathSearch {
     private var blockerCodes: [String: Int32] = [:]
     /// Per cell: 0 unknown, 1 a via fits, 2 none does.
     private var viaState: [UInt8]
+    /// The net's own vias in the window. No rule keeps a via off copper of
+    /// its own net, so a new one would pass every clearance standing in one
+    /// of these, its hole drilled into the other's: a via fits nowhere it
+    /// would overlap one. Where one stands exactly on a grid position the
+    /// path changes layer through it instead, for nothing.
+    private var standingVias: [(centre: HorizontalPoint, radius: Double, layers: Set<Int>)] = []
+    /// `standingVias` by the cell each stands exactly on.
+    private var standingAtCell: [Int: Int] = [:]
 
     private static let steps: [(dx: Int, dy: Int)] = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)]
+
+    /// The grid a request is searched on: it stands on the start, so the path
+    /// leaves it exactly, and reaches the window beyond the ends' box.
+    private struct Grid {
+        var columns: Int
+        var rows: Int
+        var startColumn: Int
+        var startRow: Int
+        var originX: Double
+        var originY: Double
+
+        init(_ request: Request) {
+            var minX = request.from.x, maxX = request.from.x, minY = request.from.y, maxY = request.from.y
+            for target in request.targets {
+                minX = min(minX, target.point.x)
+                maxX = max(maxX, target.point.x)
+                minY = min(minY, target.point.y)
+                maxY = max(maxY, target.point.y)
+            }
+            let left = Int(((request.from.x - minX + request.window) / request.pitch).rounded(.up))
+            let right = Int(((maxX - request.from.x + request.window) / request.pitch).rounded(.up))
+            let down = Int(((request.from.y - minY + request.window) / request.pitch).rounded(.up))
+            let up = Int(((maxY - request.from.y + request.window) / request.pitch).rounded(.up))
+            columns = left + right + 1
+            rows = down + up + 1
+            startColumn = left
+            startRow = down
+            originX = request.from.x - Double(left) * request.pitch
+            originY = request.from.y - Double(down) * request.pitch
+        }
+    }
 
     init(probe: HorizontalBoardProbe, request: Request) {
         self.probe = probe
         self.request = request
-        var minX = request.from.x, maxX = request.from.x, minY = request.from.y, maxY = request.from.y
-        for target in request.targets {
-            minX = min(minX, target.point.x)
-            maxX = max(maxX, target.point.x)
-            minY = min(minY, target.point.y)
-            maxY = max(maxY, target.point.y)
-        }
-        // The grid stands on the start, so the path leaves it exactly.
-        let left = Int(((request.from.x - minX + request.window) / request.pitch).rounded(.up))
-        let right = Int(((maxX - request.from.x + request.window) / request.pitch).rounded(.up))
-        let down = Int(((request.from.y - minY + request.window) / request.pitch).rounded(.up))
-        let up = Int(((maxY - request.from.y + request.window) / request.pitch).rounded(.up))
-        columns = left + right + 1
-        rows = down + up + 1
-        startColumn = left
-        startRow = down
-        originX = request.from.x - Double(left) * request.pitch
-        originY = request.from.y - Double(down) * request.pitch
+        let grid = Grid(request)
+        columns = grid.columns
+        rows = grid.rows
+        startColumn = grid.startColumn
+        startRow = grid.startRow
+        originX = grid.originX
+        originY = grid.originY
         let cells = columns * rows
         let fits = cells * request.layers.count <= request.maxCells
         trackState = [Int32](repeating: 0, count: fits ? cells * request.layers.count : 0)
-        viaState = [UInt8](repeating: 0, count: fits && request.via != nil ? cells : 0)
+        viaState = [UInt8](repeating: 0, count: fits ? cells : 0)
+        guard fits, let net = request.net else { return }
+        let reach = (request.via?.diameter ?? 0) / 2
+        var seen = Set<String>()
+        let box = HorizontalRouteClearanceProbe.bounds(
+            [HorizontalPoint(x: originX, y: originY),
+             HorizontalPoint(x: originX + Double(columns - 1) * request.pitch, y: originY + Double(rows - 1) * request.pitch)], growth: reach)
+        for index in probe.items.indices(overlapping: box) {
+            let item = probe.items.items[index]
+            guard item.kind == .via, item.netID == net, !probe.ignored.contains(item.id.lowercased()),
+                  case .disc(let centre, let radius) = item.shape, seen.insert(item.id).inserted else { continue }
+            let layers = Set(request.layers.filter(item.isOn))
+            let column = ((centre.x - originX) / request.pitch).rounded(), row = ((centre.y - originY) / request.pitch).rounded()
+            if column >= 0, column < Double(columns), row >= 0, row < Double(rows),
+               abs(originX + column * request.pitch - centre.x) < 1, abs(originY + row * request.pitch - centre.y) < 1 {
+                standingAtCell[Int(row) * columns + Int(column)] = standingVias.count
+            }
+            standingVias.append((centre, radius, layers))
+        }
     }
 
     var cellCount: Int { columns * rows * request.layers.count }
+
+    /// The grid positions `request` spans, over all its layers.
+    static func cells(spannedBy request: Request) -> Int {
+        let grid = Grid(request)
+        return grid.columns * grid.rows * request.layers.count
+    }
+
+    /// The finest pitch from the request's own up, doubling, at which it
+    /// spans no more than its `maxCells`, and no coarser than `coarsest`:
+    /// the pitch for a caller that states none. Two ends 40 mm apart are
+    /// searched at 50 or 100 µm, where 25 would be refused.
+    static func fittedPitch(for request: Request, coarsest: Double) -> Double {
+        var fitted = request
+        while cells(spannedBy: fitted) > request.maxCells, fitted.pitch * 2 <= coarsest {
+            fitted.pitch *= 2
+        }
+        return fitted.pitch
+    }
 
     private func position(_ cell: Int) -> HorizontalPoint {
         HorizontalPoint(x: originX + Double(cell % columns) * request.pitch, y: originY + Double(cell / columns) * request.pitch)
@@ -168,10 +235,25 @@ struct HorizontalPathSearch {
     private mutating func viaFits(_ cell: Int) -> Bool {
         guard let via = request.via else { return false }
         if viaState[cell] != 0 { return viaState[cell] == 1 }
-        let candidate = HorizontalBoardProbe.via(at: position(cell), diameter: via.diameter, net: request.net)
-        let fits = via.layers.allSatisfy { probe.firstViolation(candidate, layer: $0) == nil }
+        let at = position(cell)
+        let candidate = HorizontalBoardProbe.via(at: at, diameter: via.diameter, net: request.net)
+        let fits = !standingVias.contains { hypot(at.x - $0.centre.x, at.y - $0.centre.y) < $0.radius + via.diameter / 2 - 1 }
+            && via.layers.allSatisfy { probe.firstViolation(candidate, layer: $0) == nil }
         viaState[cell] = fits ? 1 : 2
         return fits
+    }
+
+    /// The layers, by index into the request's, a path on `layer` at `cell`
+    /// can change to, and whether through a via of the net that stands there
+    /// already rather than one it would place.
+    private mutating func layerChanges(from layer: Int, at cell: Int) -> (layers: [Int], standing: Bool) {
+        if let index = standingAtCell[cell] {
+            let reached = standingVias[index].layers
+            guard reached.contains(request.layers[layer]) else { return ([], true) }
+            return (request.layers.indices.filter { $0 != layer && reached.contains(request.layers[$0]) }, true)
+        }
+        guard let via = request.via, via.layers.contains(request.layers[layer]), viaFits(cell) else { return ([], false) }
+        return (request.layers.indices.filter { $0 != layer && via.layers.contains(request.layers[$0]) }, false)
     }
 
     private func octile(_ a: HorizontalPoint, _ b: HorizontalPoint) -> Double {
@@ -267,17 +349,17 @@ struct HorizontalPathSearch {
                     heap.push(nextState, nextCost + heuristic(nextCell))
                 }
             }
-            // A via here, to any other layer it reaches.
-            if let via = request.via, via.layers.contains(request.layers[layer]), viaFits(cell) {
-                for other in request.layers.indices where other != layer && via.layers.contains(request.layers[other]) {
-                    guard track(other, cell) == 1 else { continue }
-                    let nextState = (other * cells + cell) * 9 + 8
-                    let nextCost = cost[state] + Float(request.viaCost / 1000)
-                    if nextCost < cost[nextState] {
-                        cost[nextState] = nextCost
-                        parent[nextState] = Int32(state)
-                        heap.push(nextState, nextCost + heuristic(cell))
-                    }
+            // A via here, to any other layer it reaches: one the path would
+            // place, at a via's cost, or the net's own that stands here.
+            let change = layerChanges(from: layer, at: cell)
+            for other in change.layers {
+                guard track(other, cell) == 1 else { continue }
+                let nextState = (other * cells + cell) * 9 + 8
+                let nextCost = cost[state] + (change.standing ? 0 : Float(request.viaCost / 1000))
+                if nextCost < cost[nextState] {
+                    cost[nextState] = nextCost
+                    parent[nextState] = Int32(state)
+                    heap.push(nextState, nextCost + heuristic(cell))
                 }
             }
         }
@@ -297,12 +379,16 @@ struct HorizontalPathSearch {
         let targetIndex = goals[chain[chain.count - 1]] ?? 0
         var legs = [Leg]()
         var vias = [HorizontalPoint]()
+        var standing = Set<Int>()
         for node in chain {
             let layer = request.layers[node / cells], at = position(node % cells)
             if let last = legs.last, last.layer == layer {
                 legs[legs.count - 1].points.append(at)
             } else {
-                if !legs.isEmpty { vias.append(at) }
+                if !legs.isEmpty {
+                    if standingAtCell[node % cells] != nil { standing.insert(vias.count) }
+                    vias.append(at)
+                }
                 legs.append(Leg(layer: layer, points: [at]))
             }
         }
@@ -314,7 +400,7 @@ struct HorizontalPathSearch {
             length += HorizontalRoute45.length(of: legs[index].points)
             bends += max(legs[index].points.count - 2, 0)
         }
-        return .found(Path(legs: legs, vias: vias, target: targetIndex, length: length, bends: bends))
+        return .found(Path(legs: legs, vias: vias, standing: standing, target: targetIndex, length: length, bends: bends))
     }
 
     /// `points` without the ones on a straight line between their neighbours.
@@ -394,11 +480,9 @@ struct HorizontalPathSearch {
                 let next = layer * cells + r * columns + c
                 if track(layer, r * columns + c) == 1, seen.insert(next).inserted { pending.append(next) }
             }
-            if let via = request.via, via.layers.contains(request.layers[layer]), viaFits(cell) {
-                for other in request.layers.indices where other != layer && via.layers.contains(request.layers[other]) {
-                    let next = other * cells + cell
-                    if track(other, cell) == 1, seen.insert(next).inserted { pending.append(next) }
-                }
+            for other in layerChanges(from: layer, at: cell).layers {
+                let next = other * cells + cell
+                if track(other, cell) == 1, seen.insert(next).inserted { pending.append(next) }
             }
         }
         return direct + wall(round: seen, cells: cells)

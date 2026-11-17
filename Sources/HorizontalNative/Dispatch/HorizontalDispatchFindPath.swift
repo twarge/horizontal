@@ -62,13 +62,22 @@ enum HorizontalDispatchFindPath {
             from: from.point, fromLayers: (from.layers ?? []).filter(ordered.contains),
             targets: targets.map { .init(point: $0.point, layers: ($0.layers ?? []).filter(ordered.contains)) },
             layers: ordered, width: width, net: net, via: via)
-        if let grid = params.double("grid_mm") {
-            guard grid >= 0.005 else { throw HorizontalDispatchError.invalidParams("grid_mm is at least 0.005.") }
-            request.pitch = grid * nm
-        }
         if let window = params.double("window_mm") {
             guard window >= 0 else { throw HorizontalDispatchError.invalidParams("window_mm cannot be negative.") }
             request.window = window * nm
+        }
+        // A pitch the caller states is the one searched. Without one the
+        // search takes the finest, from 25 µm up, at which the connection
+        // spans no more than a search may, and says which: two ends 40 mm
+        // apart are found at 50 or 100 µm where 25 would be refused.
+        var coarsened: Double?
+        if let grid = params.double("grid_mm") {
+            guard grid >= 0.005 else { throw HorizontalDispatchError.invalidParams("grid_mm is at least 0.005.") }
+            request.pitch = grid * nm
+        } else {
+            let fitted = HorizontalPathSearch.fittedPitch(for: request, coarsest: 200_000)
+            if fitted != request.pitch { coarsened = fitted }
+            request.pitch = fitted
         }
         // An end that can be reached on no layer the path may use.
         if let fromLayers = from.layers, request.fromLayers.isEmpty {
@@ -85,6 +94,9 @@ enum HorizontalDispatchFindPath {
             "grid_mm": HorizontalDispatchJSON.mm(request.pitch), "margin_mm": HorizontalDispatchJSON.mm(probe.margin),
             "planes": "not obstacles: a pour gives way to new copper, so pour_planes after committing",
         ]
+        if let coarsened {
+            result["grid_note"] = "No grid_mm was given and the ends are far apart, so the search ran at \(HorizontalDispatchJSON.mm(coarsened)) mm rather than 0.025; pass grid_mm for a finer one, which finds tighter slots and takes longer."
+        }
         func blockers(_ list: [HorizontalPathSearch.Blocker]) -> [JSONDictionary] {
             list.prefix(24).map { blocker -> JSONDictionary in
                 var json = Probe.json(blocker.obstacle, probe: probe, board: board)
@@ -96,12 +108,12 @@ enum HorizontalDispatchFindPath {
         switch outcome {
         case .tooLarge(let cells):
             throw HorizontalDispatchError.invalidParams(
-                "That search spans \(cells) grid positions; at most \(request.maxCells). Use fewer layers, a coarser grid_mm or a smaller window_mm, or route it in stages through a via_site.")
+                "That search spans \(cells) grid positions; at most \(request.maxCells). Use fewer layers or a smaller window_mm, leave grid_mm out for the finest pitch that fits (here \(HorizontalDispatchJSON.mm(HorizontalPathSearch.fittedPitch(for: request, coarsest: 1_000_000)))), or route it in stages through a via_site.")
         case .exhausted(let fromSide):
             result["found"] = false
             result["reason"] = "budget"
             result["blocked_by"] = ["from": blockers(fromSide), "to": [JSONDictionary]()] as JSONDictionary
-            result["note"] = "The search ran out of budget before it could say there is no path; a coarser grid_mm or a smaller window_mm settles it."
+            result["note"] = "The search ran out of budget before it could say there is no path; a coarser grid_mm or a smaller window_mm settles it, as does a way point: route to a via_site part of the way first."
         case .blocked(let fromSide, let toSide, let reachedWindowEdge):
             result["found"] = false
             result["reason"] = "blocked"
@@ -121,7 +133,7 @@ enum HorizontalDispatchFindPath {
                 }
             }
             if let via {
-                for point in path.vias {
+                for (index, point) in path.vias.enumerated() where !path.standing.contains(index) {
                     let candidate = HorizontalBoardProbe.via(at: point, diameter: via.diameter, net: net)
                     for layer in via.layers {
                         for measurement in probe.measurements(candidate, layer: layer, reach: Probe.reportReach(probe)) {
@@ -139,7 +151,11 @@ enum HorizontalDispatchFindPath {
             result["reached"] = path.target
             result["path"] = path.legs.filter { $0.points.count >= 2 }
                 .map { ["layer": $0.layer, "points_mm": $0.points.map(Geometry.xy)] as JSONDictionary }
-            result["vias"] = path.vias.map { HorizontalDispatchJSON.point($0) }
+            // The vias the ops place, and the net's own the path changes
+            // layer through, which need none.
+            result["vias"] = path.vias.indices.filter { !path.standing.contains($0) }.map { HorizontalDispatchJSON.point(path.vias[$0]) }
+            let through = path.standing.sorted().map { HorizontalDispatchJSON.point(path.vias[$0]) }
+            if !through.isEmpty { result["through_vias"] = through }
             result["length_mm"] = HorizontalDispatchJSON.mm(path.length)
             result["bends"] = path.bends
             if let tightest { result["tightest"] = Probe.json(tightest, probe: probe, board: board) }
@@ -157,7 +173,7 @@ enum HorizontalDispatchFindPath {
         let netReference = name.isEmpty ? net : name
         var ops = [JSONDictionary]()
         for (legIndex, leg) in path.legs.enumerated() {
-            if legIndex > 0, let via, legIndex - 1 < path.vias.count {
+            if legIndex > 0, let via, legIndex - 1 < path.vias.count, !path.standing.contains(legIndex - 1) {
                 let at = path.vias[legIndex - 1]
                 var op: JSONDictionary = ["op": "place_via", "x_mm": HorizontalDispatchJSON.mm(at.x), "y_mm": HorizontalDispatchJSON.mm(at.y),
                                           "net": netReference]

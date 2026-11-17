@@ -13,7 +13,7 @@ enum HorizontalDispatchValidation {
         let allowed = Set(descriptor.params.keys).union(common)
         let unknown = Set(params.keys).subtracting(allowed)
         guard unknown.isEmpty else { throw HorizontalDispatchError.invalidParams("Unknown parameters: \(unknown.sorted().joined(separator: ", ")).") }
-        let integers: Set<String> = ["handle", "sheet", "max_pixels", "limit", "layer"]
+        let integers: Set<String> = ["handle", "sheet", "max_pixels", "limit", "layer", "max_routes"]
         let numbers: Set<String> = ["dpi", "margin_mm", "deadline_unix_ms", "factor", "radius_mm", "grid_mm", "diameter_mm", "hole_mm", "width_mm", "window_mm", "spacing_mm", "ring_mm"]
         let booleans: Set<String> = ["include_metadata", "include_unconnected", "include_no_populate", "dry_run",
                                      "mirrored", "redo", "allow_project_changes", "smashed", "airwires", "full",

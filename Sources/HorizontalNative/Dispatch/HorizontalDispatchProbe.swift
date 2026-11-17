@@ -74,8 +74,14 @@ enum HorizontalDispatchProbe {
             for polygon in pad.copper {
                 if let layer = polygon.layer { layers.insert(layer) } else { layers.formUnion(through) }
             }
+            // The end as place_track takes it: by refdes where that names one
+            // part, else by the component's uuid — an instance's parts share a
+            // refdes with the other instances' until they are annotated.
+            let unique = !package.label.isEmpty
+                && board.packages.filter { $0.label.caseInsensitiveCompare(package.label) == .orderedSame }.count == 1
             return Anchor(point: at, netID: pad.netID, layers: through.filter(layers.contains),
-                          end: ["component": package.label, "pad": pad.name], label: "\(package.label).\(pad.name)")
+                          end: ["component": unique ? package.label : (package.componentID ?? package.label), "pad": pad.name],
+                          label: "\(package.label).\(pad.name)")
         }
         if let reference = json.string("junction") {
             guard let match = board.junctions.first(where: { $0.key.caseInsensitiveCompare(reference) == .orderedSame }) else {
@@ -543,6 +549,24 @@ enum HorizontalDispatchProbe {
             return routes.first { probe.firstViolation(HorizontalBoardProbe.track($0, width: link.width, net: net), layer: link.layer) == nil }
         }
 
+        // The net's own vias in reach. No rule keeps a via off copper of its
+        // own net, so a second via on one of them would pass every clearance:
+        // two holes drilled into each other. A position whose copper would
+        // overlap one is therefore no site, and the vias are listed, since
+        // the one that stands there is the one to use.
+        var standing = [(id: String, centre: HorizontalPoint, radius: Double)]()
+        var standingIDs = Set<String>()
+        let around = HorizontalRouteClearanceProbe.bounds([near], growth: radius + shape.diameter)
+        for index in probe.items.indices(overlapping: around) {
+            let item = probe.items.items[index]
+            guard item.kind == .via, item.netID == net, !probe.ignored.contains(item.id.lowercased()),
+                  case .disc(let centre, let itemRadius) = item.shape, standingIDs.insert(item.id).inserted else { continue }
+            standing.append((item.id, centre, itemRadius))
+        }
+        func onStandingVia(_ point: HorizontalPoint) -> Bool {
+            standing.contains { hypot(point.x - $0.centre.x, point.y - $0.centre.y) < $0.radius + shape.diameter / 2 - 1 }
+        }
+
         // Every grid position in the circle, clear on every layer or not.
         var legal = [Bool](repeating: false, count: side * side)
         var blockedNearest: (distance: Double, point: HorizontalPoint)?
@@ -552,6 +576,7 @@ enum HorizontalDispatchProbe {
                 guard dx * dx + dy * dy <= radius * radius else { continue }
                 let point = HorizontalPoint(x: near.x + dx, y: near.y + dy)
                 let candidate = HorizontalBoardProbe.via(at: point, diameter: shape.diameter, net: net)
+                if onStandingVia(point) { continue }
                 if shape.layers.allSatisfy({ probe.firstViolation(candidate, layer: $0) == nil }), linked(point) != nil {
                     legal[row * side + column] = true
                 } else {
@@ -638,6 +663,15 @@ enum HorizontalDispatchProbe {
                 return json
             },
         ]
+        let existing = standing.map { via -> (distance: Double, json: JSONDictionary) in
+            let distance = hypot(via.centre.x - near.x, via.centre.y - near.y)
+            return (distance, ["id": via.id, "x_mm": HorizontalDispatchJSON.mm(via.centre.x), "y_mm": HorizontalDispatchJSON.mm(via.centre.y),
+                               "diameter_mm": HorizontalDispatchJSON.mm(via.radius * 2), "distance_mm": HorizontalDispatchJSON.mm(distance)])
+        }.filter { $0.distance <= radius + shape.diameter }.sorted { $0.distance < $1.distance }
+        if !existing.isEmpty {
+            result["existing_vias"] = existing.map(\.json)
+            result["existing_vias_note"] = "Vias of this net already here. A position overlapping one is not a site: end the track on that via instead of placing another."
+        }
         if ranked.isEmpty, let miss = blockedNearest {
             // Nothing is legal: what stops the nearest position, layer by layer.
             let candidate = HorizontalBoardProbe.via(at: miss.point, diameter: shape.diameter, net: net)

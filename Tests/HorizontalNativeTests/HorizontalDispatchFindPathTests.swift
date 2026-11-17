@@ -32,6 +32,8 @@ final class HorizontalDispatchFindPathTests: XCTestCase {
     private func find(_ more: JSONDictionary = [:]) throws -> JSONDictionary {
         var params: JSONDictionary = ["from": ["junction": left], "to": [["junction": right]], "width_mm": 0.2, "grid_mm": 0.05]
         params.merge(more) { _, new in new }
+        // NSNull drops a default, as leaving the key out would.
+        params = params.filter { !($0.value is NSNull) }
         return try XCTUnwrap(try client.result("find_path", params) as? JSONDictionary)
     }
 
@@ -84,6 +86,60 @@ final class HorizontalDispatchFindPathTests: XCTestCase {
         let dry = try XCTUnwrap(try client.result("apply", ["ops": ops, "dry_run": true, "check": "delta"]) as? JSONDictionary)
         XCTAssertEqual((dry.dictionary("check")?["introduced"] as? [JSONDictionary])?.count, 0, "\(dry)")
         XCTAssertEqual(dry.dictionary("check")?.dictionary("airwires")?["nets_routed"] as? [String], ["OUT1"])
+    }
+
+    /// A connection inside a block instance: the ops name its pads as any
+    /// other part's, and committed as they are they bind the track to both
+    /// and take the airwire off the instance's own net.
+    func testAPathBetweenAnInstancesPadsCommitsAsItsOpsNameThem() throws {
+        let found = try XCTUnwrap(try client.result("find_path", [
+            "from": ["component": fixture.flat(instance, "R1"), "pad": "2"],
+            "to": [["component": fixture.flat(instance, "R2"), "pad": "1"]], "width_mm": 0.2,
+        ]) as? JSONDictionary)
+        XCTAssertEqual(found["found"] as? Bool, true, "\(found)")
+        XCTAssertEqual(found.string("net_name"), "I1/MID")
+        let ops = try XCTUnwrap(found["ops"] as? [JSONDictionary])
+        XCTAssertEqual(ops.first?.dictionary("from")?.string("component"), "R1")
+        XCTAssertEqual(ops.last?.dictionary("to")?.string("component"), "R2")
+        let commit = try XCTUnwrap(try client.result("apply", ["ops": ops, "sync": false]) as? JSONDictionary)
+        XCTAssertEqual(commit.string("status"), "committed", "\(commit)")
+        let tracks = try XCTUnwrap((try client.result("list_tracks", ["net": "I1/MID"]) as? JSONDictionary)?["tracks"] as? [JSONDictionary])
+        XCTAssertEqual(tracks.first?.dictionary("from")?.string("kind"), "pad")
+        XCTAssertEqual(tracks.last?.dictionary("to")?.string("kind"), "pad")
+        // The net is asked about by name wherever the board's copper is:
+        // a probe for a via on it finds the room beside the track.
+        let sites = try XCTUnwrap(try client.result("find_via_sites", [
+            "net": "I1/MID", "near": ["x_mm": 2.5, "y_mm": 1], "radius_mm": 0.5, "diameter_mm": 0.35, "grid_mm": 0.1,
+        ]) as? JSONDictionary)
+        XCTAssertGreaterThan(sites.int("total") ?? 0, 0)
+    }
+
+    /// autoroute takes a limit on how many airwires it tries, as a number,
+    /// and routes an instance's net like any other.
+    func testAutorouteTakesItsLimitAndAnInstancesNet() throws {
+        let routed = try XCTUnwrap(try client.result("autoroute", ["net": "I1/MID", "max_routes": 1, "width_mm": 0.2, "sync": false]) as? JSONDictionary)
+        XCTAssertEqual(routed.int("attempted"), 1, "\(routed)")
+        XCTAssertEqual(routed.int("routed"), 1, "\(routed)")
+        let refused = try client.call("autoroute", ["net": "I1/MID", "max_routes": "1", "width_mm": 0.2])
+        XCTAssertTrue("\(refused["error"] ?? "")".contains("max_routes must be a finite integer"), "\(refused)")
+    }
+
+    /// Ends far apart are searched at the finest pitch that fits when the
+    /// request states none, and the reply says which; a stated pitch that
+    /// does not fit is refused with the one that does.
+    func testADistantEndIsSearchedAtAPitchThatFits() throws {
+        let far: JSONDictionary = ["from": ["x_mm": 0, "y_mm": 8], "to": [["x_mm": 60, "y_mm": 28]], "net": "OUT1", "layers": [0], "width_mm": 0.2]
+        let found = try XCTUnwrap(try client.result("find_path", far) as? JSONDictionary)
+        XCTAssertEqual(found["found"] as? Bool, true, "\(found)")
+        XCTAssertEqual(found.double("grid_mm") ?? 0, 0.05, accuracy: 1e-9)
+        XCTAssertNotNil(found["grid_note"])
+        var fine = far
+        fine["grid_mm"] = 0.025
+        let refused = try client.call("find_path", fine)
+        XCTAssertTrue("\(refused["error"] ?? "")".contains("here 0.05"), "\(refused)")
+        // Near ends are searched at 25 µm and say nothing of it.
+        let near = try find(["grid_mm": NSNull()])
+        XCTAssertNil(near["grid_note"])
     }
 
     /// An end on another net is refused before anything is searched.

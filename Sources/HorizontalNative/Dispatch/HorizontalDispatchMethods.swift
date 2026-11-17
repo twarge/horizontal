@@ -348,7 +348,7 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "find_via_sites",
-            summary: "Where near a point can a via of a net go? Tests a grid of positions round it, each on every copper layer the via reaches, and returns the legal ones nearest first, each with its tightest gap and limiting item on every layer, and the connected areas of legal positions with their size. When none is legal it names the nearest miss and what blocks it.",
+            summary: "Where near a point can a via of a net go? Tests a grid of positions round it, each on every copper layer the via reaches, and returns the legal ones nearest first, each with its tightest gap and limiting item on every layer, and the connected areas of legal positions with their size. A position that would overlap a via of the net already there is not one, and existing_vias lists those. When none is legal it names the nearest miss and what blocks it.",
             params: ["handle": "Project handle.", "net": "The net the via would carry, by name or id.",
                      "near": "{x_mm, y_mm}: where to look round.", "radius_mm": "How far to look (optional; default 1).",
                      "grid_mm": "The pitch of the positions tested (optional; default 0.025).",
@@ -364,7 +364,7 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "find_path",
-            summary: "Is there a legal path for this connection on these layers, and if not, what blocks it? Searches a fine grid against the board's exact shapes with the clearance the rules ask of each, on one layer or several joined by vias, and commits nothing. A path comes back as a polyline per layer with its length, bends, tightest gap and the ops that draw it; no path comes back as blocked_by, the items bounding what the search could reach from each end.",
+            summary: "Is there a legal path for this connection on these layers, and if not, what blocks it? Searches a fine grid against the board's exact shapes with the clearance the rules ask of each, on one layer or several joined by vias, and commits nothing. A path comes back as a polyline per layer with its length, bends, tightest gap and the ops that draw it — a via of the net already standing on it is used as it is (through_vias) and no new one overlaps one; no path comes back as blocked_by, the items bounding what the search could reach from each end.",
             params: ["handle": "Project handle.",
                      "from": "Where it starts: {component, pad}, {junction}, {via} or {x_mm, y_mm}.",
                      "to": "Array of ends, any of which will do: the same forms, or {via_site: {x_mm, y_mm}}.",
@@ -375,7 +375,7 @@ enum HorizontalDispatchMethods {
                      "via": "A via definition, by name, for changing layers, or \"rules\" for the via rule's (optional; without it the path stays on one layer).",
                      "avoid": "Array of {layer?, box_mm: [min_x, min_y, max_x, max_y]} the path keeps out of (optional).",
                      "ignore": "Ids of tracks, vias or pads to treat as gone, for a rip-up question (optional).",
-                     "grid_mm": "The search grid's pitch (optional; default 0.025).",
+                     "grid_mm": "The search grid's pitch (optional; default 0.025 where the ends are near, and the finest of 0.05, 0.1 or 0.2 that suits the distance where they are far — the reply's grid_mm says which).",
                      "window_mm": "How far beyond the ends' box the search may go (optional; default 2).",
                      "planes": "Also keep clear of the planes' fills as last poured (default false)."],
             handler: HorizontalDispatchFindPath.findPath
@@ -2621,10 +2621,14 @@ enum HorizontalDispatchMethods {
         guard named.count <= 1 else {
             throw HorizontalDispatchError.ambiguous("More than one net is named \(reference); use its id.", candidates: named.map(\.id))
         }
-        guard let net = try named.first ?? entry.index.net(idOrPrefix: reference) else {
+        if let net = try named.first ?? entry.index.net(idOrPrefix: reference) {
+            return net.id
+        }
+        // A net inside a block instance, which the board's copper is on.
+        guard let flat = try entry.index.flattenedNetID(reference) else {
             throw HorizontalDispatchError.notFound("No net \(reference).")
         }
-        return net.id
+        return flat
     }
 
     /// Net labels and power symbols read the same way: a mark on a sheet that
