@@ -39,25 +39,50 @@ func request(method: String, paramsJSON: String) -> String {
     return #"{"jsonrpc":"2.0","id":1,"method":"\#(escapedMethod)","params":\#(params.isEmpty ? "{}" : params)}"#
 }
 
+/// Where responses go: what standard output was when the tool started.
+///
+/// A response is the only thing a caller may read there — `serve` promises one
+/// line for each request — and the libraries under the dispatch layer do not
+/// all know that: OpenCascade prints transfer statistics when it writes a STEP
+/// file. So standard output is kept for responses under a descriptor of its
+/// own, and descriptor 1 is pointed at standard error, where anything a
+/// library prints is a diagnostic and no part of the answer.
+let responses: FileHandle = {
+    let kept = dup(STDOUT_FILENO)
+    guard kept >= 0 else { return .standardOutput }
+    fflush(stdout)
+    dup2(STDERR_FILENO, STDOUT_FILENO)
+    return FileHandle(fileDescriptor: kept, closeOnDealloc: true)
+}()
+
+func respond(_ text: String) {
+    do {
+        try responses.write(contentsOf: Data((text + "\n").utf8))
+    } catch {
+        // The reader has gone; there is nobody left to answer.
+        exit(74)
+    }
+}
+
 switch arguments.first {
 case "serve":
-    setvbuf(stdout, nil, _IOLBF, 0)
+    _ = responses
     while let line = readLine(strippingNewline: true) {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else {
             continue
         }
-        print(HorizontalDispatch.call(trimmed))
-        fflush(stdout)
+        respond(HorizontalDispatch.call(trimmed))
     }
 case "call":
     guard arguments.count >= 2 else {
         usage()
     }
+    _ = responses
     let response = HorizontalDispatch.call(request(method: arguments[1], paramsJSON: arguments.count > 2 ? arguments[2] : "{}"))
-    print(prettyPrinted(response))
+    respond(prettyPrinted(response))
 case "methods":
-    print(prettyPrinted(HorizontalDispatch.call(request(method: "methods", paramsJSON: "{}"))))
+    respond(prettyPrinted(HorizontalDispatch.call(request(method: "methods", paramsJSON: "{}"))))
 default:
     usage()
 }

@@ -16,6 +16,9 @@
 #include <Geom_TrimmedCurve.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <Interface_Static.hxx>
+#include <Message.hxx>
+#include <Message_Messenger.hxx>
+#include <Message_PrinterOStream.hxx>
 #include <NCollection_List.hxx>
 #include <NCollection_Sequence.hxx>
 #include <Poly.hxx>
@@ -57,6 +60,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -64,6 +68,25 @@ namespace {
 
 constexpr double userPrecision = 0.14;
 constexpr double userAngle = 0.52359878;
+
+// OpenCascade reports to its default messenger, whose one printer writes to
+// standard output: reading or writing a STEP file prints its transfer
+// statistics there. Standard output is the response channel of `horizontal
+// serve`, and of any program that hosts this library on a pipe, where a line
+// that is no response ends the conversation. So the first read or write moves
+// those reports to standard error, once for the process.
+void sendMessagesToStandardError()
+{
+    static std::once_flag once;
+    std::call_once(once, [] {
+        const Handle(Message_Messenger) &messenger = Message::DefaultMessenger();
+        if (messenger.IsNull()) {
+            return;
+        }
+        messenger->RemovePrinters(STANDARD_TYPE(Message_PrinterOStream));
+        messenger->AddPrinter(new Message_PrinterOStream("cerr", false, Message_Info));
+    });
+}
 
 struct MeshAccumulator {
     std::vector<HNStepVertex> vertices;
@@ -74,6 +97,7 @@ struct MeshAccumulator {
 
 bool readSTEP(const char *path, Handle(TDocStd_Document) &document)
 {
+    sendMessagesToStandardError();
     STEPCAFControl_Reader reader;
     IFSelect_ReturnStatus status = reader.ReadFile(path);
     if (status != IFSelect_RetDone) {
@@ -460,6 +484,7 @@ static TopoDS_Shape loadModelShape(const char *path)
     if (path == nullptr || std::strlen(path) == 0) {
         return TopoDS_Shape();
     }
+    sendMessagesToStandardError();
     STEPControl_Reader reader;
     if (reader.ReadFile(path) != IFSelect_RetDone) {
         return TopoDS_Shape();
@@ -954,6 +979,7 @@ bool HNStepExportBoardWithOptions(
     shapeTool->UpdateAssemblies();
 #endif
 
+    sendMessagesToStandardError();
     STEPCAFControl_Writer writer;
     writer.SetColorMode(true);
     writer.SetNameMode(true);
