@@ -370,13 +370,6 @@ struct HorizontalCanvasPointer: Equatable, Sendable {
     }
 }
 
-private struct HorizontalSelectionDragPreview {
-    var tool: HorizontalSelectionTool
-    var start: CGPoint
-    var current: CGPoint
-    var points: [CGPoint]
-}
-
 struct HorizontalMetalInteractiveOverlayBatch {
     static let empty = HorizontalMetalInteractiveOverlayBatch()
 
@@ -1165,11 +1158,12 @@ struct InteractiveCanvasView: View {
                         },
                         onPrimaryDragChanged: { start, current, points, size, clickAction, isActive in
                             if isActive {
-                                selectionDragPreview = HorizontalSelectionDragPreview(
-                                    tool: selectionToolSettings.tool,
+                                selectionDragPreview = anchoredSelectionDragPreview(
                                     start: start,
                                     current: current,
-                                    points: points
+                                    points: points,
+                                    size: size,
+                                    fitInsets: fitInsets
                                 )
                             }
                             cursorInput.location = current
@@ -1182,11 +1176,12 @@ struct InteractiveCanvasView: View {
                             guard isActive else {
                                 return
                             }
-                            let preview = HorizontalSelectionDragPreview(
-                                tool: selectionToolSettings.tool,
+                            let preview = anchoredSelectionDragPreview(
                                 start: start,
                                 current: current,
-                                points: points
+                                points: points,
+                                size: size,
+                                fitInsets: fitInsets
                             )
                             selectDragRegion(
                                 preview,
@@ -1640,13 +1635,15 @@ struct InteractiveCanvasView: View {
             }
         }
 
+        let screenPoints = preview.points.map(transform.point)
         switch preview.tool {
         case .box:
+            let start = transform.point(preview.start)
             let rect = CGRect(
-                x: min(preview.start.x, preview.current.x),
-                y: min(preview.start.y, preview.current.y),
-                width: abs(preview.current.x - preview.start.x),
-                height: abs(preview.current.y - preview.start.y)
+                x: min(start.x, preview.current.x),
+                y: min(start.y, preview.current.y),
+                width: abs(preview.current.x - start.x),
+                height: abs(preview.current.y - start.y)
             )
             if rect.width > 0, rect.height > 0 {
                 let points = [
@@ -1662,17 +1659,17 @@ struct InteractiveCanvasView: View {
             guard preview.points.count >= 2 else {
                 return .empty
             }
-            appendScreenFan(preview.points, color: HorizontalMetalRGBA(foregroundColor.opacity(0.06)))
-            appendClosedScreenPolyline(preview.points, color: lineColor, width: 1.2, dash: (5, 3))
+            appendScreenFan(screenPoints, color: HorizontalMetalRGBA(foregroundColor.opacity(0.06)))
+            appendClosedScreenPolyline(screenPoints, color: lineColor, width: 1.2, dash: (5, 3))
         case .paint:
             guard preview.points.count >= 2 else {
                 return .empty
             }
-            for pair in zip(preview.points, preview.points.dropFirst()) {
+            for pair in zip(screenPoints, screenPoints.dropFirst()) {
                 appendScreenLine(from: pair.0, to: pair.1, color: lineColor, width: 7)
             }
             let centerColor = HorizontalMetalRGBA(backgroundColor.opacity(0.88))
-            for pair in zip(preview.points, preview.points.dropFirst()) {
+            for pair in zip(screenPoints, screenPoints.dropFirst()) {
                 appendScreenLine(from: pair.0, to: pair.1, color: centerColor, width: 3)
             }
         }
@@ -2072,11 +2069,12 @@ struct InteractiveCanvasView: View {
         }
 
         if case .selection = primaryDragIntent, isActive {
-            selectionDragPreview = HorizontalSelectionDragPreview(
-                tool: selectionToolSettings.tool,
+            selectionDragPreview = anchoredSelectionDragPreview(
                 start: start,
                 current: current,
-                points: points
+                points: points,
+                size: size,
+                fitInsets: fitInsets
             )
         }
         cursorInput.location = current
@@ -2110,11 +2108,12 @@ struct InteractiveCanvasView: View {
             guard isActive else {
                 return
             }
-            let preview = HorizontalSelectionDragPreview(
-                tool: selectionToolSettings.tool,
+            let preview = anchoredSelectionDragPreview(
                 start: start,
                 current: current,
-                points: points
+                points: points,
+                size: size,
+                fitInsets: fitInsets
             )
             selectDragRegion(preview, size: size, fitInsets: fitInsets, action: action)
         }
@@ -2161,6 +2160,32 @@ struct InteractiveCanvasView: View {
         onPrimaryClick(worldPoint, unitsPerPoint, action, clickCount)
     }
 
+    /// The drag's preview with every point anchored to the document where
+    /// the pointer was when it was reported: the preview already held is
+    /// extended by the new points alone, so a pan or zoom mid-drag doesn't
+    /// carry the earlier ones along with the screen.
+    private func anchoredSelectionDragPreview(
+        start: CGPoint,
+        current: CGPoint,
+        points: [CGPoint],
+        size: CGSize,
+        fitInsets: HorizontalCanvasInsets
+    ) -> HorizontalSelectionDragPreview {
+        let transform = currentTransform(size: size, fitInsets: fitInsets)
+        let tool = selectionToolSettings.tool
+        if var preview = selectionDragPreview, preview.tool == tool,
+           preview.extend(current: current, points: points, toWorld: transform.worldPoint) {
+            return preview
+        }
+        return HorizontalSelectionDragPreview(
+            tool: tool,
+            start: start,
+            current: current,
+            points: points,
+            toWorld: transform.worldPoint
+        )
+    }
+
     private func selectDragRegion(
         _ preview: HorizontalSelectionDragPreview,
         size: CGSize,
@@ -2177,20 +2202,20 @@ struct InteractiveCanvasView: View {
         switch preview.tool {
         case .box:
             refs = HorizontalSelectableHitTest.selectables(
-                inBoxFrom: transform.worldPoint(preview.start),
+                inBoxFrom: preview.start,
                 to: transform.worldPoint(preview.current),
                 selectables: selectionSelectables,
                 qualifier: selectionToolSettings.qualifier
             )
         case .lasso:
             refs = HorizontalSelectableHitTest.selectables(
-                inLasso: preview.points.map(transform.worldPoint),
+                inLasso: preview.points,
                 selectables: selectionSelectables,
                 qualifier: selectionToolSettings.qualifier
             )
         case .paint:
             refs = HorizontalSelectableHitTest.selectables(
-                touchedBy: preview.points.map(transform.worldPoint),
+                touchedBy: preview.points,
                 selectables: selectionSelectables
             )
         }
@@ -2211,13 +2236,15 @@ struct InteractiveCanvasView: View {
         transform: HorizontalCanvasTransform
     ) {
         let color = foregroundColor.opacity(0.72)
+        let screenPoints = preview.points.map(transform.point)
         switch preview.tool {
         case .box:
+            let start = transform.point(preview.start)
             let rect = CGRect(
-                x: min(preview.start.x, preview.current.x),
-                y: min(preview.start.y, preview.current.y),
-                width: abs(preview.current.x - preview.start.x),
-                height: abs(preview.current.y - preview.start.y)
+                x: min(start.x, preview.current.x),
+                y: min(start.y, preview.current.y),
+                width: abs(preview.current.x - start.x),
+                height: abs(preview.current.y - start.y)
             )
             guard rect.width > 0, rect.height > 0 else {
                 return
@@ -2234,8 +2261,8 @@ struct InteractiveCanvasView: View {
                 return
             }
             var path = Path()
-            path.move(to: preview.points[0])
-            for point in preview.points.dropFirst() {
+            path.move(to: screenPoints[0])
+            for point in screenPoints.dropFirst() {
                 path.addLine(to: point)
             }
             path.closeSubpath()
@@ -2246,8 +2273,8 @@ struct InteractiveCanvasView: View {
                 return
             }
             var path = Path()
-            path.move(to: preview.points[0])
-            for point in preview.points.dropFirst() {
+            path.move(to: screenPoints[0])
+            for point in screenPoints.dropFirst() {
                 path.addLine(to: point)
             }
             context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
@@ -2293,20 +2320,20 @@ struct InteractiveCanvasView: View {
         switch preview.tool {
         case .box:
             return HorizontalSelectableHitTest.selectables(
-                inBoxFrom: transform.worldPoint(preview.start),
+                inBoxFrom: preview.start,
                 to: transform.worldPoint(preview.current),
                 selectables: selectionSelectables,
                 qualifier: selectionToolSettings.qualifier
             )
         case .lasso:
             return HorizontalSelectableHitTest.selectables(
-                inLasso: preview.points.map(transform.worldPoint),
+                inLasso: preview.points,
                 selectables: selectionSelectables,
                 qualifier: selectionToolSettings.qualifier
             )
         case .paint:
             return HorizontalSelectableHitTest.selectables(
-                touchedBy: preview.points.map(transform.worldPoint),
+                touchedBy: preview.points,
                 selectables: selectionSelectables
             )
         }
