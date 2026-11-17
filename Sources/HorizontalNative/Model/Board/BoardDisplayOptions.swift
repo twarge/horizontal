@@ -474,6 +474,23 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
         return !hiddenAirwireNetIDs.contains(netID.lowercased())
     }
 
+    /// The nets whose airwires a spotlight leaves out: the filter's, less the
+    /// nets spotlit (`spotlitNetIDs`, lowercased). Spotlight (L) shows a net
+    /// whole, its connection lines too, so a net the filter hides the
+    /// airwires of has them drawn while it is spotlit, over the dimmed board
+    /// and nowhere else. The Connections switch still rules: off, none draw.
+    func hiddenAirwireNetIDs(spotlighting spotlitNetIDs: Set<String>) -> Set<String> {
+        hiddenAirwireNetIDs.subtracting(spotlitNetIDs)
+    }
+
+    /// Whether a net's airwires draw in a spotlight on `spotlitNetIDs`.
+    func showsAirwires(ofNet netID: String?, spotlighting spotlitNetIDs: Set<String>) -> Bool {
+        guard let netID else {
+            return true
+        }
+        return !hiddenAirwireNetIDs(spotlighting: spotlitNetIDs).contains(netID.lowercased())
+    }
+
     mutating func setAirwiresShown<Nets: Sequence<String>>(_ isShown: Bool, forNets netIDs: Nets) {
         for netID in netIDs {
             if isShown {

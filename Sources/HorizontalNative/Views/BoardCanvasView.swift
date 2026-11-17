@@ -2016,7 +2016,9 @@ struct BoardCanvasView: View {
         }
         if displayOptions.connectionLines,
            board.connectionLines.contains(where: { matches($0.netID) })
-            || board.airwires.contains(where: { matches($0.netID) && displayOptions.showsAirwires(ofNet: $0.netID) }) {
+            || board.airwires.contains(where: {
+                matches($0.netID) && displayOptions.showsAirwires(ofNet: $0.netID, spotlighting: self.highlightedNetIDs)
+            }) {
             return true
         }
         if displayOptions.pads,
@@ -14462,7 +14464,13 @@ struct BoardCanvasView: View {
         let netIDs = shownHighlightNetIDs
         let componentIDs = Set(highlightedComponentIDs.map { $0.lowercased() })
         let bucketsKey = metalElementBucketsCacheKey(renderLayers: renderLayers)
-        let signature = metalVisibilitySignature()
+        var signature = metalVisibilitySignature()
+        // A spotlit net is drawn whole: its airwires too, where the airwire
+        // filter leaves them off the board. A net lit only by a route on it
+        // keeps to the filter.
+        if signature.connectionLines {
+            signature.hiddenAirwireNetIDs = displayOptions.hiddenAirwireNetIDs(spotlighting: highlightedNetIDs)
+        }
         let lightens = displayOptions.highlightMode == "as_is"
         let key = BoardMetalHighlightCacheKey(
             bucketsKey: sceneGroupKeys == nil ? bucketsKey : nil,
@@ -16646,7 +16654,8 @@ struct BoardCanvasView: View {
             for connectionLine in board.connectionLines where matchesHighlightedNet(connectionLine.netID) {
                 drawHighlightedSegment(connectionLine, color: color, context: context, transform: transform, dashed: true)
             }
-            for airwire in board.airwires where matchesHighlightedNet(airwire.netID) && displayOptions.showsAirwires(ofNet: airwire.netID) {
+            for airwire in board.airwires
+                where matchesHighlightedNet(airwire.netID) && displayOptions.showsAirwires(ofNet: airwire.netID, spotlighting: highlightedNetIDs) {
                 drawHighlightedSegment(airwire, color: color, context: context, transform: transform, dashed: true)
             }
         }
