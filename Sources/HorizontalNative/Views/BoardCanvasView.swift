@@ -14554,7 +14554,11 @@ struct BoardCanvasView: View {
             // preview board the scene's key can't see (a move that can't be
             // patched, a paste or pool ghost, a corner being rounded) needs
             // them fresh.
-            let previewsUnkeyedBoard = (moveState != nil && !patchesMove)
+            // A move that has taken a turn the scene couldn't make in place
+            // (a track's, a junction's) carries on from a turned copy of the
+            // board, which the scene, still the board from before the move,
+            // doesn't hold either: its outlines would lie as they did.
+            let previewsUnkeyedBoard = (moveState != nil && (!patchesMove || moveState?.boardBeforeMove != nil))
                 || pastePlacementState != nil
                 || poolPlacementState != nil
                 || roundOffVertexState != nil || addVertexState != nil || tuneState != nil
