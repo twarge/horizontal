@@ -726,7 +726,9 @@ struct HorizontalBoard {
                     packageHoles: packageGeometry.holes,
                     copperLayers: boardCopperLayers(tracks: ownTracks, pads: packageGeometry.pads)
                 ),
-                junctions: junctions
+                junctions: junctions,
+                netTies: ownNetTies,
+                heldPoints: ownLines.flatMap { [$0.from, $0.to] } + ownArcs.flatMap { [$0.from, $0.to, $0.center] }
             )
         }
         ownTracks = boardConnectivity.tracks
@@ -1778,7 +1780,9 @@ struct HorizontalBoard {
         packagePadPositions: [String: HorizontalPoint],
         copperLayers: [Int],
         anchors: [String: Set<String>],
-        junctions: [String: HorizontalPoint] = [:]
+        junctions: [String: HorizontalPoint] = [:],
+        netTies: [HorizontalSegment] = [],
+        heldPoints: [HorizontalPoint] = []
     ) -> (tracks: [HorizontalSegment], vias: [HorizontalMarker], viaHoles: [HorizontalHole],
           junctionNetIDs: [String: String]) {
         var resolvedTracks = tracks
@@ -1913,10 +1917,19 @@ struct HorizontalBoard {
         }
 
         // A junction carries no layer, so it takes the net of the copper at its
-        // point only when every layer there agrees.
+        // point, on the layers the editor's pass reads it on too
+        // (`JunctionHolds.netLayers`): those of the tracks that name it, or
+        // every layer where a via or an end that names none holds it. Read
+        // on every layer always, a bend lying over a bend of another net on
+        // another layer gave both junctions no net, and each net an airwire
+        // there that went with the first edit or pour: one board opened with
+        // twelve where it had none.
+        let holds = junctionHolds(junctions: junctions, segments: resolvedTracks + netTies,
+                                  heldPoints: resolvedVias.map(\.position) + heldPoints)
         var junctionNetIDs = [String: String]()
         for (id, point) in junctions {
-            let netsHere = Set(copperLayers.compactMap { netForKey[HorizontalCopperConnectivity.node(point, layer: $0)] })
+            let layers = holds.netLayers(of: id, at: point, copperLayers: copperLayers)
+            let netsHere = Set(layers.compactMap { netForKey[HorizontalCopperConnectivity.node(point, layer: $0)] })
             if netsHere.count == 1, let netID = netsHere.first {
                 junctionNetIDs[id] = netID
             }

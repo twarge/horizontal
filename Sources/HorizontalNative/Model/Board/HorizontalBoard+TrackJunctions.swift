@@ -168,6 +168,65 @@ extension HorizontalBoard {
     static func junctionPointKey(_ point: HorizontalPoint) -> String {
         "\(Int64(point.x.rounded())):\(Int64(point.y.rounded()))"
     }
+
+    /// What holds the junctions of a board: which are kept, and which layers
+    /// each takes its net from. The loader and the editor's connectivity pass
+    /// both read it, so a board is on the same nets as it opens as after its
+    /// next edit.
+    struct JunctionHolds {
+        /// The points (`junctionPointKey`) where something holds a junction
+        /// by its position alone: a via, a line, an arc, a track or net tie
+        /// end that names no junction there.
+        var heldByPosition = Set<String>()
+        /// The junctions a track or net tie end names, by lowercased id.
+        var named = Set<String>()
+        /// The layers of the tracks and net ties that name each junction, by
+        /// lowercased id.
+        var layers = [String: Set<Int>]()
+
+        /// The copper layers a junction takes its net from. A junction
+        /// carries no layer, and a point can hold one a layer: where a bend
+        /// of one net lies over a bend of another on another layer, each
+        /// junction belongs to its own tracks. So one that only the tracks
+        /// and net ties naming it hold takes the net of their layers. One
+        /// that something holds by position joins whatever is at its point,
+        /// and takes the net of every layer there, or none where they differ.
+        func netLayers(of id: String, at point: HorizontalPoint, copperLayers: [Int]) -> [Int] {
+            if heldByPosition.contains(HorizontalBoard.junctionPointKey(point)) {
+                return copperLayers
+            }
+            return layers[id.lowercased()].map { Array($0) } ?? copperLayers
+        }
+    }
+
+    /// `segments` are the tracks and net ties; `heldPoints` the places of
+    /// what holds a junction without naming it: vias, the ends of lines, and
+    /// the ends and centres of arcs.
+    static func junctionHolds(
+        junctions: [String: HorizontalPoint],
+        segments: [HorizontalSegment],
+        heldPoints: [HorizontalPoint]
+    ) -> JunctionHolds {
+        var holds = JunctionHolds()
+        let junctionKeys = Dictionary(
+            junctions.map { ($0.key.lowercased(), junctionPointKey($0.value)) }, uniquingKeysWith: { first, _ in first })
+        for segment in segments {
+            for (point, id) in [(segment.from, segment.fromJunctionID), (segment.to, segment.toJunctionID)] {
+                if let id, junctionKeys[id.lowercased()] == junctionPointKey(point) {
+                    holds.named.insert(id.lowercased())
+                } else {
+                    holds.heldByPosition.insert(junctionPointKey(point))
+                }
+                if let id, let layer = segment.layer {
+                    holds.layers[id.lowercased(), default: []].insert(layer)
+                }
+            }
+        }
+        for point in heldPoints {
+            holds.heldByPosition.insert(junctionPointKey(point))
+        }
+        return holds
+    }
 }
 
 extension HorizontalMarker {
