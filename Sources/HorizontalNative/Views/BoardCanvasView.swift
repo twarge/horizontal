@@ -1477,6 +1477,12 @@ struct BoardCanvasView: View {
                 }
                 dispatchCanvasCommand(command)
             },
+            canvasMenu: { _, _ in
+                HorizontalCanvasMenu.entries(
+                    for: canvasCommandHandlers().actions(),
+                    pasteUnavailableReason: boardClipboard.isEmpty ? "Nothing has been copied on this board." : nil
+                )
+            },
             onUnplacedObjectSelection: { object in
                 selectUnplacedObject(object)
             },

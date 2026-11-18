@@ -683,6 +683,11 @@ struct InteractiveCanvasView: View {
     /// Run a command on a specific candidate from its action submenu (the canvas
     /// selects the ref, then dispatches the command).
     var onTargetMenuCommand: (HorizontalSelectableRef, HorizontalCanvasCommand) -> Void = { _, _ in }
+    /// What a right-click on nothing offers (`HorizontalCanvasMenu`): Paste,
+    /// Select All and the canvas's tools, run through `onCommand`. Empty
+    /// shows no menu. macOS only so far: the iPad's long press shows a menu
+    /// for an object alone.
+    var canvasMenu: (HorizontalCanvasPointer, Double) -> [HorizontalTargetItemMenuEntry] = { _, _ in [] }
     var onUnplacedObjectSelection: (HorizontalUnplacedObject) -> Void = { _ in }
     var onSelectionPropertyChange: (HorizontalSelectionPropertyChange) -> Void = { _ in }
     var onCommand: (HorizontalCanvasCommand) -> Void = { _ in }
@@ -1804,10 +1809,10 @@ struct InteractiveCanvasView: View {
         let worldPoint = pointer(at: canvasLocation, transform: transform)
         let unitsPerPoint = worldUnitsPerScreenPoint(transform: transform, size: size)
         let targets = targetMenuItems(worldPoint, unitsPerPoint)
-        // The permanent Fit View / Copy Visible Bounds / Copy Coordinates items
-        // were removed, so the context menu is purely the objects under the
-        // cursor — nothing there means no menu.
+        // Over objects the menu is theirs; over nothing it is the canvas's
+        // own, when the canvas has one.
         guard !targets.isEmpty else {
+            showCanvasMenu(canvasMenu(worldPoint, unitsPerPoint))
             return
         }
         let menu = NSMenu()
@@ -1840,6 +1845,24 @@ struct InteractiveCanvasView: View {
         // clear again defensively for the no-hover dismiss path.
         onTargetMenuHighlight(nil)
         _ = highlightDelegate // keep the (weakly-referenced) delegate alive across popUp
+    }
+
+    /// The canvas's own menu, where a right-click found no object. A command
+    /// runs a turn after the menu closes: a tool it starts, or a prompt it
+    /// opens, then begins with the menu's tracking loop and the click that
+    /// opened it unwound.
+    private func showCanvasMenu(_ entries: [HorizontalTargetItemMenuEntry]) {
+        guard !entries.isEmpty else {
+            return
+        }
+        let run = onCommand
+        let menu = NSMenu()
+        for entry in entries {
+            menu.addItem(makeMenuEntryItem(entry, select: nil) { command in
+                DispatchQueue.main.async { run(command) }
+            })
+        }
+        menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
     }
 
     /// A click on overlapping objects asks which one, as Horizon's clarify menu
@@ -1925,6 +1948,19 @@ struct InteractiveCanvasView: View {
         ref: HorizontalSelectableRef,
         target: HorizontalSelectionTargetItem
     ) -> NSMenuItem {
+        makeMenuEntryItem(entry, select: { performTargetMenuAction(target) }) { command in
+            onTargetMenuCommand(ref, command)
+        }
+    }
+
+    /// One menu item for an entry. `select` is what a `.select` entry does,
+    /// nil in a menu that is about no object, where one is shown dimmed;
+    /// `run` is what a command's item does.
+    private func makeMenuEntryItem(
+        _ entry: HorizontalTargetItemMenuEntry,
+        select: (() -> Void)?,
+        run: @escaping (HorizontalCanvasCommand) -> Void
+    ) -> NSMenuItem {
         switch entry {
         case .separator:
             return .separator()
@@ -1941,31 +1977,30 @@ struct InteractiveCanvasView: View {
             item.toolTip = reason
             return item
         case .select(let title):
-            let item = NSMenuItem(title: title, action: #selector(CanvasMenuAction.invoke(_:)), keyEquivalent: "")
-            let action = CanvasMenuAction {
-                performTargetMenuAction(target)
+            guard let select else {
+                let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                item.isEnabled = false
+                return item
             }
+            let item = NSMenuItem(title: title, action: #selector(CanvasMenuAction.invoke(_:)), keyEquivalent: "")
+            let action = CanvasMenuAction(action: select)
             item.target = action
             item.representedObject = action
             return item
         case .command(let title, let command):
             let item = NSMenuItem(title: title, action: #selector(CanvasMenuAction.invoke(_:)), keyEquivalent: "")
             // Shows the canvas's key that does the same.
-            switch command {
-            case .bendNetLine:
-                item.keyEquivalent = "k"
-                item.keyEquivalentModifierMask = []
-            case .smash:
-                item.keyEquivalent = "h"
-                item.keyEquivalentModifierMask = []
-            case .unsmash:
-                item.keyEquivalent = "h"
-                item.keyEquivalentModifierMask = .shift
-            default:
-                break
+            if let key = HorizontalCanvasInputCore.keyEquivalent(for: command) {
+                item.keyEquivalent = key.key
+                var mask = NSEvent.ModifierFlags()
+                if key.modifiers.contains(.command) { mask.insert(.command) }
+                if key.modifiers.contains(.option) { mask.insert(.option) }
+                if key.modifiers.contains(.control) { mask.insert(.control) }
+                if key.modifiers.contains(.shift) { mask.insert(.shift) }
+                item.keyEquivalentModifierMask = mask
             }
             let action = CanvasMenuAction {
-                onTargetMenuCommand(ref, command)
+                run(command)
             }
             item.target = action
             item.representedObject = action
@@ -1974,7 +2009,7 @@ struct InteractiveCanvasView: View {
             let item = NSMenuItem(title: title, action: #selector(CanvasMenuAction.invoke(_:)), keyEquivalent: "")
             item.state = isOn ? .on : .off
             let action = CanvasMenuAction {
-                onTargetMenuCommand(ref, command)
+                run(command)
             }
             item.target = action
             item.representedObject = action
@@ -1991,7 +2026,7 @@ struct InteractiveCanvasView: View {
             let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
             let submenu = NSMenu()
             for child in entries {
-                submenu.addItem(makeTargetMenuEntryItem(child, ref: ref, target: target))
+                submenu.addItem(makeMenuEntryItem(child, select: select, run: run))
             }
             item.submenu = submenu
             return item

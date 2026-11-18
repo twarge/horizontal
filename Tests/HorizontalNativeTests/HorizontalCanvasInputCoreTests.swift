@@ -201,6 +201,53 @@ final class HorizontalCanvasInputCoreTests: XCTestCase {
         XCTAssertFalse(HorizontalKeyboardResponder.other.isControl)
     }
 
+    /// Choosing a sheet in the navigator leaves its list with the keyboard.
+    /// ⌘V there, of what was copied on the sheet just left, used to go
+    /// nowhere until the canvas was clicked: a list keeps its keys, but no
+    /// list takes a paste, so the canvas whose pane has the keyboard does.
+    func testPasteReachesTheCanvasWhileAListHasTheKeyboard() {
+        func takes(_ event: HorizontalCanvasKeyEvent, _ responder: HorizontalKeyboardResponder,
+                   paneHasKeyboard: Bool = true) -> Bool {
+            HorizontalCanvasInputCore.canvasTakesKey(
+                event, responder: responder, paneHasKeyboard: paneHasKeyboard,
+                isInteractionKey: false, handlesInteractionKeys: false
+            )
+        }
+        let paste = key("v", .command)
+        XCTAssertTrue(HorizontalCanvasInputCore.isPasteCommand(paste))
+        XCTAssertFalse(HorizontalCanvasInputCore.isPasteCommand(key("v")), "V alone is a tool's key")
+        XCTAssertFalse(HorizontalCanvasInputCore.isPasteCommand(key("c", .command)))
+
+        XCTAssertTrue(takes(paste, .list), "the navigator's list has no use for a paste")
+        XCTAssertFalse(takes(paste, .list, paneHasKeyboard: false),
+                       "the canvas of a pane without the keyboard leaves it, as with the Parts pane's table focused")
+        XCTAssertFalse(takes(key("c", .command), .list), "the list keeps its Copy")
+        XCTAssertFalse(takes(key("a", .command), .list), "and its Select All")
+        XCTAssertFalse(takes(key("v"), .list), "and letters, which type-select in it")
+        XCTAssertFalse(takes(paste, .textInput), "a field pastes into itself")
+        XCTAssertFalse(takes(paste, .selectableText), "selected text keeps its clipboard keys")
+    }
+
+    /// A menu item shows the key that runs its command, so each key the
+    /// table gives has to decode back to the command it is given for.
+    func testAMenuItemsKeyIsTheOneThatRunsItsCommand() {
+        let commands: [HorizontalCanvasCommand] = [
+            .selectAll, .copySelection, .pasteSelection, .duplicateSelection, .placeNetLabel, .smash, .unsmash,
+            .bendNetLine, .drawNetLine, .placePad, .updateAllPlanes, .drawTrack,
+        ]
+        for command in commands {
+            guard let shown = HorizontalCanvasInputCore.keyEquivalent(for: command) else {
+                XCTFail("\(command) has a key")
+                continue
+            }
+            // Q updates the planes on the board alone.
+            let decoded = HorizontalCanvasInputCore.command(key(shown.key, shown.modifiers), supportsTrackVias: true)
+            XCTAssertEqual(decoded.map { String(describing: $0) }, String(describing: command))
+        }
+        XCTAssertNil(HorizontalCanvasInputCore.keyEquivalent(for: .addText), "a command with no key shows none")
+        XCTAssertNil(HorizontalCanvasInputCore.keyEquivalent(for: .toggleVia), "nor one whose key depends on the canvas")
+    }
+
     #if os(macOS)
     /// SwiftUI's selectable text is no NSText: AppKit's text interaction view
     /// answers Copy and Select All, and that is how it is known.

@@ -51,6 +51,8 @@
 - [ ] Back-annotation from the board.
 - [ ] iPad schematic rail: Annotate, Place Block and Net Classes
       (`Views/HorizontalIPadProjectView.swift`).
+- [ ] The menu on empty canvas (Paste, Select All, the tools) on the iPad,
+      schematic and board; a long press there shows a menu for an object only.
 
 ## Pools
 

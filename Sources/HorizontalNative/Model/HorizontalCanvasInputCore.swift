@@ -428,6 +428,29 @@ enum HorizontalCanvasInputCore {
         }
     }
 
+    /// The key `command` decodes to a command, for a menu item offering it to
+    /// show beside its title; nil for a command with no key, or whose key
+    /// depends on which canvas has it.
+    static func keyEquivalent(
+        for command: HorizontalCanvasCommand
+    ) -> (key: String, modifiers: HorizontalCanvasInputModifiers)? {
+        switch command {
+        case .selectAll: ("a", .command)
+        case .copySelection: ("c", .command)
+        case .pasteSelection: ("v", .command)
+        case .duplicateSelection: ("d", .command)
+        case .placeNetLabel: ("b", [])
+        case .smash: ("h", [])
+        case .unsmash: ("h", .shift)
+        case .bendNetLine: ("k", [])
+        case .drawNetLine: ("n", [])
+        case .placePad: ("p", [])
+        case .updateAllPlanes: ("q", [])
+        case .drawTrack: ("x", [])
+        default: nil
+        }
+    }
+
     /// Horizon's + (Select More) and = (Select More, stop at vias), by what
     /// the key types, with Shift or without: + is Shift-= on a US keyboard
     /// and a key of its own on a German one, where = is Shift-0, and the
@@ -473,6 +496,10 @@ enum HorizontalCanvasInputCore {
         }
     }
 
+    static func isPasteCommand(_ event: HorizontalCanvasKeyEvent) -> Bool {
+        event.modifiers == .command && event.characters?.lowercased() == "v"
+    }
+
     /// Whether a canvas's key monitor takes a key, given what has the
     /// window's keyboard. The monitor sees every key in the window before
     /// any view does, so this is what lets everything else keep its keys:
@@ -487,6 +514,11 @@ enum HorizontalCanvasInputCore {
     /// - a list, and selected text otherwise, keep their keys unless an
     ///   interaction in progress (a placement started from a pane) wants
     ///   them;
+    /// - Paste is not one of a list's keys: none of the app's lists takes a
+    ///   paste, so the canvas whose pane has the keyboard does. Choosing a
+    ///   sheet in the navigator leaves its list with the keyboard, and ⌘V
+    ///   on the sheet just turned to, of what was copied on the last, went
+    ///   nowhere until the canvas was clicked;
     /// - otherwise the canvas takes the keys while its pane has the
     ///   keyboard, the pane its keyboard badge is on, or an interaction in
     ///   progress wants them. Being the window's first responder isn't
@@ -511,7 +543,7 @@ enum HorizontalCanvasInputCore {
             }
             return interaction
         case .list:
-            return interaction
+            return interaction || (paneHasKeyboard && isPasteCommand(event))
         case .canvas, .other:
             return paneHasKeyboard || interaction
         }

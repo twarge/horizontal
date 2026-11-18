@@ -337,6 +337,13 @@ struct SchematicCanvasView: View {
     /// What arrived on this sheet from Move to Other Sheet: selected, and on
     /// macOS picked up to follow the cursor.
     var moveRequest: HorizontalSchematicMoveRequest? = nil
+    /// A request this canvas has taken up, by its id: a part or a block to
+    /// place, or what Move to Other Sheet brought. The host drops it then. A
+    /// request is taken once; the canvas's own note of the last one it took
+    /// goes with the canvas, and each schematic file has a canvas of its
+    /// own, so one still set when another block's sheet was shown started
+    /// the placement over again there.
+    var onRequestTaken: (UUID) -> Void = { _ in }
     var poolURL: URL?
     /// "Show in (Project) Pool Manager" for a placed symbol: the pool symbol
     /// uuid and where to look. Nil hides the commands.
@@ -450,6 +457,7 @@ struct SchematicCanvasView: View {
         allowsPortNets: Bool = false,
         onMoveToOtherSheet: (([String], String) -> Void)? = nil,
         moveRequest: HorizontalSchematicMoveRequest? = nil,
+        onRequestTaken: @escaping (UUID) -> Void = { _ in },
         poolURL: URL? = nil,
         onRevealPoolSymbol: ((String, HorizontalPoolRevealTarget) -> Void)? = nil,
         mode: HorizontalSchematicEditorMode = .sheet,
@@ -503,6 +511,7 @@ struct SchematicCanvasView: View {
         self.allowsPortNets = allowsPortNets
         self.onMoveToOtherSheet = onMoveToOtherSheet
         self.moveRequest = moveRequest
+        self.onRequestTaken = onRequestTaken
         self.poolURL = poolURL
         self.onRevealPoolSymbol = onRevealPoolSymbol
         self.mode = mode
@@ -989,6 +998,13 @@ struct SchematicCanvasView: View {
                     setSelectedObject(ref)
                 }
                 dispatchCanvasCommand(command)
+            },
+            canvasMenu: { _, _ in
+                HorizontalCanvasMenu.entries(
+                    for: canvasCommandHandlers().actions(),
+                    pasteUnavailableReason: HorizontalSchematicClipboard.isOnPasteboard
+                        ? nil : "Nothing copied from a schematic is on the clipboard."
+                )
             },
             onUnplacedObjectSelection: { object in
                 if isReadOnly {
@@ -2701,10 +2717,16 @@ struct SchematicCanvasView: View {
     }
 
     private func beginPlacePartIfNeeded() {
-        guard !isReadOnly,
-              let request = placePartRequest,
-              handledPlacePartRequestID != request.id,
-              let poolURL else {
+        guard let request = placePartRequest,
+              handledPlacePartRequestID != request.id else {
+            return
+        }
+        // Taken now, whether or not it can start: a request is for the
+        // moment it was made, and one left set would start on whichever
+        // canvas next came up.
+        handledPlacePartRequestID = request.id
+        onRequestTaken(request.id)
+        guard !isReadOnly, let poolURL else {
             return
         }
         guard moveState == nil,
@@ -2726,7 +2748,6 @@ struct SchematicCanvasView: View {
             return
         }
 
-        handledPlacePartRequestID = request.id
         editedSheet = draft.sheet
         placePartState = PlacePartState(
             requestID: request.id,
@@ -2744,10 +2765,15 @@ struct SchematicCanvasView: View {
     /// as a new instance of it, follows the cursor; R turns it, E flips it,
     /// and a click places it. Horizon doesn't wire it where it lands.
     private func beginPlaceBlockIfNeeded() {
+        guard let request = placeBlockRequest,
+              handledPlaceBlockRequestID != request.id else {
+            return
+        }
+        // Taken once, as a part's is.
+        handledPlaceBlockRequestID = request.id
+        onRequestTaken(request.id)
         guard !isReadOnly,
               !editorProfile.isPoolMode,
-              let request = placeBlockRequest,
-              handledPlaceBlockRequestID != request.id,
               onApplyProjectEdit != nil else {
             return
         }
@@ -2759,7 +2785,6 @@ struct SchematicCanvasView: View {
               drawGraphicsState == nil else {
             return
         }
-        handledPlaceBlockRequestID = request.id
         let originalSheet = sheet
         var draft = originalSheet
         var blockSymbol = request.blockSymbol
@@ -9168,6 +9193,7 @@ struct SchematicCanvasView: View {
         DispatchQueue.main.async {
             guard handledMoveRequestID != request.id, request.sheetID.caseInsensitiveCompare(sheet.id) == .orderedSame else { return }
             handledMoveRequestID = request.id
+            onRequestTaken(request.id)
             guard !isReadOnly, moveState == nil else { return }
             let present = Set(schematicSelectableScene().refs())
             selectedObjects = request.refs.filter(present.contains)

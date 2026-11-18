@@ -468,11 +468,9 @@ struct HorizontalIPadProjectView: View {
             lengthTuning.update(board: project?.board)
         }
         .onChange(of: visiblePanes) { _, panes in
-            // The schematic's "already-handled" guard (`handledPlacePartRequestID`) is
-            // per canvas. A schematic kept mounted while hidden keeps it, but one made
-            // afresh (another schematic file, or a pane not shown before) would take a
-            // still-set request and restart placement. Clear it when the schematic goes
-            // away.
+            // A canvas drops the request it takes (`onRequestTaken`). One no canvas
+            // took, its pane hidden before any saw it, would start on the canvas made
+            // when the schematic next shows. Clear it when the schematic goes away.
             if !panes.contains(.schematic) {
                 placePartRequest = nil
             }
@@ -1765,6 +1763,15 @@ struct HorizontalIPadProjectView: View {
                         moveSchematicItems(items, from: sheet.id, toSheet: targetID)
                     },
                     moveRequest: pendingSchematicMove,
+                    // Taken once: a canvas made afresh finds nothing to start again.
+                    onRequestTaken: { id in
+                        if placePartRequest?.id == id {
+                            placePartRequest = nil
+                        }
+                        if pendingSchematicMove?.id == id {
+                            pendingSchematicMove = nil
+                        }
+                    },
                     poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
                     ruleMarkers: HorizontalCanvasWarning.markers(
                         schematicFindings: rulesResultsState?.canvasSchematicFindings(collapsedSections: collapsedRuleSections) ?? [],

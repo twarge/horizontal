@@ -47,6 +47,18 @@ struct HorizontalSchematicClipboard {
         #endif
         return try data.map { try Self(data: $0) }
     }
+
+    /// Whether the pasteboard holds schematic items, without reading them:
+    /// what a Paste menu item is enabled by.
+    @MainActor static var isOnPasteboard: Bool {
+        #if os(macOS)
+        NSPasteboard.general.availableType(from: [.init(pasteboardType)]) != nil
+        #elseif os(iOS) || os(visionOS)
+        UIPasteboard.general.contains(pasteboardTypes: [pasteboardType])
+        #else
+        false
+        #endif
+    }
 }
 
 enum HorizontalSchematicClipboardEditor {

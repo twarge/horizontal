@@ -2650,6 +2650,7 @@ struct ProjectWorkspaceView: View {
                                     moveSchematicItems(items, toSheet: sheetID, from: selectedSchematic)
                                 },
                                 moveRequest: pendingSchematicMove,
+                                onRequestTaken: dropSchematicRequest,
                                 poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
                                 onRevealPoolSymbol: { symbolID, target in
                                     revealPoolItem(.symbol, uuid: symbolID, in: target)
@@ -6001,6 +6002,21 @@ struct ProjectWorkspaceView: View {
         }
         visiblePanes.insert(.schematic)
         pendingPartPlacement = HorizontalPartPlacementRequest(part: part)
+    }
+
+    /// The schematic canvas took a request up: it is dropped, so that the
+    /// canvas of the next schematic shown, made afresh, finds nothing to
+    /// start over.
+    private func dropSchematicRequest(_ id: UUID) {
+        if pendingPartPlacement?.id == id {
+            pendingPartPlacement = nil
+        }
+        if pendingBlockPlacement?.id == id {
+            pendingBlockPlacement = nil
+        }
+        if pendingSchematicMove?.id == id {
+            pendingSchematicMove = nil
+        }
     }
 
     private func showTopSchematicView() {
