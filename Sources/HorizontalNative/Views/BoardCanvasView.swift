@@ -7951,10 +7951,12 @@ struct BoardCanvasView: View {
     }
 
     /// Removes a selected junction once nothing meets it any more: the tracks,
-    /// net ties, lines and arcs that end on it go with it
-    /// (`expandedBoardDeleteRefs`), as Horizon's delete takes them, and a via
-    /// standing on it keeps it. A delete commit re-runs connectivity (`vacuum`)
-    /// to clear any junctions the removed copper orphaned.
+    /// net ties, lines and arcs that end on it and the via standing on it go
+    /// with it (`expandedBoardDeleteRefs`), as Horizon's delete takes them. A
+    /// via that stays keeps its junction: one the lock holds, one that is
+    /// hidden, one the selection filter keeps out. A delete commit re-runs
+    /// connectivity (`vacuum`) to clear any junctions the removed copper
+    /// orphaned.
     private func deleteOrphanJunction(_ id: String, from board: inout HorizontalBoard) -> Bool {
         let target = normalizedID(id)
         guard let key = board.junctions.keys.first(where: { normalizedID($0) == target }),
@@ -8123,10 +8125,26 @@ struct BoardCanvasView: View {
         refs.forEach(append)
 
         let junctionLayers = refs.contains { $0.type == .junction } ? board.junctionLayers() : [:]
+        // A via goes with its junction only where a pick could have taken the
+        // via itself: one that is hidden, or that the selection filter keeps
+        // out, stays and keeps its junction, so a delete takes no via that
+        // could not have been selected.
+        var pickableViaIDs: Set<String>?
+        func canPick(_ via: HorizontalSelectableRef) -> Bool {
+            guard selectionFilterAdmits?(via) ?? true else {
+                return false
+            }
+            if pickableViaIDs == nil {
+                pickableViaIDs = Set(boardSelectableScene().refs().filter { $0.type == .via }.map { normalizedID($0.id) })
+            }
+            return pickableViaIDs?.contains(normalizedID(via.id)) == true
+        }
         for ref in refs {
             switch ref.type {
             case .junction:
-                board.refsEnding(onJunction: ref.id, layers: junctionLayers).forEach(append)
+                board.refsEnding(onJunction: ref.id, layers: junctionLayers)
+                    .filter { $0.type != .via || canPick($0) }
+                    .forEach(append)
             case .boardPackage:
                 let anchorKeys = packageConnectionAnchorKeys(packageID: ref.id, in: board)
                 for connectionLine in board.connectionLines

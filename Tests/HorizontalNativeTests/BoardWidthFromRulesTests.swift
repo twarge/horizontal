@@ -123,6 +123,25 @@ final class BoardWidthFromRulesTests: XCTestCase {
         XCTAssertTrue(refs.contains(HorizontalSelectableRef(id: "line", type: .boardLine)))
         XCTAssertTrue(board.refsEnding(onJunction: "missing").isEmpty)
     }
+
+    func testADeletedJunctionTakesTheViaStandingOnIt() {
+        var board = HorizontalGerberExportFixture.board()
+        let point = HorizontalPoint(x: 1_000_000, y: 0), far = HorizontalPoint(x: 2_000_000, y: 0)
+        board.junctions = ["j": point, "far": far, "bare": HorizontalPoint(x: 3_000_000, y: 0)]
+        board.vias = [
+            HorizontalMarker(id: "via", position: point, size: 600_000, holeSize: 300_000, layer: nil),
+            HorizontalMarker(id: "via-far", position: far, size: 600_000, holeSize: 300_000, layer: nil),
+        ]
+        var run = track("run", width: 200_000, fromRules: false)
+        run.fromJunctionID = "j"
+        run.toJunctionID = "far"
+        board.tracks = [run]
+
+        XCTAssertEqual(Set(board.refsEnding(onJunction: "j")),
+                       [HorizontalSelectableRef(id: "via", type: .via), HorizontalSelectableRef(id: "run", type: .track)],
+                       "its own via, not the one at the track's other end")
+        XCTAssertTrue(board.refsEnding(onJunction: "bare").isEmpty, "a junction with no via on it")
+    }
 }
 
 #if os(macOS)

@@ -113,8 +113,9 @@ extension HorizontalBoard {
 
     /// What ends on junction `id`, which Horizon's delete takes with it: the
     /// tracks and net ties with an end naming it, or an end naming none at its
-    /// point that the layer rule gives it (`junctionIDs(at:joining:)`), and
-    /// the lines and arcs with an end (or an arc's centre) at its point.
+    /// point that the layer rule gives it (`junctionIDs(at:joining:)`), the
+    /// lines and arcs with an end (or an arc's centre) at its point, and the
+    /// vias standing on it, which are nothing without their junction.
     func refsEnding(onJunction id: String, layers: [String: Set<Int>]? = nil) -> [HorizontalSelectableRef] {
         let target = id.lowercased()
         guard let point = junctions.first(where: { $0.key.lowercased() == target })?.value else {
@@ -141,6 +142,9 @@ extension HorizontalBoard {
         refs += arcs
             .filter { [$0.from, $0.to, $0.center].contains { Self.junctionPointKey($0) == key } }
             .map { HorizontalSelectableRef(id: $0.id, type: .boardArc) }
+        refs += vias
+            .filter { Self.junctionPointKey($0.position) == key }
+            .map { HorizontalSelectableRef(id: $0.id, type: .via) }
         return refs
     }
 
