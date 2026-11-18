@@ -73,6 +73,10 @@ struct HorizontalIPadProjectView: View {
     @State private var navigatorSearchText = ""
     /// Counts schematic edits, for the live document's revision.
     @State private var schematicEditRevision = 0
+    /// Bumped when the sheets' nets were changed from outside the schematic
+    /// canvas (a class set on the board), so it drops the copy of the sheet it
+    /// edits, which would write the old class back with its next edit.
+    @State private var schematicSyncRevision = 0
     @StateObject private var liveUndoTarget = HorizontalUndoTarget<HorizontalLiveSnapshot>()
     @Environment(\.undoManager) private var documentUndoManager
     /// The dispatch session's handle for this document while it is registered
@@ -1760,6 +1764,7 @@ struct HorizontalIPadProjectView: View {
                     onApplyProjectEdit: { operations, actionName in
                         applyProjectEdit(operations, actionName: actionName)
                     },
+                    onNetClassChange: { applyEditedNetClass(netID: $0, netClassID: $1, from: .schematic) },
                     // The top block's sheets only, so the components' own.
                     onSetNoPopulate: isReadOnly ? nil : { componentIDs, noPopulate in
                         applyProjectEdit(
@@ -1787,6 +1792,7 @@ struct HorizontalIPadProjectView: View {
                         }
                     },
                     poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
+                    syncRevision: schematicSyncRevision,
                     ruleMarkers: HorizontalCanvasWarning.markers(
                         schematicFindings: rulesResultsState?.canvasSchematicFindings(collapsedSections: collapsedRuleSections) ?? [],
                         sheetID: sheet.id
@@ -1888,6 +1894,7 @@ struct HorizontalIPadProjectView: View {
                     onBoardChange: { applyEditedBoard($0) },
                     onPlaneEdit: { applyBoardPlaneEdit($0, actionName: $1) },
                     onUpdateAllPlanes: updateAllBoardPlanes,
+                    onNetClassChange: { applyEditedNetClass(netID: $0, netClassID: $1, from: .board) },
                     onEditDiffpair: boardDiffpairEditing,
                     onMeasureTracks: { measureTracks($0, allTracks: $1) },
                     blockInstances: project.flattenedBlock?.boardInstances,
@@ -2339,6 +2346,42 @@ struct HorizontalIPadProjectView: View {
         }
         if previousSignature != sheet.netlistSignature {
             scheduleBoardNetlistSync()
+        }
+    }
+
+    /// A net's class, set in a canvas's inspector or put back by its Undo.
+    /// The class is the block's, so it goes to the block file and to every
+    /// copy of the net the project holds (`HorizontalProject.putNet`): the
+    /// board's file has no classes, and each sheet writes its own copy of the
+    /// nets back with its next edit. Left to the canvas alone, a class set on
+    /// the board showed there until the next reload, which put the old one
+    /// back with the widths the rules give it.
+    private func applyEditedNetClass(netID: String, netClassID: String?, from pane: HorizontalPane) {
+        guard !isReadOnly, var updated = project else {
+            return
+        }
+        let previousBoardNets = updated.board?.netDetails
+        do {
+            try updated.putNet(netID, inClass: netClassID, archive: &document.archive)
+        } catch {
+            schematicEditMessage = (error as? HorizontalNetClassChangeError)?.errorDescription
+                ?? "Couldn't save the net class: \(error.localizedDescription)"
+            // The board has the class and the block doesn't: the board
+            // follows the block again, as it does after any reload.
+            if pane == .board {
+                scheduleBoardNetlistSync()
+            }
+            return
+        }
+        project = updated
+        schematicEditRevision += 1
+        if updated.board?.netDetails != previousBoardNets {
+            boardEditRevision += 1
+        }
+        // The schematic canvas edits a copy of its sheet, with the class the
+        // net had: it takes the sheet as it is now.
+        if pane == .board {
+            schematicSyncRevision += 1
         }
     }
 
