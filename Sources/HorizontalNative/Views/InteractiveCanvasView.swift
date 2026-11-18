@@ -181,6 +181,11 @@ enum HorizontalCanvasCommand {
     /// components' (their entity's): a symbol's or package's Alternate
     /// Parts….
     case showAlternateParts
+    /// A symbol's or package's Replace: these components (by uuid, as their
+    /// block has them) given this part, one of those the menu listed for
+    /// them. It names the components itself, so it replaces what the menu
+    /// was about whatever is selected by the time it runs.
+    case replacePart(part: String, components: [String])
     /// Schematic: mark every pin of the selected symbols' gates that is on
     /// no net as not connected (Horizon's "Set all unconnected pins NC").
     case setAllUnconnectedPinsNC
@@ -329,6 +334,10 @@ enum HorizontalTargetItemMenuEntry {
     /// A command that turns something of the candidate's on or off, checked
     /// while it is on (Do Not Populate).
     case toggle(title: String, isOn: Bool, HorizontalCanvasCommand)
+    /// One of a list to choose from, with more to say than a title holds: a
+    /// badge beside it (a Replace part's "In Project"), a tooltip, and a
+    /// checkmark on the one the candidate has now.
+    case choice(title: String, badge: String?, help: String?, isOn: Bool, HorizontalCanvasCommand)
     /// Copy text or open a link the candidate carries (its value, its
     /// datasheet): nothing is selected and the canvas runs nothing.
     case action(title: String, HorizontalSelectionTargetItem.Action)
@@ -1821,11 +1830,12 @@ struct InteractiveCanvasView: View {
         if targets.count == 1,
            let target = targets.first,
            let ref = target.ref,
-           !targetItemMenu(ref).isEmpty {
+           case let entries = targetItemMenu(ref),
+           !entries.isEmpty {
             // Exactly one object under the cursor → show its action menu directly,
             // without the extra "ItemName ▸" nesting. Every top-level item maps to
             // the object so hovering keeps it highlighted.
-            for entry in targetItemMenu(ref) {
+            for entry in entries {
                 let item = makeTargetMenuEntryItem(entry, ref: ref, target: target)
                 if !item.isSeparatorItem {
                     refForItem[ObjectIdentifier(item)] = ref
@@ -2008,6 +2018,19 @@ struct InteractiveCanvasView: View {
         case .toggle(let title, let isOn, let command):
             let item = NSMenuItem(title: title, action: #selector(CanvasMenuAction.invoke(_:)), keyEquivalent: "")
             item.state = isOn ? .on : .off
+            let action = CanvasMenuAction {
+                run(command)
+            }
+            item.target = action
+            item.representedObject = action
+            return item
+        case .choice(let title, let badge, let help, let isOn, let command):
+            let item = NSMenuItem(title: title, action: #selector(CanvasMenuAction.invoke(_:)), keyEquivalent: "")
+            item.state = isOn ? .on : .off
+            if let badge {
+                item.badge = NSMenuItemBadge(string: badge)
+            }
+            item.toolTip = help
             let action = CanvasMenuAction {
                 run(command)
             }
@@ -3749,6 +3772,11 @@ struct HorizontalMultitouchView: UIViewRepresentable {
                     current.append(UIAction(title: title) { [weak self] _ in self?.onContextMenuCommand(ref, command) })
                 case .toggle(let title, let isOn, let command):
                     current.append(UIAction(title: title, state: isOn ? .on : .off) { [weak self] _ in
+                        self?.onContextMenuCommand(ref, command)
+                    })
+                case .choice(let title, let badge, _, let isOn, let command):
+                    // No badges here: the note goes under the title.
+                    current.append(UIAction(title: title, subtitle: badge, state: isOn ? .on : .off) { [weak self] _ in
                         self?.onContextMenuCommand(ref, command)
                     })
                 case .action(let title, let action):

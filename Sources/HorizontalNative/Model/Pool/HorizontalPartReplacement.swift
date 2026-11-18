@@ -21,6 +21,9 @@ struct HorizontalPartReplacement: Equatable {
         var refdes: String
         var entityID: String
         var partID: String?
+        /// The value the component stores itself, which is what it shows
+        /// until it has a part.
+        var value = ""
     }
 
     /// The selected components the block has, in refdes order.
@@ -44,7 +47,8 @@ struct HorizontalPartReplacement: Equatable {
                 componentID: id.lowercased(),
                 refdes: component.string("refdes") ?? "",
                 entityID: entityID.lowercased(),
-                partID: component.string("part")?.lowercased()
+                partID: component.string("part")?.lowercased(),
+                value: component.string("value") ?? ""
             )
         }
         .sorted { lhs, rhs in
@@ -89,6 +93,42 @@ struct HorizontalPartReplacement: Equatable {
            let data = try? store.read(project.baseURL.appendingPathComponent(filename)),
            let json = try? JSONHelper.loadDictionary(from: data) {
             return HorizontalPartReplacement(componentIDs: componentIDs, block: json)
+        }
+        return nil
+    }
+
+    /// The components a canvas names, wherever their block is: a symbol's
+    /// or package's Replace. The board names a block instance's package by
+    /// its flat uuid, which is the component of its block it is, so the part
+    /// it is given is every instance's; packages of more than one block have
+    /// no one edit, and nil. A component named as its own block's sheet names
+    /// it is looked for in the block the schematic shows (`shownBlock`), the
+    /// top block, then the rest.
+    static func named(
+        by componentIDs: Set<String>,
+        archive: HorizontalProjectArchive,
+        project: HorizontalProject,
+        shownBlock: HorizontalProjectBlock? = nil
+    ) -> HorizontalPartReplacement? {
+        let flattened = project.flattenedBlock
+        let blockIDs = Set(componentIDs.compactMap { flattened?.componentBlocks[$0.lowercased()]?.lowercased() })
+        guard blockIDs.count <= 1 else {
+            return nil
+        }
+        let ids = flattened?.blockComponentIDs(for: componentIDs) ?? componentIDs
+        func find(in block: HorizontalProjectBlock?) -> HorizontalPartReplacement? {
+            current(componentIDs: ids, archive: archive, project: project, preferredBlock: block)
+        }
+        if let blockID = blockIDs.first {
+            return find(in: project.blocks.first { $0.uuid.lowercased() == blockID })
+        }
+        if let found = find(in: shownBlock) {
+            return found
+        }
+        for block in project.blocks where !block.isTop && block.uuid != shownBlock?.uuid {
+            if let found = find(in: block) {
+                return found
+            }
         }
         return nil
     }

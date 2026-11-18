@@ -1317,6 +1317,12 @@ struct ProjectWorkspaceView: View {
     private var workspaceContentWithAlerts: some View {
         workspaceContent
             .environment(\.horizonPoolRevealAction, revealInPools)
+            .partReplaceMenu(
+                projectPoolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
+                isEnabled: !isReadOnly,
+                replacement: { partReplacement(for: $0) },
+                replace: { item, replacement in replacePartsFromLibrary(item, replacement) }
+            )
             .alert("Could Not Place Part", isPresented: libraryPlacementErrorPresented) {
                 Button("OK", role: .cancel) {}
             } message: {
@@ -5873,6 +5879,13 @@ struct ProjectWorkspaceView: View {
             return nil
         }
         return project.schematics.first { $0.schematic.url.standardizedFileURL == url }?.block
+    }
+
+    /// The components a canvas names, found in their block, for a symbol's
+    /// or package's Replace.
+    private func partReplacement(for componentIDs: Set<String>) -> HorizontalPartReplacement? {
+        HorizontalPartReplacement.named(by: componentIDs, archive: document.archive, project: project,
+                                        shownBlock: selectedSchematicBlock)
     }
 
     private func refreshLibraryPartReplacement() {

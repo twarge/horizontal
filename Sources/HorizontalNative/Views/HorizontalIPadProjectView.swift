@@ -187,6 +187,14 @@ struct HorizontalIPadProjectView: View {
         } else {
             projectBody
                 .environment(\.horizonPoolRevealAction, revealInPools)
+                .partReplaceMenu(
+                    projectPoolURL: project.flatMap { project in
+                        project.poolDirectory.map { project.baseURL.appendingPathComponent($0) }
+                    },
+                    isEnabled: !isReadOnly,
+                    replacement: { partReplacement(for: $0) },
+                    replace: { item, replacement in replacePartsFromLibrary(item, replacement) }
+                )
                 // While no pool is registered, the first project opened in a
                 // run offers Horizon's default pool or a pool on disk, as the
                 // Mac does at each launch.
@@ -1444,6 +1452,12 @@ struct HorizontalIPadProjectView: View {
             visiblePanes.insert(.board)
         }
         focusedPane = .board
+    }
+
+    /// The components a canvas names, found in their block, for a symbol's
+    /// or package's Replace.
+    private func partReplacement(for componentIDs: Set<String>) -> HorizontalPartReplacement? {
+        project.flatMap { HorizontalPartReplacement.named(by: componentIDs, archive: document.archive, project: $0) }
     }
 
     private func refreshLibraryPartReplacement() {

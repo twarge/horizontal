@@ -297,4 +297,90 @@ final class HorizontalPoolPartReplacementTests: XCTestCase {
         XCTAssertEqual(try pads(r1ID, on: disconnectedBoard), parts.largePads)
         XCTAssertEqual(disconnectedBoard?.tracks.count, 1, "the board keeps the track when it loads")
     }
+
+    // MARK: - Replace from a symbol's or package's own menu
+
+    /// The right-click menu's Replace, from a project as its window has it:
+    /// the pools scanned, the component found in its block, the parts of its
+    /// value listed with the project pool's marked, and the one chosen given
+    /// to it.
+    func testAComponentsReplaceMenuListsThePartsOfItsValueAndGivesItTheOneChosen() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("replace-menu-\(UUID().uuidString).horizontal")
+        try HorizontalProjectArchive.newProject().write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let session = HorizontalDispatchSession()
+        let handle = try session.open(url: url).handle
+        let parts = sharedEntityParts()
+        let entry = try session.entry(handle: handle)
+        let response = try JSONHelper.loadDictionary(from: Data(HorizontalDispatch.serialize(HorizontalDispatch.call(
+            ["jsonrpc": "2.0", "id": 1, "method": "apply", "params": [
+                "handle": handle, "expected_revision": entry.revision, "operation_id": UUID().uuidString,
+                "pool_items": parts.items,
+                "ops": [
+                    ["op": "ensure_component", "refdes": "R1", "part": parts.smallAlternative],
+                    ["op": "ensure_component", "refdes": "R2", "part": parts.small],
+                    ["op": "connect", "component": "R1", "pin": "A", "net": "IN", "create_net": true],
+                ],
+            ] as JSONDictionary], in: session), pretty: false).utf8))
+        XCTAssertNil(response["error"], "\(response)")
+
+        let archive = try HorizontalProjectArchive.completeProject(from: url)
+        let project = try HorizontalProject.load(from: url)
+        func components(_ archive: HorizontalProjectArchive) throws -> [String: (id: String, json: JSONDictionary)] {
+            let store = HorizontalArchiveFileStore(archive: archive, baseURL: project.baseURL)
+            let data = try XCTUnwrap(try store.read(project.baseURL.appendingPathComponent(try XCTUnwrap(project.blockFilename))))
+            return Dictionary(uniqueKeysWithValues: try JSONHelper.loadDictionary(from: data).dictionaryMap("components")
+                .map { ($0.value.string("refdes") ?? "", ($0.key.lowercased(), $0.value)) })
+        }
+        let r1 = try XCTUnwrap(components(archive)["R1"]?.id), r2 = try XCTUnwrap(components(archive)["R2"]?.id)
+
+        let poolURL = project.baseURL.appendingPathComponent(try XCTUnwrap(project.poolDirectory))
+        HorizontalPoolLibrary.invalidateCache()
+        defer { HorizontalPoolLibrary.invalidateCache() }
+        let catalog = HorizontalPartAlternatesCatalog(
+            items: HorizontalPoolLibrary.resolvingInheritance(HorizontalPoolLibrary.items(inPool: poolURL, poolName: "Project pool")),
+            projectPoolURL: poolURL)
+        func content(_ componentID: String) -> HorizontalPartReplaceMenu.Content? {
+            HorizontalPartReplaceMenu.content(catalog: catalog, componentID: componentID, selection: []) {
+                HorizontalPartReplacement.named(by: $0, archive: archive, project: project)
+            }
+        }
+
+        // R1 is 22k in R0603: the 22k in R0805 is its one alternate, both in
+        // the project's own pool, and the 10k isn't offered.
+        let menu = try XCTUnwrap(content(r1))
+        XCTAssertEqual(menu.title, "Replace")
+        var listed = [(title: String, badge: String?, isOn: Bool, part: String, components: [String])]()
+        for entry in menu.entries {
+            guard case .choice(let title, let badge, _, let isOn, .replacePart(let part, let components)) = entry else {
+                return XCTFail("only parts to choose")
+            }
+            listed.append((title, badge, isOn, part, components))
+        }
+        XCTAssertEqual(listed.map(\.title), ["R0603 · RC0603-22K", "R0805 · RC0805-22K"])
+        XCTAssertEqual(listed.map(\.badge), ["In Project", "In Project"])
+        XCTAssertEqual(listed.map(\.isOn), [true, false], "the part R1 has is checked")
+        XCTAssertEqual(listed.map(\.part), [parts.smallAlternative.lowercased(), parts.large.lowercased()])
+        XCTAssertEqual(listed.map(\.components), [[r1], [r1]])
+
+        // Choosing the R0805: R1 has it, on its entity, its connection kept.
+        let chosen = try XCTUnwrap(catalog.part(listed[1].part))
+        let replacement = try XCTUnwrap(HorizontalPartReplacement.named(by: Set(listed[1].components), archive: archive, project: project))
+        XCTAssertNil(replacement.refusal(for: chosen.item))
+        let edited = try HorizontalCanvasProjectEdit.archive(
+            applying: replacement.operations(partID: chosen.uuid, entityID: chosen.item.partEntityID),
+            to: archive, in: project, block: replacement.blockID)
+        let after = try XCTUnwrap(components(edited.archive)["R1"]?.json)
+        XCTAssertEqual(after.string("part")?.lowercased(), parts.large.lowercased())
+        XCTAssertEqual(after.string("entity")?.lowercased(), parts.entity.lowercased())
+        XCTAssertEqual(after.dictionary("connections")?.count, 1)
+        XCTAssertEqual(try components(edited.archive)["R2"]?.json.string("part")?.lowercased(), parts.small.lowercased(), "R2 untouched")
+        // The part it has already is no edit.
+        XCTAssertTrue(replacement.operations(partID: listed[0].part, entityID: chosen.item.partEntityID).isEmpty)
+
+        // R2 is the only 10k: nothing to replace it with.
+        guard case .unavailable("No Other Parts", _)? = try XCTUnwrap(content(r2)).entries.first else {
+            return XCTFail("R2 has no alternate")
+        }
+    }
 }

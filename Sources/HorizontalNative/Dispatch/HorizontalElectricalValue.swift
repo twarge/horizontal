@@ -15,6 +15,15 @@ enum HorizontalElectricalValue {
         return declared(parametric, refdes: refdes) ?? result
     }
 
+    /// The number a value's notation gives, whatever it measures: 10000 for
+    /// "10k", "10 kΩ" and "10K0", 1e-7 for "100n" and "0.1 µF". Nil for text
+    /// that is no such notation ("LM358", "8 MHz").
+    static func number(_ raw: String) -> Double? {
+        // A resistor's refdes gives a bare number a unit to take, so the
+        // notation alone decides whether it reads.
+        parseText(raw, refdes: "R")["value_si"] as? Double
+    }
+
     /// The value a part declares in its parametric table, when it names the
     /// quantity this kind of component is measured in.
     private static func declared(_ parametric: [String: String], refdes: String) -> JSONDictionary? {

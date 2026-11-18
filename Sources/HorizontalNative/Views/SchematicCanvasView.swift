@@ -408,6 +408,7 @@ struct SchematicCanvasView: View {
     @Environment(\.colorScheme) private var colorScheme
     /// The window's Pools pane, for Alternate Parts…; nil where there is none.
     @Environment(\.horizonPoolRevealAction) private var poolRevealAction
+    @Environment(\.horizonPartReplaceActions) private var partReplaceActions
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
 
     init(
@@ -988,7 +989,7 @@ struct SchematicCanvasView: View {
                     if !selectedObjects.contains(ref) { setSelectedObject(ref) }
                     if let noPopulate = isNoPopulate(ref) { setNoPopulate(!noPopulate, of: refs) }
                     return
-                case .copySelection, .duplicateSelection, .moveToOtherSheet:
+                case .copySelection, .duplicateSelection, .moveToOtherSheet, .replacePart:
                     if !selectedObjects.contains(ref) { setSelectedObject(ref) }
                 case .setDiffpair, .clearDiffpair:
                     // They name the nets they edit, so the selection, two
@@ -8843,6 +8844,9 @@ struct SchematicCanvasView: View {
         if let poolRevealAction, !editorProfile.isPoolMode {
             handlers.showAlternateParts = { poolRevealAction(.alternateParts) }
         }
+        if let partReplaceActions, !isReadOnly, !editorProfile.isPoolMode {
+            handlers.replacePart = { partID, componentIDs in partReplaceActions.replace(partID, componentIDs) }
+        }
         if onRevealPoolSymbol != nil, selectedSymbolPoolID() != nil {
             handlers.showInPoolManager = { revealSelectedSymbol(.registeredPool) }
             handlers.showInProjectPoolManager = { revealSelectedSymbol(.projectPool) }
@@ -9076,16 +9080,30 @@ struct SchematicCanvasView: View {
         onApplyProjectEdit?(edit.ops, edit.actionName)
     }
 
-    /// Alternate Parts…: the Pools pane on the parts that can replace the
-    /// symbol's component's, as its Replace offers them, for a symbol of a
-    /// component in a project window.
+    /// Replace, for a symbol of a component in a project window: the parts
+    /// for its entity and of its value to give it outright
+    /// (`HorizontalPartReplaceMenu`), then Alternate Parts…, the Pools pane
+    /// on every part that can replace the component's, as its Replace offers
+    /// them. Where the document can't be edited, Alternate Parts… alone. A
+    /// symbol right-clicked among a selection speaks for the selection's
+    /// components, where one list of parts answers them all.
     private func alternatePartsEntry(for ref: HorizontalSelectableRef) -> HorizontalTargetItemMenuEntry? {
-        guard poolRevealAction != nil, !editorProfile.isPoolMode, ref.type == .schematicSymbol,
+        guard !editorProfile.isPoolMode, ref.type == .schematicSymbol,
               let symbol = sheet.symbols.first(where: { normalizedID($0.id) == normalizedID(ref.id) }),
-              symbol.componentID != nil else {
+              let componentID = symbol.componentID else {
             return nil
         }
-        return .command(title: "Alternate Parts…", .showAlternateParts)
+        var content: HorizontalPartReplaceMenu.Content?
+        if !isReadOnly, let partReplaceActions {
+            var selection = Set<String>()
+            if selectedObjects.contains(ref) {
+                let selected = Set(selectedObjects.filter { $0.type == .schematicSymbol }.map { normalizedID($0.id) })
+                selection = Set(sheet.symbols.filter { selected.contains(normalizedID($0.id)) }
+                    .compactMap { $0.componentID.map(normalizedID) })
+            }
+            content = partReplaceActions.content(normalizedID(componentID), selection)
+        }
+        return HorizontalPartReplaceMenu.entry(content, browses: poolRevealAction != nil)
     }
 
     /// Horizon's Push into block and Edit block symbol, for a block symbol.

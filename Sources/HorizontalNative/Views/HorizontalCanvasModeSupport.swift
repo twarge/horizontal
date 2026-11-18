@@ -447,6 +447,8 @@ struct HorizontalCanvasCommandHandlerSet {
     var editSymbolPinNames: (() -> Void)?
     var editCustomValue: (() -> Void)? = nil
     var showAlternateParts: (() -> Void)? = nil
+    /// Gives the components (the second argument) the part (the first).
+    var replacePart: ((String, [String]) -> Void)? = nil
     var setAllUnconnectedPinsNC: (() -> Void)? = nil
     var clearAllNCPins: (() -> Void)? = nil
     var setPinNoConnect: ((String, String, Bool) -> Void)? = nil
@@ -699,6 +701,9 @@ struct HorizontalCanvasCommandHandlerSet {
             editCustomValue?()
         case .showAlternateParts:
             showAlternateParts?()
+        case .replacePart(let part, let components):
+            guard !isReadOnly else { return }
+            replacePart?(part, components)
         case .setAllUnconnectedPinsNC:
             guard !isReadOnly else { return }
             setAllUnconnectedPinsNC?()

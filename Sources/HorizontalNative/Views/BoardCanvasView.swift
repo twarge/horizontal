@@ -777,6 +777,7 @@ struct BoardCanvasView: View {
     @Environment(\.colorScheme) private var colorScheme
     /// The window's Pools pane, for Alternate Parts…; nil where there is none.
     @Environment(\.horizonPoolRevealAction) private var poolRevealAction
+    @Environment(\.horizonPartReplaceActions) private var partReplaceActions
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
 
     init(
@@ -1472,6 +1473,10 @@ struct BoardCanvasView: View {
                     // They name the nets they edit, so the selection, two
                     // nets' to pair, stays as it is.
                     break
+                case .replacePart:
+                    // It names the components it replaces: a selection the
+                    // package is part of stays.
+                    if !selectedObjects.contains(ref) { setSelectedObject(ref) }
                 default:
                     setSelectedObject(ref)
                 }
@@ -4004,6 +4009,9 @@ struct BoardCanvasView: View {
         if let poolRevealAction, !modeProfile.isPoolMode {
             handlers.showAlternateParts = { poolRevealAction(.alternateParts) }
         }
+        if let partReplaceActions, !isReadOnly, !modeProfile.isPoolMode {
+            handlers.replacePart = { partID, componentIDs in partReplaceActions.replace(partID, componentIDs) }
+        }
         handlers.switchPane = onSwitchPane
         return handlers
     }
@@ -4384,14 +4392,35 @@ struct BoardCanvasView: View {
             for link in packagePartPageLinks(for: ref) {
                 entries.append(.action(title: link.title, .openURL(link.url)))
             }
-            // The Pools pane on the parts that can replace the package's
-            // component's, as its Replace offers them.
-            if poolRevealAction != nil, !modeProfile.isPoolMode {
-                entries.append(.command(title: "Alternate Parts…", .showAlternateParts))
+            if let replace = replacePartEntry(for: ref) {
+                entries.append(replace)
             }
         }
 
         return entries
+    }
+
+    /// Replace, for a package in a project window: the parts for its
+    /// component's entity and of its value to give it outright
+    /// (`HorizontalPartReplaceMenu`), then Alternate Parts…, the Pools pane
+    /// on every part that can replace the component's, as its Replace offers
+    /// them. Where the board can't be edited, Alternate Parts… alone. A
+    /// package right-clicked among a selection speaks for the selection's
+    /// components, where one list of parts answers them all.
+    private func replacePartEntry(for ref: HorizontalSelectableRef) -> HorizontalTargetItemMenuEntry? {
+        guard !modeProfile.isPoolMode else {
+            return nil
+        }
+        var content: HorizontalPartReplaceMenu.Content?
+        if !isReadOnly, let partReplaceActions, let componentID = package(for: ref)?.componentID {
+            var selection = Set<String>()
+            if selectedObjects.contains(ref) {
+                selection = Set(selectedObjects.filter { $0.type == .boardPackage }
+                    .compactMap { package(for: $0)?.componentID.map(normalizedID) })
+            }
+            content = partReplaceActions.content(normalizedID(componentID), selection)
+        }
+        return HorizontalPartReplaceMenu.entry(content, browses: poolRevealAction != nil)
     }
 
     /// Standalone copper / graphics the clipboard can clone. Resolves the ref

@@ -23,7 +23,8 @@ final class HorizontalCanvasMenuTests: XCTestCase {
         entries.map { entry in
             switch entry {
             case .separator: "-"
-            case .command(let title, _), .select(let title), .toggle(let title, _, _), .action(let title, _), .todo(let title): title
+            case .command(let title, _), .select(let title), .toggle(let title, _, _), .action(let title, _), .todo(let title),
+                 .choice(let title, _, _, _, _): title
             case .unavailable(let title, let reason): "\(title) (\(reason))"
             case .submenu(let title, let children): "\(title) [\(titles(children).joined(separator: ", "))]"
             }

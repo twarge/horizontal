@@ -247,6 +247,13 @@ struct HorizontalPoolBrowserView: View {
     /// first — the same resolution order HorizontalPoolPadstacks uses. A
     /// standalone pool browses itself plus the pools it includes.
     private var browsedPools: [BrowsedPool] {
+        Self.browsedPools(for: root)
+    }
+
+    /// The pools a browser rooted at `root` reads, in that order: what a
+    /// component's Replace menu reads too (`HorizontalPartReplaceMenu`), so
+    /// it offers the parts the Pools pane would list.
+    static func browsedPools(for root: HorizontalPoolBrowserRoot) -> [BrowsedPool] {
         var result = [BrowsedPool]()
         var seen = Set<String>()
 
