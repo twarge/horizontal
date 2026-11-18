@@ -747,6 +747,11 @@ struct InteractiveCanvasView: View {
 
     /// Room left at the scale bar's start for a pane's keyboard-focus badge.
     @Environment(\.horizonScaleBarLeadingClearance) private var scaleBarLeadingClearance
+    #if canImport(AppKit)
+    /// What puts the canvas's menus on screen: the app's pops them up, and a
+    /// test's keeps them instead.
+    @Environment(\.horizonCanvasMenuPresenter) private var menuPresenter
+    #endif
     /// The cursor crosshair + coordinate readout live in `CursorReadoutLayer`, fed
     /// through this holder so a pointer move re-renders only that small layer, not
     /// this ~500-line body. (@State holds the reference but does NOT observe it.)
@@ -1850,7 +1855,7 @@ struct InteractiveCanvasView: View {
         menu.delegate = highlightDelegate
         // No NSView is handed to the SwiftUI pointer path, so pop up in screen
         // coordinates at the cursor (NSEvent.mouseLocation is the click point).
-        menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+        menuPresenter.present(menu, NSEvent.mouseLocation)
         // popUp is synchronous; menuDidClose already cleared the highlight, but
         // clear again defensively for the no-hover dismiss path.
         onTargetMenuHighlight(nil)
@@ -1872,7 +1877,7 @@ struct InteractiveCanvasView: View {
                 DispatchQueue.main.async { run(command) }
             })
         }
-        menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+        menuPresenter.present(menu, NSEvent.mouseLocation)
     }
 
     /// A click on overlapping objects asks which one, as Horizon's clarify menu
@@ -1899,8 +1904,9 @@ struct InteractiveCanvasView: View {
         // the pointer drifts before the next tick.
         let anchor = NSEvent.mouseLocation
         let clearHighlight = onTargetMenuHighlight
+        let presenter = menuPresenter
         DispatchQueue.main.async {
-            menu.popUp(positioning: nil, at: anchor, in: nil)
+            presenter.present(menu, anchor)
             clearHighlight(nil)
             _ = highlightDelegate
         }

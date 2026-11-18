@@ -10,11 +10,17 @@ import XCTest
 /// rather than the canvas's, and no click there takes the keyboard. Before, the
 /// monitor left only the strip under the toolbar alone, so it took a sheet
 /// row's right-click and nothing opened.
+///
+/// The canvas here is given a presenter that keeps its menus. The app's pops
+/// one up on screen and waits for a click to close it, which stalled a run
+/// with nobody at the Mac.
 @MainActor
 final class CanvasSidebarMouseTests: XCTestCase {
     @MainActor private final class State {
         var actions: HorizontalCanvasCommandActions?
         var focusRequests = 0
+        /// The menus the canvas opened, each by its items' titles.
+        var menus = [[String]]()
         let toolSettings = HorizontalBoardToolSettings()
     }
 
@@ -66,6 +72,9 @@ final class CanvasSidebarMouseTests: XCTestCase {
         _ = NSApplication.shared
         let state = State()
         let hosted = NSHostingView(rootView: Canvas(state: state)
+            .environment(\.horizonCanvasMenuPresenter, HorizontalCanvasMenuPresenter { menu, _ in
+                state.menus.append(menu.items.map(\.title))
+            })
             .environmentObject(HorizontalAppearanceSettings(defaults: UserDefaults(suiteName: UUID().uuidString)!)))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
                               styleMask: [.titled], backing: .buffered, defer: false)
@@ -88,11 +97,14 @@ final class CanvasSidebarMouseTests: XCTestCase {
         }
 
         XCTAssertNotNil(try click(.rightMouseDown, x: Self.sidebarWidth / 2), "a right-click over the sidebar reaches its row")
+        XCTAssertEqual(state.menus, [], "and opens no menu of the canvas's")
         XCTAssertNotNil(try click(.leftMouseDown, x: Self.sidebarWidth / 2))
         XCTAssertEqual(state.focusRequests, 0, "a click over the sidebar does not give the canvas the keyboard")
 
         XCTAssertNil(try click(.rightMouseDown, x: Self.sidebarWidth + 300), "the canvas takes its own right-click")
         XCTAssertEqual(state.focusRequests, 1)
+        XCTAssertEqual(state.menus.count, 1, "and opens its own menu, over nothing: \(state.menus)")
+        XCTAssertTrue(state.menus.first?.contains("Select All") == true, "\(state.menus)")
     }
 }
 #endif
