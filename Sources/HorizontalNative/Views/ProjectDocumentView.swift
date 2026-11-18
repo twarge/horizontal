@@ -5459,8 +5459,11 @@ struct ProjectWorkspaceView: View {
             project.schematic = schematic
         }
 
+        var boardNetsRenamed = false
         if var board = project.board {
-            board.netDetails = netDetails(board.netDetails, renamedBy: normalizedClasses)
+            let renamed = netDetails(board.netDetails, renamedBy: normalizedClasses)
+            boardNetsRenamed = renamed != board.netDetails
+            board.netDetails = renamed
             project.board = board
             boardEditRevision += 1
         }
@@ -5476,6 +5479,13 @@ struct ProjectWorkspaceView: View {
                 in: project,
                 to: &document.archive
             )
+            // A rule can match a class by its name (`net_class_regex`), so a
+            // class the board's nets are in, renamed, may be another rule's:
+            // the board follows as it does a net that changed its class from
+            // a sheet, by the reload that applies the rules.
+            if boardNetsRenamed {
+                scheduleBoardNetlistSync()
+            }
         } catch {
             recordArchiveApplyFailure(error)
         }

@@ -135,9 +135,9 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .removeNetTie: "Remove a net tie and the symbols drawn for it."
         case .placeNetTie: "Draw a net tie on a sheet, between a point on each of its two nets."
         case .addNetClass: "Create a net class. Its electrical parameters live in the board rules; board_rules shows them."
-        case .renameNetClass: "Rename a net class."
-        case .renameNet: "Rename a net."
-        case .setNetClass: "Put a net in a net class, by name or id."
+        case .renameNetClass: "Rename a net class. A board rule can match a class by its name, so the rules are applied again, as set_net_class applies them."
+        case .renameNet: "Rename a net. A board rule can match a net by its name, so the rules are applied again, as set_net_class applies them."
+        case .setNetClass: "Put a net in a net class, by name or id. What the board rules give the net by its class follows: the tracks whose width is the rules', the vias whose shape is and the planes whose settings are take the rule that now matches (tracks_rederived, vias_rederived, planes_rederived)."
         case .setDiffpair: "Horizon's Set Diff Pair: pair two nets as a differential pair, net the primary and partner the secondary. The block file names the pair on the primary (its diffpair). Two nets paired already take the roles given; a net in a pair with another is refused until clear_diffpair takes it out. list_nets and get_net give each net's diffpair."
         case .clearDiffpair: "Horizon's Clear Diff Pair: take a net, primary or secondary, out of its differential pair. A net in none is left as it is."
         case .retireNet: "Remove a net, every connection to it, and the labels, power symbols, wires and junctions drawn for it. Its planes go too, since a plane needs a net; their outlines stay as polygons. Tracks and vias on it are reported, or removed with remove_routing."
@@ -994,6 +994,8 @@ final class HorizontalProjectEditor {
             change.merge(try addNetClass(params)) { _, new in new }
         case .renameNetClass:
             change.merge(try renameNetClass(params)) { _, new in new }
+            // A rule can match a class by its name.
+            change.merge(try rederiveRuleShapes()) { _, new in new }
         case .renameNet:
             let id = try netID(params)
             guard let name = params["name"] as? String else {
@@ -1002,6 +1004,8 @@ final class HorizontalProjectEditor {
             try updateNet(id) { $0["name"] = name }
             change["net"] = id
             change["name"] = name
+            // A rule can match a net by its name.
+            change.merge(try rederiveRuleShapes()) { _, new in new }
         case .setNetClass:
             let id = try netID(params)
             guard let netClass = params.string("net_class") else {
@@ -1011,6 +1015,9 @@ final class HorizontalProjectEditor {
             try updateNet(id) { $0["net_class"] = classID }
             change["net"] = id
             change["net_class"] = classID
+            // What the rules give the net by its class, they give it again:
+            // its tracks' widths, its vias' shapes, its planes' settings.
+            change.merge(try rederiveRuleShapes()) { _, new in new }
         case .setDiffpair:
             let id = try netID(params)
             guard let partnerReference = params.string("partner"), !partnerReference.isEmpty else {
@@ -8118,7 +8125,8 @@ final class HorizontalProjectEditor {
     }
 
     /// Everything that takes its shape from the rules given it again after
-    /// they change, as the app keeps them applied
+    /// they change, or a net changes its class or a name a rule matches by,
+    /// as the app keeps them applied
     /// (`HorizontalBoardRuleApplication`) and as Horizon's Apply gives it:
     /// vias from the via rules or a via definition, tracks and net ties whose
     /// width is the rules', planes whose settings are. Counted in the reply;

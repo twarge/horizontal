@@ -479,7 +479,15 @@ struct HorizontalBoard {
     var userLayers: [HorizontalBoardUserLayer]
     var junctions: [String: HorizontalPoint]
     var junctionNetIDs: [String: String]
-    var netDetails: [String: HorizontalNetDetails]
+    /// The nets by id, each with its name and the class it is in. The rules
+    /// match by them (`HorizontalRuleMatch`), so a change here is a change to
+    /// what the rules give: they are handed the nets as they now are, and a
+    /// net put in another class is looked up in that class from then on.
+    /// Held apart, the rules kept the classes the board loaded with, and a
+    /// track whose net changed class kept the old class's width.
+    var netDetails: [String: HorizontalNetDetails] {
+        didSet { rules.netDetails = netDetails }
+    }
     var rules: HorizontalBoardRules = .empty
     var tracks: [HorizontalSegment]
     var netTies: [HorizontalSegment]
@@ -931,9 +939,12 @@ struct HorizontalBoard {
         }
     }
 
-    /// The rules `board` has, which `takeRules(_:)` gave it.
+    /// The rules `board` has, which `takeRules(_:)` gave it, and the nets
+    /// they match by, each in the class `board` has it in: a board that took
+    /// the rules alone would look its nets up in them by classes of its own.
     mutating func takeRules(of board: HorizontalBoard) {
         rules = board.rules
+        netDetails = board.netDetails
         viaDefinitions = board.viaDefinitions
         ruleViaMaskExpansion = board.ruleViaMaskExpansion
         ruleParameters = board.ruleParameters

@@ -258,6 +258,45 @@ final class HorizontalMCPShortIDAndWiringTests: XCTestCase {
         XCTAssertEqual(try widths(), [0.25, 0.4], "the rules' track takes the new width, the other keeps its own")
     }
 
+    func testANetPutInAnotherClassGivesItsTracksThatClasssWidth() throws {
+        let chip = part(["A", "B"])
+        try apply([["op": "ensure_component", "refdes": "U1", "part": chip.part],
+                   ["op": "ensure_component", "refdes": "U2", "part": chip.part],
+                   ["op": "place_component", "component": "U1", "x_mm": 10, "y_mm": 10],
+                   ["op": "place_component", "component": "U2", "x_mm": 30, "y_mm": 10],
+                   ["op": "connect", "component": "U1", "pin": "A", "net": "SIG", "create_net": true],
+                   ["op": "connect", "component": "U2", "pin": "A", "net": "SIG"],
+                   ["op": "connect", "component": "U1", "pin": "B", "net": "GND", "create_net": true],
+                   ["op": "connect", "component": "U2", "pin": "B", "net": "GND"]], ["pool_items": chip.items])
+        let fast = try XCTUnwrap(changes(try apply([["op": "add_net_class", "name": "Fast"]])).first?.string("net_class"))
+        func widthRule(order: Int, def: Int, match: JSONDictionary) -> JSONDictionary {
+            ["op": "add_rule", "kind": "track_width", "fields": [
+                "order": order, "match": match, "widths": ["0": ["min": 100_000, "max": 1_000_000, "def": def]]]]
+        }
+        // By order: a class named Quick…, the Fast class, then every net.
+        try apply([widthRule(order: -30, def: 500_000, match: ["mode": "net_class_regex", "net_class_regex": "^Quick"]),
+                   widthRule(order: -20, def: 400_000, match: ["mode": "net_class", "net_class": fast]),
+                   widthRule(order: -10, def: 300_000, match: ["mode": "all"])])
+        try apply([["op": "place_track", "from": ["component": "U1", "pad": "1"], "to": ["component": "U2", "pad": "1"], "layer": 0],
+                   ["op": "place_track", "from": ["component": "U1", "pad": "2"], "to": ["component": "U2", "pad": "2"], "layer": 0]])
+        func widths() throws -> [String: Double] {
+            let tracks = try XCTUnwrap(try result("list_tracks") as? JSONDictionary).dictionaryArray("tracks")
+            return Dictionary(tracks.compactMap { track in
+                track.string("net_name").flatMap { name in track.double("width_mm").map { (name, $0) } }
+            }, uniquingKeysWith: { first, _ in first })
+        }
+        XCTAssertEqual(try widths(), ["SIG": 0.3, "GND": 0.3])
+
+        let classed = try apply([["op": "set_net_class", "net": "SIG", "net_class": "Fast"]])
+        XCTAssertEqual(changes(classed).first?.int("tracks_rederived"), 1)
+        XCTAssertEqual(try widths(), ["SIG": 0.4, "GND": 0.3], "SIG's track takes the Fast rule's width")
+
+        // The class by another name is another rule's.
+        let renamed = try apply([["op": "rename_net_class", "net_class": "Fast", "name": "Quickest"]])
+        XCTAssertEqual(changes(renamed).first?.int("tracks_rederived"), 1)
+        XCTAssertEqual(try widths(), ["SIG": 0.5, "GND": 0.3])
+    }
+
     // MARK: - 132, 134, 135: via rules
 
     func testViasTakeTheirShapeFromTheRuleThatMatchesTheirNet() throws {
