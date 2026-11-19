@@ -85,7 +85,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `board_info` | bounds, stackup, drawing layers, object counts |
 | `recompute_connectivity` | the editor's post-edit connectivity pass, in memory |
 | `check` | see below |
-| `export` | the app's exporters into a directory outside the project |
+| `export` | the app's exporters into a directory outside the project. The reply's `checks` counts what `check` finds in the design exported (`ok`, and `counts` by level), and `note` says so when there are errors or warnings; the files are written either way |
 | `render_sheet`, `render_board` | PNG, base64 or written to a path, via the PDF exporters and Core Graphics; `region` renders part of a sheet or board. A sheet is drawn as its own PDF page; a sub-block's, as the page of the `instance` asked for (the first by default), `page` and `instance` saying which. A board render draws the package, assembly and courtyard layers as outlines, so the pads and tracks under a package body show |
 | `list_groups` | Horizon groups (sub-circuit instances) with members by tag and placement |
 | `zoom_to`, `render_viewport` | Live channel: frame a component or net in a pane, or with `pane: "all"` in every showing pane that can show it, the 3D view included; render what a pane shows |

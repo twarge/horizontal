@@ -1519,6 +1519,9 @@ def check(path: str | None = None, full: bool = False) -> dict[str, Any]:
 def export(sections: list[str], path: str | None = None, target_directory: str | None = None) -> dict[str, Any]:
     """Run the app's exporters. Sections: schematic_pdf, bom, gerber, odb, pick_and_place, board_step, board_drawing, board_dxf. Writes files; the target must be outside the project package.
 
+    The reply's checks counts what check finds in the design exported: ok (no errors) and counts by level. With errors
+    or warnings, note says how many; the files are written either way, and check lists the findings.
+
     A live export writes as the app, which is sandboxed and can only write where it has been given access. When it
     cannot write to target_directory and the project's files hold exactly what the open document does, the export
     runs in this server's worker from those files instead, and via says "worker". When the document has changes its

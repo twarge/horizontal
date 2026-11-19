@@ -544,7 +544,7 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "export",
-            summary: "Run the app's exporters. Sections: schematic_pdf, bom, gerber, odb, pick_and_place, board_step, board_drawing, board_dxf.",
+            summary: "Run the app's exporters. Sections: schematic_pdf, bom, gerber, odb, pick_and_place, board_step, board_drawing, board_dxf. The reply's checks counts what check finds in the design exported (ok, counts by level), and note says so when there are errors or warnings; the files are written either way.",
             params: [
                 "handle": "Project handle.",
                 "sections": "Array of section names.",
@@ -1817,15 +1817,32 @@ enum HorizontalDispatchMethods {
         let targetURL = try HorizontalExportSettings.exportTargetDirectory(for: entry.project, requestedPath: settings.targetDirectory)
         settings.targetDirectory = targetURL.path
         try requireWritable(targetURL)
-        let source = try entry.snapshot?.materializedProject() ?? entry.project
+        // Planes the window's Clear All Planes emptied are poured for the
+        // export, as the app's own Export All pours them.
+        let source = HorizontalExportPreflight.pouringClearedPlanes(in: try entry.snapshot?.materializedProject() ?? entry.project)
         let status = HorizontalExportBackend.export(sections: sections, settings: settings, project: source)
         let files = (try? FileManager.default.contentsOfDirectory(atPath: targetURL.path))?.sorted() ?? []
-        return [
+        var reply: JSONDictionary = [
             "status": exportStatusName(status.kind),
             "message": status.message,
             "target_directory": targetURL.path,
             "files": files
         ]
+        // What `check` finds in the design the files were made from, counted
+        // as it counts them: the files are written either way, and a client
+        // about to send them on is told without having to ask.
+        if status.kind == .success {
+            let report = HorizontalDispatchChecks.run(entry: entry)
+            let counts = report["counts"] as? [String: Int] ?? [:]
+            let errors = counts["error"] ?? 0, warnings = counts["warning"] ?? 0
+            reply["checks"] = ["ok": errors == 0, "counts": counts] as JSONDictionary
+            if errors + warnings > 0 {
+                let found = [errors > 0 ? "\(errors) error\(errors == 1 ? "" : "s")" : nil,
+                             warnings > 0 ? "\(warnings) warning\(warnings == 1 ? "" : "s")" : nil].compactMap { $0 }
+                reply["note"] = "check finds \(found.joined(separator: " and ")) in this design. The files are written all the same; check lists what it found."
+            }
+        }
+        return reply
     }
 
     /// Fails, as a typed error, when this process can't write to `url`.

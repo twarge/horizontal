@@ -251,4 +251,43 @@ final class HorizontalDispatchTests: XCTestCase {
         let unknown = try call("export", ["handle": handle, "sections": ["napkin"]])
         XCTAssertEqual((unknown["error"] as? [String: Any])?["code"] as? Int, -32602)
     }
+
+    /// A client about to send the files on is told what `check` would have
+    /// told it, without having to ask: the template as written has two
+    /// planes that were never poured, which check fails.
+    func testExportCountsWhatCheckFindsAndWritesItsFilesAllTheSame() throws {
+        let url = try writtenTemplate()
+        let summary = try XCTUnwrap(try result("open_project", ["path": url.path]) as? [String: Any])
+        let handle = try XCTUnwrap(summary["handle"] as? Int)
+        addTeardownBlock { _ = HorizontalDispatch.call(#"{"jsonrpc":"2.0","id":0,"method":"close_project","params":{"handle":\#(handle)}}"#) }
+        let outside = url.deletingLastPathComponent().appendingPathComponent("exports")
+        func counts() throws -> [String: Int] {
+            try XCTUnwrap((try result("check", ["handle": handle]) as? [String: Any])?["counts"] as? [String: Int])
+        }
+        func export() throws -> [String: Any] {
+            try XCTUnwrap(try result("export", ["handle": handle, "sections": ["bom"], "target_directory": outside.path]) as? [String: Any])
+        }
+
+        let unpoured = try counts()
+        let errors = try XCTUnwrap(unpoured["error"])
+        XCTAssertGreaterThan(errors, 0, "precondition: check fails the planes that were never poured")
+        let failing = try export()
+        XCTAssertEqual(failing["status"] as? String, "success", "the findings do not hold the files back")
+        XCTAssertFalse(try XCTUnwrap(failing["files"] as? [String]).isEmpty)
+        let found = try XCTUnwrap(failing["checks"] as? [String: Any])
+        XCTAssertEqual(found["ok"] as? Bool, false)
+        XCTAssertEqual(found["counts"] as? [String: Int], unpoured, "as check counts them")
+        let note = try XCTUnwrap(failing["note"] as? String)
+        XCTAssertTrue(note.hasPrefix("check finds \(errors) error"), note)
+
+        let revision = try HorizontalDispatchSession.shared.perform { try $0.entry(handle: handle).revision }
+        _ = try result("pour_planes", ["handle": handle, "expected_revision": revision, "operation_id": UUID().uuidString])
+        let poured = try counts()
+        XCTAssertEqual(poured["error"], 0, "precondition: poured, the template checks clean")
+        let clean = try export()
+        let none = try XCTUnwrap(clean["checks"] as? [String: Any])
+        XCTAssertEqual(none["ok"] as? Bool, true)
+        XCTAssertEqual(none["counts"] as? [String: Int], poured)
+        XCTAssertEqual(clean["note"] == nil, (poured["warning"] ?? 0) == 0, "a note only for errors or warnings")
+    }
 }
