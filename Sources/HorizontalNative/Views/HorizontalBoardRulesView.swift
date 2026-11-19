@@ -573,12 +573,8 @@ struct HorizontalBoardRulesWindow: View {
         guard selectedKind.isMulti else {
             return
         }
-        var bucket = rules[selectedKind.rawValue] as? JSONDictionary ?? [:]
         let id = UUID().uuidString.lowercased()
-        let order = bucket.values.compactMap { ($0 as? JSONDictionary)?.int("order") }.max().map { $0 + 1 } ?? 0
-        bucket[id] = selectedKind.defaultRule(context: context, order: order)
-        var updatedRules = rules
-        updatedRules[selectedKind.rawValue] = bucket
+        let updatedRules = selectedKind.addingRule(selectedKind.defaultRule(context: context, order: 0), id: id, to: rules)
         selectedRuleID = id
         setRules(updatedRules)
     }
@@ -936,6 +932,32 @@ enum HorizontalBoardRuleKind: String, CaseIterable, Identifiable, Hashable {
             var rule = bucket[instance.id] as? JSONDictionary ?? [:]
             rule["order"] = order
             bucket[instance.id] = rule
+        }
+        var updatedRules = rules
+        updatedRules[rawValue] = bucket
+        return updatedRules
+    }
+
+    /// The rules with `rule` added to this kind's as `id`, first by order,
+    /// as Horizon's Add puts it: its `add_rule` leaves a new rule at order
+    /// -1 and numbers the kind's rules again from 0 (`Rules::fix_order`).
+    /// A net takes the first rule by order that matches it, and a kind's
+    /// last rule is the one for every net, so a rule added after that one
+    /// took no net whatever it was set to match: a track width rule made
+    /// for a net class left the class's tracks at the catch-all's width.
+    func addingRule(_ rule: JSONDictionary, id: String, to rules: JSONDictionary) -> JSONDictionary {
+        guard isMulti else {
+            return rules
+        }
+        let existing = instances(in: rules, context: HorizontalBoardRuleContext(board: nil, netClasses: []))
+            .map(\.id)
+            .filter { $0 != id }
+        var bucket = rules[rawValue] as? JSONDictionary ?? [:]
+        bucket[id] = rule
+        for (order, ruleID) in ([id] + existing).enumerated() {
+            var numbered = bucket[ruleID] as? JSONDictionary ?? [:]
+            numbered["order"] = order
+            bucket[ruleID] = numbered
         }
         var updatedRules = rules
         updatedRules[rawValue] = bucket
