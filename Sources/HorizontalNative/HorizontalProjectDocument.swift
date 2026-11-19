@@ -31,42 +31,152 @@ struct HorizontalProjectDocument: FileDocument {
     // and starts an unnecessary autosave/quit save, which can wait on Quick
     // Look's outstanding coordinated reads for a minute.
     //
-    // Copies share only this loading state. Every real archive assignment
-    // replaces the storage, preserving value semantics for edits, undo, and
-    // the snapshots FileDocument writes on background threads.
+    // Copies share only this loading state, and the making of an edit that
+    // was deferred. Every real archive assignment replaces the storage,
+    // preserving value semantics for edits, undo, and the snapshots
+    // FileDocument writes on background threads.
     private var contents: Contents
 
+    /// The project's files. Reading it writes an edit still deferred
+    /// (`deferArchiveEdit`) first, on the thread that asks, so what it gives
+    /// is always current.
     var archive: HorizontalProjectArchive {
         get { contents.archive }
         set { contents = Contents(newValue) }
     }
 
-    private final class Contents: @unchecked Sendable {
-        private let lock = NSLock()
-        private var value: HorizontalProjectArchive
+    /// An edit to the archive that is made when the archive is next read, or
+    /// by `writeDeferredEdit`, rather than now. A board commit defers its
+    /// rewrite of the board file with this: what is on screen is the board
+    /// model, and nothing needs the file's bytes until a save, an export or
+    /// another edit reads them.
+    ///
+    /// It is an assignment like any other: the storage is replaced, so it is
+    /// an undo step and an edit to SwiftUI, and a copy taken before it does
+    /// not have it. An edit still deferred is superseded, never run, so
+    /// `edit` must carry all that one did. A board write does: it writes the
+    /// whole board over the file as last written.
+    mutating func deferArchiveEdit(_ edit: @escaping DeferredArchiveEdit) {
+        contents = Contents(contents.settled, deferring: edit)
+    }
 
-        init(_ archive: HorizontalProjectArchive) {
+    typealias DeferredArchiveEdit = @Sendable (inout HorizontalProjectArchive) throws -> Void
+
+    /// The archive as last written, without making or waiting for an edit
+    /// still deferred. Current in every file a deferred edit does not write:
+    /// for a board write, all but the board's file and the padstacks and
+    /// decals it caches in the project pool.
+    var settledArchive: HorizontalProjectArchive {
+        contents.settled
+    }
+
+    /// Whether an edit is deferred that nothing has made yet.
+    var hasDeferredEdit: Bool {
+        contents.isDeferred
+    }
+
+    /// Makes the deferred edit off the calling thread, if nothing has made it
+    /// yet, and gives the error it threw, whoever made it. An edit that threw
+    /// left the archive as it was.
+    func writeDeferredEdit() async -> Error? {
+        let contents = contents
+        return await Task.detached(priority: .userInitiated) {
+            contents.write()
+            return contents.failure
+        }.value
+    }
+
+    /// Safe to share between threads: `state` guards every stored property,
+    /// and `writing` lets one thread at a time make the deferred edit.
+    private final class Contents: @unchecked Sendable {
+        /// Held only to read or swap what it guards, never across an edit, so
+        /// `settled` does not wait for a write.
+        private let state = NSLock()
+        /// Held while the deferred edit is made, so it is made once however
+        /// many ask for the archive.
+        private let writing = NSLock()
+        /// The archive; while an edit is deferred, the one it is to be made in.
+        private var value: HorizontalProjectArchive
+        private var deferred: DeferredArchiveEdit?
+        private var thrown: Error?
+
+        init(_ archive: HorizontalProjectArchive, deferring edit: DeferredArchiveEdit? = nil) {
             value = archive
+            deferred = edit
         }
 
         var archive: HorizontalProjectArchive {
-            lock.lock()
-            defer { lock.unlock() }
+            write()
+            return settled
+        }
+
+        var settled: HorizontalProjectArchive {
+            state.lock()
+            defer { state.unlock() }
             return value
         }
 
+        var isDeferred: Bool {
+            state.lock()
+            defer { state.unlock() }
+            return deferred != nil
+        }
+
+        var failure: Error? {
+            state.lock()
+            defer { state.unlock() }
+            return thrown
+        }
+
+        /// Makes the deferred edit, if there is one still.
+        func write() {
+            guard isDeferred else { return }
+            writing.lock()
+            defer { writing.unlock() }
+            state.lock()
+            let edit = deferred
+            let base = value
+            state.unlock()
+            guard let edit else { return }
+            let start = DispatchTime.now().uptimeNanoseconds
+            // In a copy: an edit that throws may have made part of itself.
+            var edited = base
+            var failure: Error?
+            do {
+                try edit(&edited)
+            } catch {
+                failure = error
+                edited = base
+            }
+            state.lock()
+            value = edited
+            deferred = nil
+            thrown = failure
+            state.unlock()
+            HorizontalMoveCommitDiagnostics.reportDeferredArchiveEdit(
+                nanoseconds: DispatchTime.now().uptimeNanoseconds &- start,
+                onMainThread: Thread.isMainThread
+            )
+        }
+
+        /// The loaded files replace whatever this held, an edit deferred
+        /// before the load began included, as they replace one already made.
         func completeLoading(with archive: HorizontalProjectArchive) {
-            lock.lock()
-            defer { lock.unlock() }
+            writing.lock()
+            defer { writing.unlock() }
+            state.lock()
+            defer { state.unlock() }
             value = archive
+            deferred = nil
         }
 
         /// The `.hprj` named after the package a save just wrote, in the copy
         /// that save was taken from. Renaming is no edit either: the document
         /// holds what the files now do, and is not marked changed.
         func renameProjectFile(toMatchPackageNamed packageName: String) {
-            lock.lock()
-            defer { lock.unlock() }
+            write()
+            state.lock()
+            defer { state.unlock() }
             value = value.renamingProjectFile(toMatchPackageNamed: packageName)
         }
     }

@@ -26,6 +26,9 @@ struct HorizontalIPadProjectView: View {
     @State private var threeDCameraState: HorizontalSceneCameraState?
     /// Counts every change to the board's content, for the 3D view's rebuilds.
     @State private var boardEditRevision = 0
+    /// The write of the board file the last board edit left to be made
+    /// (`writeBoardFileBehind`).
+    @State private var boardFileWrite: Task<Void, Never>?
     /// Bumped when the board is replaced from outside the board canvas (a
     /// netlist reload), so the canvas adopts it.
     @State private var boardSyncRevision = 0
@@ -413,6 +416,10 @@ struct HorizontalIPadProjectView: View {
             Text(copy.summary)
         }
         .task(id: "\(boardEditRevision):\(schematicEditRevision):\(project?.poolDirectory ?? ""):\(project != nil):\(isReadOnly)") {
+            // As on the Mac: the pool files read here include what a board
+            // write caches, so the write an edit left is waited for first.
+            await boardFileWrite?.value
+            guard !Task.isCancelled, !document.hasDeferredEdit else { return }
             if let project { partLibrary.update(partLibraryInputs(for: project)) }
         }
         .onAppear {
@@ -1003,7 +1010,7 @@ struct HorizontalIPadProjectView: View {
 
     private var loadIdentity: String {
         fileURL?.standardizedFileURL.path
-            ?? document.archive.suggestedFilename
+            ?? document.settledArchive.suggestedFilename
             ?? "untitled-horizontal-document"
     }
 
@@ -1567,8 +1574,8 @@ struct HorizontalIPadProjectView: View {
                 focusedPane = .schematic
             },
             library: partLibrary,
-            usedPartIDs: Set(HorizontalPoolCacheUpdater.references(in: document.archive, project: project).keys),
-            populatedPartIDs: HorizontalPoolCacheUpdater.populatedPartIDs(in: document.archive, project: project),
+            usedPartIDs: Set(HorizontalPoolCacheUpdater.references(in: document.settledArchive, project: project).keys),
+            populatedPartIDs: HorizontalPoolCacheUpdater.populatedPartIDs(in: document.settledArchive, project: project),
             copyTargets: project.poolDirectory.map { HorizontalPoolPartCopier.targets(forProjectPool: project.baseURL.appendingPathComponent($0)) } ?? [],
             onCopyToPool: isReadOnly ? nil : { partID, target in preparePoolCopy(partID: partID, to: target) },
             onCopyEditsToPool: isReadOnly ? nil : { copy in try copyEditsToPool(copy) },
@@ -1597,7 +1604,7 @@ struct HorizontalIPadProjectView: View {
         guard !selectedComponentIDs.isEmpty || !highlightedComponentIDs.isEmpty else {
             return ([], nil)
         }
-        let parts = HorizontalPoolCacheUpdater.partIDsByComponent(in: document.archive, project: project)
+        let parts = HorizontalPoolCacheUpdater.partIDsByComponent(in: document.settledArchive, project: project)
         func partIDs(_ componentIDs: Set<String>) -> Set<String> {
             Set(componentIDs.compactMap { parts[$0.lowercased()] })
         }
@@ -2442,7 +2449,9 @@ struct HorizontalIPadProjectView: View {
     }
 
     /// Applies a routed/edited board to the in-memory project and the document
-    /// archive (DocumentGroup persists the binding). Mirrors the macOS path.
+    /// archive (DocumentGroup persists the binding). Mirrors the macOS path:
+    /// the board's file is left to be written behind the edit
+    /// (`HorizontalBoardFileWrite`).
     private func applyEditedBoard(_ board: HorizontalBoard, writesPlaneCache: Bool = false) {
         guard var updated = project else { return }
         updated.board = board
@@ -2456,10 +2465,30 @@ struct HorizontalIPadProjectView: View {
         } else {
             checkPlaneFills()
         }
-        do {
-            try HorizontalProjectJSONApplicator.apply(board: board, in: updated, to: &document.archive)
-        } catch {
-            loadError = "Couldn't save board changes: \(error.localizedDescription)"
+        guard HorizontalBoardFileWrite.isDeferred else {
+            do {
+                try HorizontalProjectJSONApplicator.apply(board: board, in: updated, to: &document.archive)
+            } catch {
+                loadError = "Couldn't save board changes: \(error.localizedDescription)"
+            }
+            return
+        }
+        document.deferBoardWrite(board, in: updated)
+        writeBoardFileBehind()
+    }
+
+    /// Writes the board file the edit just made left to be written, off the
+    /// main thread: one write at a time, and the latest board only.
+    private func writeBoardFileBehind() {
+        let before = boardFileWrite
+        before?.cancel()
+        let deferred = document
+        boardFileWrite = Task { @MainActor in
+            await before?.value
+            guard !Task.isCancelled else { return }
+            if let error = await deferred.writeDeferredEdit() {
+                loadError = "Couldn't save board changes: \(error.localizedDescription)"
+            }
         }
     }
 

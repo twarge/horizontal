@@ -766,6 +766,21 @@ enum HorizontalMoveCommitDiagnostics {
         """)
     }
 
+    /// The write a board commit deferred (`HorizontalProjectDocument
+    /// .deferArchiveEdit`), when it is made: how long it took, and whether
+    /// the main thread made it, which is something reading the archive
+    /// before the background write got to it.
+    static func reportDeferredArchiveEdit(nanoseconds: UInt64, onMainThread: Bool) {
+        guard isBoardChangeReportEnabled else {
+            return
+        }
+        print(String(
+            format: "Horizontal board file written: %.3f ms, %@",
+            Double(nanoseconds) / 1_000_000,
+            onMainThread ? "on the main thread" : "in the background"
+        ))
+    }
+
     static func markCommitReturned() {
         guard isEnabled else {
             return

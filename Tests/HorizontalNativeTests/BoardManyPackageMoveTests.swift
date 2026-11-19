@@ -298,6 +298,10 @@ final class ManyPackageCanvas: ObservableObject {
     let source: HorizontalBoard
     /// Each board the canvas handed back; the last is the one it shows.
     var committed: [HorizontalBoard] = []
+    /// With `hearsRestores`, each board the canvas put back (an undo, a
+    /// redo), which then are not among `committed`.
+    var restored: [HorizontalBoard] = []
+    var hearsRestores = false
     var actions: HorizontalCanvasCommandActions?
     let undo = UndoManager()
     let toolSettings = HorizontalBoardToolSettings()
@@ -319,6 +323,7 @@ final class ManyPackageCanvas: ObservableObject {
         var body: some View {
             BoardCanvasView(board: board, viewport: $viewport, displayOptions: BoardDisplayOptions(), undoManager: canvas.undo,
                 onBoardChange: { canvas.committed.append($0); board = $0 },
+                onBoardRestore: canvas.hearsRestores ? { canvas.restored.append($0); board = $0 } : nil,
                 onCanvasCommandActionsChange: { canvas.actions = $0 },
                 selectionPropertyChangeCommand: canvas.command,
                 toolSettings: canvas.toolSettings)

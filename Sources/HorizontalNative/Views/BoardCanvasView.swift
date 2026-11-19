@@ -577,6 +577,10 @@ struct BoardCanvasView: View {
     var onHighlightNetCommand: (Set<String>) -> Void = { _ in }
     var onHighlightComponentCommand: (Set<String>) -> Void = { _ in }
     var onBoardChange: (HorizontalBoard) -> Void = { _ in }
+    /// A board put back rather than made: an undo, a redo, an edit given up.
+    /// The host may find it has nothing to write for it, where a board from
+    /// `onBoardChange` is always an edit. Nil sends these to `onBoardChange`.
+    var onBoardRestore: ((HorizontalBoard) -> Void)?
     /// A plane create/edit that requires a re-pour. The host runs
     /// `HorizontalBoardPlaneUpdater.updateAllPlanes` on the supplied board, applies
     /// it (writing the plane fragment cache), and registers the named undo —
@@ -798,6 +802,7 @@ struct BoardCanvasView: View {
         onHighlightNetCommand: @escaping (Set<String>) -> Void = { _ in },
         onHighlightComponentCommand: @escaping (Set<String>) -> Void = { _ in },
         onBoardChange: @escaping (HorizontalBoard) -> Void = { _ in },
+        onBoardRestore: ((HorizontalBoard) -> Void)? = nil,
         onPlaneEdit: @escaping (HorizontalBoard, String) -> Void = { _, _ in },
         onUpdateAllPlanes: @escaping () -> Void = {},
         onNetClassChange: @escaping (String, String?) -> Void = { _, _ in },
@@ -854,6 +859,7 @@ struct BoardCanvasView: View {
         self.onHighlightNetCommand = onHighlightNetCommand
         self.onHighlightComponentCommand = onHighlightComponentCommand
         self.onBoardChange = onBoardChange
+        self.onBoardRestore = onBoardRestore
         self.onPlaneEdit = onPlaneEdit
         self.onUpdateAllPlanes = onUpdateAllPlanes
         self.onNetClassChange = onNetClassChange
@@ -6414,7 +6420,9 @@ struct BoardCanvasView: View {
                 hoveredObject = nil
             }
             invalidateSelectableCache()
-            publishConnectivityResolvedEdit(state.preBoard)
+            // Nothing may have been published since `preBoard`: Escape on a
+            // text just opened leaves the document as it was.
+            publishConnectivityResolvedEdit(state.preBoard, restoring: true)
             publishSelectionContext()
             return
         }
@@ -9482,7 +9490,7 @@ struct BoardCanvasView: View {
                     armDrawTrack(layer: route.layer)
                     routeInspector?.beginRoute(on: value)
                 }
-                onBoardChange(value)
+                (onBoardRestore ?? onBoardChange)(value)
                 reportNetClassDifferences(from: previousDetails, to: value.netDetails)
                 reportComponentRefdesDifferences(from: previousPackages, to: value.packages)
             }
@@ -9503,10 +9511,15 @@ struct BoardCanvasView: View {
     /// and the rest (a drawn track, a delete, a paste) left it to the pour that
     /// follows, which a board with no planes never has: on Board C the canvas
     /// drew 33 airwires where the board has 8, some to where parts had been.
+    ///
+    /// `restoring` is for the board an edit given up goes back to, which is
+    /// published as a board put back (`onBoardRestore`).
     private func publishConnectivityResolvedEdit(
         _ board: HorizontalBoard,
-        sync: BoardLayoutSyncIntent? = nil
+        sync: BoardLayoutSyncIntent? = nil,
+        restoring: Bool = false
     ) {
+        let publish = restoring ? (onBoardRestore ?? onBoardChange) : onBoardChange
         // A pool item has no nets: nothing to propagate, and the recompute
         // would strip the (absent) net of every pad anyway.
         guard modeProfile.usesConnectivity else {
@@ -9514,7 +9527,7 @@ struct BoardCanvasView: View {
             board.regenerateAirwires()
             board.recomputePoolEditorBounds()
             editedBoard = board
-            onBoardChange(board)
+            publish(board)
             return
         }
         // The edit made in the block instances laid out like the one it was
@@ -9550,7 +9563,7 @@ struct BoardCanvasView: View {
         if ruled || synced {
             invalidateSelectableCache()
         }
-        onBoardChange(resolved)
+        publish(resolved)
     }
 
     /// The edit, made the same in the block instances laid out like the one

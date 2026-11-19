@@ -179,7 +179,7 @@ struct ProjectDocumentView: View {
     private var needsProjectTree: Bool {
         guard let url = configuration.fileURL, url.pathExtension.caseInsensitiveCompare("hprj") == .orderedSame,
               !appearanceSettings.isReadOnlyOperationEnabled,
-              case .regularFile = document.archive.root else { return false }
+              case .regularFile = document.settledArchive.root else { return false }
         return true
     }
 
@@ -802,6 +802,9 @@ struct ProjectWorkspaceView: View {
     /// Counts every change to `project.board`'s content, so the 3D view
     /// knows to rebuild its scene (lazily, in the background).
     @State private var boardEditRevision = 0
+    /// The write of the board file the last canvas commit left to be made
+    /// (`writeBoardFileBehind`).
+    @State private var boardFileWrite: Task<Void, Never>?
     /// Bumped by every schematic mutation, for the live channel's change
     /// detection (the board has its own two counters).
     @State private var schematicEditRevision = 0
@@ -1108,6 +1111,11 @@ struct ProjectWorkspaceView: View {
     private var workspaceWithPartLibrary: some View {
         workspaceWithRouteInspector
             .task(id: "\(boardEditRevision):\(schematicEditRevision):\(project.baseURL.path):\(project.poolDirectory ?? ""):\(isReadOnly)") {
+                // The pool files read here include what a board write
+                // caches, so the write a commit left is waited for, off this
+                // thread. A commit made meanwhile starts this again.
+                await boardFileWrite?.value
+                guard !Task.isCancelled, !document.hasDeferredEdit else { return }
                 partLibrary.update(partLibraryInputs)
             }
             .sheet(isPresented: $showsPartUpdates) {
@@ -2484,7 +2492,7 @@ struct ProjectWorkspaceView: View {
         guard !selectedComponentIDs.isEmpty || !highlightedComponentIDs.isEmpty else {
             return ([], nil)
         }
-        let parts = HorizontalPoolCacheUpdater.partIDsByComponent(in: document.archive, project: project)
+        let parts = HorizontalPoolCacheUpdater.partIDsByComponent(in: document.settledArchive, project: project)
         func partIDs(_ componentIDs: Set<String>) -> Set<String> {
             Set(componentIDs.compactMap { parts[$0.lowercased()] })
         }
@@ -2503,8 +2511,8 @@ struct ProjectWorkspaceView: View {
                     isReadOnly: isReadOnly,
                     onPlacePart: beginPartPlacement,
                     library: partLibrary,
-                    usedPartIDs: Set(HorizontalPoolCacheUpdater.references(in: document.archive, project: project).keys),
-                    populatedPartIDs: HorizontalPoolCacheUpdater.populatedPartIDs(in: document.archive, project: project),
+                    usedPartIDs: Set(HorizontalPoolCacheUpdater.references(in: document.settledArchive, project: project).keys),
+                    populatedPartIDs: HorizontalPoolCacheUpdater.populatedPartIDs(in: document.settledArchive, project: project),
                     copyTargets: project.poolDirectory.map { HorizontalPoolPartCopier.targets(forProjectPool: project.baseURL.appendingPathComponent($0)) } ?? [],
                     onCopyToPool: isReadOnly ? nil : { partID, target in preparePoolCopy(partID: partID, to: target) },
                     onCopyEditsToPool: isReadOnly ? nil : { copy in try copyEditsToPool(copy) },
@@ -2811,6 +2819,9 @@ struct ProjectWorkspaceView: View {
                                 onHighlightNetCommand: highlightSelectedNet,
                                 onHighlightComponentCommand: { spotlightFromCanvas($0, from: .board) },
                                 onBoardChange: { board in
+                                    applyEditedBoard(board, defersWrite: true)
+                                },
+                                onBoardRestore: { board in
                                     applyEditedBoard(board)
                                 },
                                 onPlaneEdit: { board, actionName in
@@ -3596,8 +3607,15 @@ struct ProjectWorkspaceView: View {
     }
 
     /// Returns whether the document's files changed.
+    ///
+    /// `defersWrite` is for a board that is certainly an edit, a canvas's
+    /// commit: the board's file is left to be written behind it
+    /// (`HorizontalBoardFileWrite`) and the answer is yes. A board put back,
+    /// by an undo, a redo or an edit given up, is written here and now, as
+    /// is every other caller's: whether it changed the file is what keeps an
+    /// assignment that would change nothing off the undo stack.
     @discardableResult
-    private func applyEditedBoard(_ board: HorizontalBoard, writesPlaneCache: Bool = false) -> Bool {
+    private func applyEditedBoard(_ board: HorizontalBoard, writesPlaneCache: Bool = false, defersWrite: Bool = false) -> Bool {
         guard !isReadOnly else {
             return false
         }
@@ -3642,6 +3660,16 @@ struct ProjectWorkspaceView: View {
                 checkPlaneFills()
             }
         }
+        if defersWrite, !writesPlaneCache, HorizontalBoardFileWrite.isDeferred, !isUndoingOrRedoing {
+            let written = board
+            let project = project
+            measure("defer board JSON") {
+                document.deferBoardWrite(written, in: project)
+            }
+            writeBoardFileBehind()
+            HorizontalMoveCommitDiagnostics.reportProjectBoardChange(timings: timings)
+            return true
+        }
         // Every assignment through the document binding is an undo step and an
         // edit to SwiftUI, so one that would change nothing isn't made.
         var archive = document.archive
@@ -3670,6 +3698,23 @@ struct ProjectWorkspaceView: View {
         return changed
     }
 
+    /// Writes the board file the commit just made left to be written, off
+    /// the main thread: one write at a time, and the latest board only. A
+    /// commit made before this one's turn comes takes its place, and its
+    /// board is never written unless something reads the archive.
+    private func writeBoardFileBehind() {
+        let before = boardFileWrite
+        before?.cancel()
+        let deferred = document
+        boardFileWrite = Task { @MainActor in
+            await before?.value
+            guard !Task.isCancelled else { return }
+            if let error = await deferred.writeDeferredEdit() {
+                recordArchiveApplyFailure(error)
+            }
+        }
+    }
+
     /// Applies a board that follows from an edit already on the undo stack, the
     /// netlist sync after a placement or the pour after a plane edit, without a
     /// step of its own. SwiftUI puts every document assignment on the stack
@@ -3688,9 +3733,8 @@ struct ProjectWorkspaceView: View {
         #endif
     }
 
-    /// Runs `body` with undo registration off on every undo manager a
-    /// document assignment could register with.
-    private func withoutUndoRegistration<T>(_ body: () -> T) -> T {
+    /// Every undo manager a document assignment could register with.
+    private var undoManagers: [UndoManager] {
         var managers = [UndoManager]()
         #if os(macOS)
         if let manager = HorizontalDocumentSaving.undoManager(url: project.url) {
@@ -3700,6 +3744,19 @@ struct ProjectWorkspaceView: View {
         if let manager = activeUndoManager, !managers.contains(where: { $0 === manager }) {
             managers.append(manager)
         }
+        return managers
+    }
+
+    /// Whether an Undo or a Redo is running: what a canvas publishes then is
+    /// a board put back, even where it did not say so.
+    private var isUndoingOrRedoing: Bool {
+        undoManagers.contains { $0.isUndoing || $0.isRedoing }
+    }
+
+    /// Runs `body` with undo registration off on every undo manager a
+    /// document assignment could register with.
+    private func withoutUndoRegistration<T>(_ body: () -> T) -> T {
+        let managers = undoManagers
         managers.forEach { $0.disableUndoRegistration() }
         defer { managers.forEach { $0.enableUndoRegistration() } }
         return body()
@@ -4547,7 +4604,8 @@ struct ProjectWorkspaceView: View {
     /// Where `url` lives inside the document archive, or nil when it is not
     /// part of this project (the applicator resolves paths the same way).
     private func archiveRelativePath(for url: URL) -> String? {
-        if let path = document.archive.manifest?.relativePath(for: url) {
+        // A board write left to be made changes no path.
+        if let path = document.settledArchive.manifest?.relativePath(for: url) {
             return path
         }
         let base = project.baseURL.standardizedFileURL.path
@@ -4843,11 +4901,14 @@ struct ProjectWorkspaceView: View {
             .map { PlaceBlockToolButton.Choice(id: $0.uuid, name: $0.displayName, isEnabled: placeable.contains($0.uuid.lowercased())) }
     }
 
-    /// The JSON a project file holds in the document as it stands.
+    /// The JSON a project file holds in the document as it stands: a block,
+    /// its symbol, a schematic. Not for the board's file, which a commit may
+    /// have left to be written (`document.archive` writes it first); these
+    /// are read as the view draws, and must not wait for that.
     private func documentJSON(_ relativePath: String?) -> JSONDictionary? {
         guard let relativePath, !relativePath.isEmpty,
               let path = archiveRelativePath(for: project.baseURL.appendingPathComponent(relativePath)),
-              let data = document.archive.regularFileData(relativePath: path) else {
+              let data = document.settledArchive.regularFileData(relativePath: path) else {
             return nil
         }
         return try? JSONHelper.loadDictionary(from: data)
@@ -5900,7 +5961,7 @@ struct ProjectWorkspaceView: View {
 
     private func refreshLibraryPartReplacement() {
         let replacement = visiblePanes.contains(.library)
-            ? HorizontalPartReplacement.current(componentIDs: selectedComponentIDs, archive: document.archive, project: project,
+            ? HorizontalPartReplacement.current(componentIDs: selectedComponentIDs, archive: document.settledArchive, project: project,
                                                 preferredBlock: selectedSchematicBlock)
             : nil
         if replacement != libraryPartReplacement {
