@@ -133,15 +133,11 @@ struct HorizontalLengthTuning: Equatable {
             )
         }
         result.sort { lhs, rhs in
-            let order = lhs.netName.localizedStandardCompare(rhs.netName)
+            let order = HorizontalNetNameOrder.compare(lhs.netName, rhs.netName)
             if order != .orderedSame {
                 return order == .orderedAscending
             }
-            // Names Finder's order finds the same by their characters, and
-            // rows of one net in the order they were added.
-            if lhs.netName != rhs.netName {
-                return lhs.netName < rhs.netName
-            }
+            // Rows of one net in the order they were added.
             return (rows.firstIndex { $0.id == lhs.id } ?? 0) < (rows.firstIndex { $0.id == rhs.id } ?? 0)
         }
         return result

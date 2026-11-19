@@ -2548,7 +2548,7 @@ enum HorizontalExportBackend {
             "# Native Horizontal ODB++ first-pass EDA data",
             "# Nets"
         ]
-        for net in board.netDetails.values.sorted(by: { $0.name.localizedStandardCompare($1.name) == .orderedAscending }) {
+        for net in board.netDetails.values.sorted(by: { HorizontalNetNameOrder.precedes($0.name, $1.name) }) {
             lines.append("NET \(odbLegalName(net.name.isEmpty ? net.id : net.name))")
         }
         try writeODBText(lines.joined(separator: "\r\n") + "\r\n", to: url)

@@ -192,7 +192,7 @@ enum HorizontalDispatchChecks {
             if lhs.category != rhs.category {
                 return lhs.category < rhs.category
             }
-            switch (lhs.refdes ?? lhs.net ?? lhs.title).localizedStandardCompare(rhs.refdes ?? rhs.net ?? rhs.title) {
+            switch HorizontalNetNameOrder.compare(lhs.refdes ?? lhs.net ?? lhs.title, rhs.refdes ?? rhs.net ?? rhs.title) {
             case .orderedAscending: return true
             case .orderedDescending: return false
             case .orderedSame:

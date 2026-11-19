@@ -118,8 +118,8 @@ final class HorizontalLengthTuningTests: XCTestCase {
             try XCTUnwrap(measured.first { $0.netName == name }, "\(measured.map(\.netName))")
         }
         var measured = tuning.measurements(tracks: board, netDetails: details)
-        // By name in Finder's order, which puts TX- before TX+.
-        XCTAssertEqual(measured.map(\.netName), ["TX+", "TX-"].sorted { $0.localizedStandardCompare($1) == .orderedAscending })
+        // By name as every net list is, TX+ before TX-.
+        XCTAssertEqual(measured.map(\.netName), ["TX+", "TX-"])
         XCTAssertEqual(try row("TX+", measured).length, 10 * mm, accuracy: 1e-6, "only the tracks it was added with")
         XCTAssertEqual(try row("TX-", measured).length, 8 * mm, accuracy: 1e-6)
         XCTAssertNil(try row("TX+", measured).lengthDelta, "no reference yet")

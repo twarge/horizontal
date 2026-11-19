@@ -132,14 +132,11 @@ enum HorizontalDiffpairProperty {
         return entries
     }
 
-    /// Nets by name as Finder sorts them (D2 before D10), then by the
-    /// characters themselves where it finds two names the same.
+    /// Nets by name as every net list sorts them (D2 before D10, D+ before
+    /// D-), and two of one name by id.
     static func nameOrder(_ lhs: HorizontalNetDetails, _ rhs: HorizontalNetDetails) -> Bool {
-        let order = lhs.name.localizedStandardCompare(rhs.name)
-        if order != .orderedSame {
-            return order == .orderedAscending
-        }
-        return lhs.name != rhs.name ? lhs.name < rhs.name : lhs.id < rhs.id
+        let order = HorizontalNetNameOrder.compare(lhs.name, rhs.name)
+        return order == .orderedSame ? lhs.id < rhs.id : order == .orderedAscending
     }
 
     private static func name(_ netID: String, in details: [String: HorizontalNetDetails]) -> String {

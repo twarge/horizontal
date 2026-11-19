@@ -103,7 +103,7 @@ struct HorizontalBlockSymbol: Equatable {
     /// The port nets the symbol doesn't draw yet, by name.
     var unplacedPortNames: [String] {
         portNets.filter { symbol.pins[$0.key] == nil }.values.map(\.name)
-            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            .sorted(by: HorizontalNetNameOrder.precedes)
     }
 
     /// What the editor's checks find. Horizon checks nothing in a block

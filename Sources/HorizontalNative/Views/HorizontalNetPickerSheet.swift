@@ -86,3 +86,20 @@ struct HorizontalNetPickerSheet: View {
         }
     }
 }
+
+extension HorizontalNetPickerSheet {
+    /// A board's nets as the sheet lists them: by name in the order every
+    /// net list keeps (`HorizontalNetNameOrder`), an unnamed net under the
+    /// start of its id.
+    static func options(for nets: [String: HorizontalNetDetails]) -> [HorizontalSelectionPropertyOption] {
+        nets.values
+            .map { net in
+                let isNamed = !net.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                return HorizontalSelectionPropertyOption(
+                    id: HorizontalCanvasModeSupport.normalizedID(net.id),
+                    title: isNamed ? net.name : String(net.id.prefix(8))
+                )
+            }
+            .sorted { HorizontalNetNameOrder.precedes($0.title, $1.title) }
+    }
+}

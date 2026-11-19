@@ -230,8 +230,8 @@ enum HorizontalDispatchPlanCheck {
         check["counts"] = ["before": counts(before.findings), "after": counts(after.findings)] as JSONDictionary
         check["airwires"] = [
             "before": before.airwireCount, "after": after.airwireCount,
-            "nets": grown.sorted { $0.localizedStandardCompare($1) == .orderedAscending },
-            "nets_routed": cleared.sorted { $0.localizedStandardCompare($1) == .orderedAscending },
+            "nets": grown.sorted(by: HorizontalNetNameOrder.precedes),
+            "nets_routed": cleared.sorted(by: HorizontalNetNameOrder.precedes),
         ] as JSONDictionary
         capped(stretched.map(\.json), "stretched", into: &check)
         if mode == "full" {

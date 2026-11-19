@@ -48,7 +48,7 @@ enum BoardAirwireFilter {
             )
         }
         .sorted { lhs, rhs in
-            switch lhs.name.localizedStandardCompare(rhs.name) {
+            switch HorizontalNetNameOrder.compare(lhs.name, rhs.name) {
             case .orderedAscending: true
             case .orderedDescending: false
             case .orderedSame: lhs.id < rhs.id

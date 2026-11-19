@@ -1009,7 +1009,7 @@ struct HorizontalBoardRuleContext {
     }
 
     var netOptions: [HorizontalNetDetails] {
-        board?.netDetails.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } ?? []
+        board?.netDetails.values.sorted { HorizontalNetNameOrder.precedes($0.name, $1.name) } ?? []
     }
 
     func layerName(_ layer: Int) -> String {

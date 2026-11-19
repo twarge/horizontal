@@ -3068,7 +3068,7 @@ struct SchematicCanvasView: View {
                 }
                 let ordered = nets.sorted {
                     let lhs = sheet.displayName(ofNet: $0), rhs = sheet.displayName(ofNet: $1)
-                    return lhs == rhs ? $0 < $1 : lhs.localizedStandardCompare(rhs) == .orderedAscending
+                    return lhs == rhs ? $0 < $1 : HorizontalNetNameOrder.precedes(lhs, rhs)
                 }
                 return (ordered[1], ordered[0])
             }
@@ -8597,7 +8597,7 @@ struct SchematicCanvasView: View {
                 nonEmpty(detail.name) != nil && (!powerOnly || detail.isPower)
             }
             .sorted {
-                $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                HorizontalNetNameOrder.precedes($0.name, $1.name)
             }
     }
 
@@ -14647,7 +14647,7 @@ extension SchematicCanvasView {
         var kind = pending.kind
         if case .busRipper(let bus, let member) = kind {
             guard let details = sheet.busDetails.first(where: { normalizedID($0.id) == normalizedID(bus.id) }) else { return }
-            let members = details.members.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            let members = details.members.sorted { HorizontalNetNameOrder.precedes($0.name, $1.name) }
             guard !members.isEmpty else { return }
             let placed = members.firstIndex { normalizedID($0.id) == normalizedID(member.id) } ?? -1
             let next = members[(placed + 1) % members.count]

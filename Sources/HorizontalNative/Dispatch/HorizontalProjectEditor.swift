@@ -6171,7 +6171,7 @@ final class HorizontalProjectEditor {
             off.append(netName.flatMap { $0.isEmpty ? nil : $0 } ?? id)
         }
         if !off.isEmpty {
-            change["ports_off_box"] = off.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            change["ports_off_box"] = off.sorted(by: HorizontalNetNameOrder.precedes)
         }
 
         let changed = NSDictionary(dictionary: original) != NSDictionary(dictionary: symbol)

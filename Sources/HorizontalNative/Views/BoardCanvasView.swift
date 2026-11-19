@@ -7830,9 +7830,7 @@ struct BoardCanvasView: View {
     /// Board nets as `(id, name)` choices, sorted by display name. Shared by the
     /// draw-plane net prompt and the plane inspector's Net picker.
     private func sortedNetOptions() -> [HorizontalSelectionPropertyOption] {
-        board.netDetails.values
-            .map { HorizontalSelectionPropertyOption(id: normalizedID($0.id), title: nonEmpty($0.name) ?? shortID($0.id)) }
-            .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        HorizontalNetPickerSheet.options(for: board.netDetails)
     }
 
     private func drawGraphicsResultHasDrawableGeometry(_ result: DrawGraphicsResult) -> Bool {

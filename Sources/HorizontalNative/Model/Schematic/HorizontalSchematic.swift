@@ -274,7 +274,7 @@ struct HorizontalSchematic {
                         name: bus.name,
                         members: bus.members
                             .map { HorizontalBusDetails.Member(id: $0.key, name: $0.value.name, netID: $0.value.netID) }
-                            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                            .sorted { HorizontalNetNameOrder.precedes($0.name, $1.name) }
                     )
                 }
                 .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
@@ -292,7 +292,7 @@ struct HorizontalSchematic {
                         secondaryName: tie.secondaryName
                     )
                 }
-                .sorted { $0.primaryName.localizedStandardCompare($1.primaryName) == .orderedAscending }
+                .sorted { HorizontalNetNameOrder.precedes($0.primaryName, $1.primaryName) }
         }
     }
 
@@ -5052,6 +5052,6 @@ extension HorizontalSchematic {
                 isInUse: used.contains(netID)
             )
         }
-        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        .sorted { HorizontalNetNameOrder.precedes($0.name, $1.name) }
     }
 }

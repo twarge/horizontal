@@ -5006,7 +5006,7 @@ struct ProjectWorkspaceView: View {
                 isInUse: sheets.contains { $0.containsAnyNet([net.netID]) }
             )
         }
-        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        .sorted { HorizontalNetNameOrder.precedes($0.name, $1.name) }
     }
 
     /// A gesture in the block symbol editor: the symbol file as it now is.
