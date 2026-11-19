@@ -198,7 +198,7 @@ struct HorizontalPlacementTransform: Hashable {
             (Double.pi / 2, Double.pi),
             (Double.pi, Double.pi * 3 / 2)
         ]
-        let steps = max(segments, 2)
+        let steps = HorizontalArcChords.count(radius: radius, sweep: Double.pi / 2, atLeast: max(segments, 2))
 
         return zip(centers, angleRanges).flatMap { center, range in
             (0...steps).map { index in
@@ -212,17 +212,23 @@ struct HorizontalPlacementTransform: Hashable {
         }.map(applying)
     }
 
+    /// A circle's outline in chords: `segments` of them, or as many more as
+    /// keep each within `HorizontalArcChords.tolerance` of a circle this size.
     func circle(diameter: Double, segments: Int = 20) -> [HorizontalPoint] {
         let radius = diameter / 2
+        let segments = HorizontalArcChords.count(radius: radius, atLeast: segments, multipleOf: 4)
         return (0..<segments).map { index in
             let angle = Double(index) / Double(segments) * Double.pi * 2
             return applying(to: HorizontalPoint(x: cos(angle) * radius, y: sin(angle) * radius))
         }
     }
 
+    /// An obround's outline, each end's half circle in `segments` chords or
+    /// as many more as its size asks (`HorizontalArcChords`).
     func obround(width: Double, height: Double, segments: Int = 10) -> [HorizontalPoint] {
         let radius = min(width, height) / 2
         let offset = max(width, height) / 2 - radius
+        let segments = HorizontalArcChords.count(radius: radius, sweep: Double.pi, atLeast: segments, multipleOf: 2)
 
         if width >= height {
             let right = (0...segments).map { index in
@@ -734,7 +740,9 @@ struct HorizontalHole: Identifiable, Hashable {
     func outlinePoints(precision: Int = 32) -> [HorizontalPoint] {
         let radius = diameter / 2
         let transform = HorizontalPlacementTransform(shift: position, angle: angle, mirrored: false)
-        let segments = max(precision, 8)
+        // At least `precision` chords round, and as many more as the hole's
+        // size asks.
+        let segments = HorizontalArcChords.count(radius: radius, atLeast: max(precision, 8), multipleOf: 4)
 
         if shape == .round || effectiveLength <= diameter {
             return (0..<segments).map { index in
@@ -1748,6 +1756,9 @@ func horizonArcPolyline(
         delta -= Double.pi * 2
     }
 
+    // At least `precision` chords, and as many more as keep each within
+    // `HorizontalArcChords.tolerance` of an arc this size.
+    let precision = HorizontalArcChords.count(radius: max(radius, endRadius), sweep: delta, atLeast: precision)
     let angleStep = delta / Double(precision)
     let radiusStep = (endRadius - radius) / Double(precision)
 

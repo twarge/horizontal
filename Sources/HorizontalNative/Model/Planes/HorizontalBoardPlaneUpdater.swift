@@ -685,7 +685,8 @@ enum HorizontalBoardPlaneUpdater {
 
     /// A track's, line's or net tie's copper as Horizon's patch draws it
     /// (`Canvas::img_line`): the strip along it with a half circle round each
-    /// end, cut into 16 chords as `Polygon::remove_arcs` cuts an arc. Square
+    /// end, cut into 16 chords as `Polygon::remove_arcs` cuts an arc, or into
+    /// as many more as a wide track's end asks (`HorizontalArcChords`). Square
     /// ends left a notch on the outside of every bend, which the clearance
     /// only partly filled, so the fill came in closer there than the rule
     /// allows, and the exported copper, drawn with round apertures, has round
@@ -699,7 +700,7 @@ enum HorizontalBoardPlaneUpdater {
         }
         // A track of no length is a dot, as Horizon draws one.
         guard (points[points.count - 1] - points[0]).normalized != .zero || points.count > 2 else {
-            return circlePath(center: points[0], diameter: 2 * halfWidth, segments: 2 * capChords)
+            return circlePath(center: points[0], diameter: 2 * halfWidth)
         }
         let strip = stripPath(points, halfWidth: halfWidth)
         let left = strip.left, right = strip.right
@@ -712,8 +713,11 @@ enum HorizontalBoardPlaneUpdater {
     }
 
     /// Chords in each half circle at a track's end: `Polygon::remove_arcs`'s
-    /// default precision.
-    private static let capChords = 16
+    /// default precision at the least, and more for a track so wide that 16
+    /// would cut inside its round end by more than the pour allows for.
+    private static func capChords(halfWidth: Double) -> Int {
+        HorizontalArcChords.count(radius: halfWidth, sweep: Double.pi, atLeast: 16, multipleOf: 2)
+    }
 
     /// The points strictly inside the half circle round `center`, from `start`
     /// (one side of the strip) through the point `heading` from the centre to
@@ -725,8 +729,9 @@ enum HorizontalBoardPlaneUpdater {
         halfWidth: Double
     ) -> [HorizontalPoint] {
         let side = (start - center).normalized
-        return (1..<capChords).map { index in
-            let angle = Double(index) / Double(capChords) * Double.pi
+        let chords = capChords(halfWidth: halfWidth)
+        return (1..<chords).map { index in
+            let angle = Double(index) / Double(chords) * Double.pi
             return center + side * (cos(angle) * halfWidth) + heading * (sin(angle) * halfWidth)
         }
     }
@@ -753,8 +758,12 @@ enum HorizontalBoardPlaneUpdater {
         return (left, right)
     }
 
-    private static func circlePath(center: HorizontalPoint, diameter: Double, segments: Int = 32) -> [HorizontalPoint] {
+    /// A via's ring or a dot of track, in 32 chords or as many more as its
+    /// size asks: the clearance check measures it as the disc it is, so the
+    /// chords the pour cuts round must not stray far inside it.
+    private static func circlePath(center: HorizontalPoint, diameter: Double) -> [HorizontalPoint] {
         let radius = max(diameter / 2, 1)
+        let segments = HorizontalArcChords.count(radius: radius, atLeast: 32, multipleOf: 4)
         return (0..<segments).map { index in
             let angle = Double(index) / Double(segments) * Double.pi * 2
             return HorizontalPoint(
