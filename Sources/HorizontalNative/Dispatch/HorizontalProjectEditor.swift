@@ -7125,9 +7125,11 @@ final class HorizontalProjectEditor {
         var created: JSONDictionary = [:]
         var written = [String]()
         try updateRules { rules in
-            // After every rule of its kind, which is where the app's editor
-            // puts a new one: by order, not count, since a batch may have
-            // moved one of them already.
+            // After every rule of its kind, unless `fields` gives it an
+            // order: by order, not count, since a batch may have moved one of
+            // them already. The app's editor puts a new rule first
+            // (`HorizontalBoardRuleKind.addingRule`); here the caller says
+            // where, and the orders of the rules there stay as they are.
             let family = kind.isMulti ? (rules.dictionary(kind.rawValue) ?? [:]) : [:]
             let order = family.values.compactMap { ($0 as? JSONDictionary)?.int("order") }.max().map { $0 + 1 } ?? 0
             // The defaults the app's own rules editor would give it, so a rule

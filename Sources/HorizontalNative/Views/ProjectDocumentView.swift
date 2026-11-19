@@ -2826,7 +2826,9 @@ struct ProjectWorkspaceView: View {
                         BoardLoadingHost(loadID: boardLoadID, backgroundColor: sidebarTheme.background) {
                             BoardCanvasView(
                                 board: board,
-                                netClasses: selectedSchematic?.sheet.netClasses ?? [],
+                                // The top block's, whose nets the board's are,
+                                // whichever block's sheet the schematic shows.
+                                netClasses: project.schematic?.netClasses ?? selectedSchematic?.sheet.netClasses ?? [],
                                 viewport: $boardViewport,
                                 displayOptions: boardCanvasDisplayOptions,
                                 fitSafeAreaInsets: fitSafeAreaInsets,
@@ -2852,13 +2854,7 @@ struct ProjectWorkspaceView: View {
                                 },
                                 onUpdateAllPlanes: updateAllBoardPlanes,
                                 onNetClassChange: { netID, netClassID in
-                                    if let selectedSchematic {
-                                        applyEditedNetClass(
-                                            netID: netID,
-                                            netClassID: netClassID,
-                                            selectedSchematic: selectedSchematic
-                                        )
-                                    }
+                                    applyBoardNetClass(netID: netID, netClassID: netClassID)
                                 },
                                 onEditDiffpair: boardDiffpairEditing,
                                 onMeasureTracks: { tracks, allTracks in
@@ -5628,6 +5624,40 @@ struct ProjectWorkspaceView: View {
         return usedIDs
     }
 
+    /// A net's class set in the board inspector. A board net's class is the
+    /// top block's, whichever sheet the schematic shows, so it goes to that
+    /// block's file and to every copy of the net the project holds
+    /// (`HorizontalProject.putNet`), and the schematic canvas takes its sheet
+    /// as it is now. That canvas edits a copy of its sheet, with the nets as
+    /// they were when it last took one: left with it, the schematic went on
+    /// showing the old class, and its next edit wrote that class back to the
+    /// block, which the board then followed, with the widths the rules give
+    /// the old class.
+    private func applyBoardNetClass(netID: String, netClassID: String?) {
+        guard !isReadOnly else {
+            return
+        }
+        var updated = project
+        var archive = document.archive
+        do {
+            try updated.putNet(netID, inClass: netClassID, archive: &archive)
+        } catch {
+            schematicEditMessage = (error as? HorizontalNetClassChangeError)?.errorDescription
+                ?? "Couldn't save the net class: \(error.localizedDescription)"
+            // The board has the class and the block doesn't: the board
+            // follows the block again, as it does after any reload.
+            scheduleBoardNetlistSync()
+            return
+        }
+        document.archive = archive
+        project = updated
+        boardEditRevision += 1
+        schematicEditRevision += 1
+        schematicSyncRevision += 1
+    }
+
+    /// A net's class set in the schematic inspector, on a sheet of the block
+    /// the net is in.
     private func applyEditedNetClass(netID: String, netClassID: String?, selectedSchematic: SelectedSchematic) {
         guard !isReadOnly else {
             return
