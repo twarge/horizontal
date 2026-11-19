@@ -2308,6 +2308,11 @@ struct ProjectWorkspaceView: View {
            HorizontalBoardPlaneInputs.signature(of: board) != HorizontalBoardPlaneInputs.signature(of: previous) {
             planePourScheduler.forgetCache()
         }
+        // The files still hold the fills Clear All Planes emptied here, and
+        // a board read from them would show them again. Fills that are new
+        // in them were poured on request, through the automation layer's
+        // pour_planes, and that ends the clear as Q does.
+        let keepsPlanesCleared = project.board?.planeFillsCleared == true && !planesFileDiffers(in: snapshot.archive)
         if installsArchive {
             document.archive = snapshot.archive
         }
@@ -2316,6 +2321,9 @@ struct ProjectWorkspaceView: View {
         // that still names the temporary folder it was made in.
         if ProjectDocumentView.documentIdentity(installed.url) != ProjectDocumentView.documentIdentity(project.url) {
             installed.rebaseURLs(onto: project)
+        }
+        if keepsPlanesCleared {
+            installed.board?.clearPlaneFills()
         }
         project = installed
         boardEditRevision += 1
@@ -2327,6 +2335,16 @@ struct ProjectWorkspaceView: View {
         // client's next request may be an export, which waits only for a
         // pour that has been asked for.
         checkPlaneFills()
+    }
+
+    /// Whether `archive` has other fills in its planes file than the document
+    /// has: only a pour writes that file, and a board write left to be made
+    /// does not, so the document's is read as last written.
+    private func planesFileDiffers(in archive: HorizontalProjectArchive) -> Bool {
+        guard let path = project.planesFilename else {
+            return false
+        }
+        return archive.regularFileData(relativePath: path) != document.settledArchive.regularFileData(relativePath: path)
     }
 
     private func rebaseProjectURLs(_ reloaded: inout HorizontalProject, onto current: HorizontalProject) {
@@ -4408,13 +4426,15 @@ struct ProjectWorkspaceView: View {
     /// board moves under it, and that must only ever cost the fills. (Pouring
     /// the edit and applying the result afterwards lost the plane entirely:
     /// the project board never matched a board with one more plane on it.)
+    /// With the planes cleared (Clear All Planes) the edit is kept and
+    /// nothing is poured: they stay cleared until Q.
     private func applyBoardPlaneEdit(_ editedBoard: HorizontalBoard, actionName: String) {
         guard !isReadOnly, let previousBoard = project.board else {
             return
         }
         registerBoardPlaneEditUndo(previousBoard, actionName: actionName)
         applyEditedBoard(editedBoard)
-        if let board = project.board, !board.planes.isEmpty {
+        if let board = project.board, !board.planes.isEmpty, !board.planeFillsCleared {
             requestPlanePour(for: board, isManual: true, registersUndo: false)
         }
     }
@@ -4424,7 +4444,8 @@ struct ProjectWorkspaceView: View {
     /// the board ends here: the funnels call it at once, and a change to
     /// `boardEditRevision` that none of them made calls it when SwiftUI
     /// next updates. `again` checks a revision already checked, for a change
-    /// of setting rather than of board.
+    /// of setting rather than of board. Planes that were cleared (Clear All
+    /// Planes) are left so: only Q pours them again.
     private func checkPlaneFills(again: Bool = false) {
         guard again || checkedPlaneInputsRevision != boardEditRevision else {
             return
@@ -4445,7 +4466,7 @@ struct ProjectWorkspaceView: View {
         planesNeedUpdate = inputs != pouredPlaneInputs
         // The project window pours for every window, once; this one takes
         // the fills it pours with the rest of the project.
-        if planesNeedUpdate, updatesPlanesAutomatically, !isReadOnly, !isSecondaryWindow {
+        if planesNeedUpdate, updatesPlanesAutomatically, !board.planeFillsCleared, !isReadOnly, !isSecondaryWindow {
             requestPlanePour(for: board, inputs: inputs)
         }
     }
@@ -4476,11 +4497,22 @@ struct ProjectWorkspaceView: View {
         guard !isReadOnly, var board = project.board else {
             return
         }
+        // Cleared since this pour was asked for, here or in another window.
+        guard board.takesPlaneFills(of: result) else {
+            return
+        }
         guard HorizontalBoardPlaneInputs.signature(of: board) == result.fills.inputs else {
             // The board moved while this pour ran. An automatic pour for it
             // is already asked for; a manual one leaves the fills marked out
-            // of date, and one press of Q redoes the work.
-            checkPlaneFills(again: true)
+            // of date, and one press of Q redoes the work. Not when Q asked
+            // for cleared planes back, which would stay empty with nothing
+            // to say a pour was owed: that one is poured for the board as
+            // it is now.
+            if board.planeFillsCleared {
+                requestPlanePour(for: board, isManual: true, registersUndo: true)
+            } else {
+                checkPlaneFills(again: true)
+            }
             return
         }
         let previousBoard = board
@@ -4534,18 +4566,20 @@ struct ProjectWorkspaceView: View {
     /// "Update All Planes" (Q) afterwards to recompute. Bypasses both isReadOnly
     /// and the document archive write — this is a transient in-memory render
     /// change, never persisted to disk.
+    ///
+    /// They stay cleared until that Q: the board is marked
+    /// (`planeFillsCleared`), and neither Update Planes Automatically nor a
+    /// plane edit pours a board so marked. Before that, the first edit after
+    /// clearing poured everything back.
     private func clearAllBoardPlanes() {
-        guard let previousBoard = project.board,
-              previousBoard.planes.contains(where: { !$0.fragments.isEmpty }) else {
+        guard let previousBoard = project.board, previousBoard.canClearPlaneFills else {
             return
         }
 
         var updatedBoard = previousBoard
-        updatedBoard.planes = updatedBoard.planes.map { plane in
-            var plane = plane
-            plane.fragments = []
-            return plane
-        }
+        updatedBoard.clearPlaneFills()
+        // A pour pending or under way would fill them again when it lands.
+        planePourScheduler.cancel()
         // In-memory mutation only; do not write to document archive.
         project.board = updatedBoard
         boardSyncRevision += 1

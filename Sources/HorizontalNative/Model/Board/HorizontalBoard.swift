@@ -529,6 +529,11 @@ struct HorizontalBoard {
     /// one taken out of it (deleted) leaves the file.
     var unloadedSmashTextIDs: [String: [String]] = [:]
     var planes: [HorizontalPlane]
+    /// Clear All Planes emptied the fills, and they stay empty until Update
+    /// All Planes pours them again: no pour follows an edit meanwhile
+    /// (`clearPlaneFills`). Transient: a board read from its files has the
+    /// fills they hold.
+    var planeFillsCleared = false
     var keepouts: [HorizontalKeepout]
     var dimensions: [HorizontalDimension]
     var decals: [HorizontalBoardDecal]

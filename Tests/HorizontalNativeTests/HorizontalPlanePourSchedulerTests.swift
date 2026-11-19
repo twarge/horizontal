@@ -181,6 +181,49 @@ final class HorizontalPlanePourSchedulerTests: XCTestCase {
         XCTAssertEqual(log.cacheCounts, [0, 1], "the next pour starts from what the stopped one finished")
     }
 
+    /// Clear All Planes, with the pour that followed an edit still waiting
+    /// for edits to settle.
+    func testCancellingDropsAPourThatHasNotStarted() async {
+        let log = PourLog()
+        let scheduler = scheduler(settle: .milliseconds(150), log: log)
+        var delivered = [Int]()
+        scheduler.deliver = { delivered.append($0.fills.inputs) }
+
+        scheduler.request(request(1))
+        scheduler.cancel()
+        await scheduler.settled()
+
+        XCTAssertEqual(log.started, [], "a pour asked for before the planes were cleared never starts")
+        XCTAssertEqual(delivered, [])
+        XCTAssertFalse(scheduler.isBusy)
+    }
+
+    /// Clear All Planes while a pour runs: its fills would put back what was
+    /// just cleared. Q afterwards still pours.
+    func testCancellingStopsThePourInProgressAndTheNextRequestStillPours() async {
+        let log = PourLog()
+        log.hold()
+        let scheduler = scheduler(log: log)
+        var delivered = [Int]()
+        scheduler.deliver = { delivered.append($0.fills.inputs) }
+
+        scheduler.request(request(1, manual: true, undo: true))
+        let started = await settle { log.started == [1] }
+        XCTAssertTrue(started)
+        scheduler.cancel()
+        let stopped = await settle { log.cancelled == [1] }
+        XCTAssertTrue(stopped, "the pour under way is told to stop")
+        await scheduler.settled()
+        XCTAssertEqual(delivered, [], "and delivers nothing")
+        XCTAssertFalse(scheduler.isPouring)
+
+        log.release()
+        scheduler.request(request(1, manual: true, undo: true))
+        await scheduler.settled()
+        XCTAssertEqual(log.started, [1, 1])
+        XCTAssertEqual(delivered, [1], "the same board asked for again is poured, not taken to be on its way")
+    }
+
     func testForgettingTheCacheDropsWhatAPourInProgressWouldPutBack() async {
         let log = PourLog()
         log.hold()

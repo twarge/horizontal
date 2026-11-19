@@ -24,7 +24,8 @@ struct HorizontalPlaneFills: Sendable {
 
 extension HorizontalBoard {
     /// Takes `fills` into this board's planes and airwires; a plane they do
-    /// not name keeps its own. Returns whether the airwires changed.
+    /// not name keeps its own. Returns whether the airwires changed. Planes
+    /// that were cleared are cleared no longer.
     @discardableResult
     mutating func takePlaneFills(_ fills: HorizontalPlaneFills) -> Bool {
         for index in planes.indices {
@@ -32,6 +33,7 @@ extension HorizontalBoard {
                 planes[index].fragments = fragments
             }
         }
+        planeFillsCleared = false
         guard airwires != fills.airwires else {
             return false
         }
@@ -41,13 +43,18 @@ extension HorizontalBoard {
 
     /// Takes the fills `other` has for planes this board shares with it. A
     /// board read back from the archive can be older than the one in memory,
-    /// whose fills a pour may have replaced since the archive was read.
+    /// whose fills a pour may have replaced since the archive was read, or
+    /// Clear All Planes emptied: the archive knows nothing of that, so the
+    /// board read back is told.
     mutating func carryPlaneFills(from other: HorizontalBoard) {
         let fragmentsByPlaneID = Dictionary(other.planes.map { ($0.id, $0.fragments) }, uniquingKeysWith: { first, _ in first })
         for index in planes.indices {
             if let fragments = fragmentsByPlaneID[planes[index].id] {
                 planes[index].fragments = fragments
             }
+        }
+        if other.planeFillsCleared {
+            clearPlaneFills()
         }
     }
 }
@@ -260,6 +267,16 @@ final class HorizontalPlanePourScheduler: ObservableObject {
                 await self.drive()
             }
         }
+    }
+
+    /// Drops the request that is pending and stops the pour that is running
+    /// before its next plane, so neither is delivered. For Clear All Planes:
+    /// a pour on its way would fill what was just cleared. What the stopped
+    /// pour finished stays in the cache, and the next request starts afresh.
+    func cancel() {
+        latest = nil
+        running?.cancellation.cancel()
+        settleWait?.cancel()
     }
 
     /// Drops what the cache remembers, for a board read back from its files:

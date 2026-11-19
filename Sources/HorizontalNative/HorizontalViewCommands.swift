@@ -905,7 +905,8 @@ struct HorizontalViewCommands: Commands {
             Toggle("Clip Silkscreen to Solder Mask", isOn: appearanceSettings.clipSilkscreenToSolderMaskBinding())
 
             // Empties every plane's renderFragments so the board draws without
-            // plane fills; Q recomputes them. This is the plane-fill control —
+            // plane fills; Q recomputes them, and until Q nothing else does,
+            // Update Planes Automatically included. This is the plane-fill control —
             // there is deliberately no separate plane VISIBILITY toggle, since a
             // plane is shown whenever its copper layer is. Intentionally NOT
             // gated by readOnlyOperation: it changes only in-memory rendering.

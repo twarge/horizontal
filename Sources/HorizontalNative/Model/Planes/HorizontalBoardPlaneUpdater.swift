@@ -235,6 +235,8 @@ enum HorizontalBoardPlaneUpdater {
 
         var updated = board
         updated.planes = board.planes.map { resultByID[$0.id] ?? zeroed($0) }
+        // Poured, whatever Clear All Planes had left it.
+        updated.planeFillsCleared = false
         return Outcome(board: updated, cache: updatedCache, isComplete: true, pouredPlaneIDs: pouredPlaneIDs)
     }
 
