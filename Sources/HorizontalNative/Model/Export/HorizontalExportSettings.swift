@@ -13,6 +13,10 @@ struct HorizontalExportStatus: Equatable {
     /// The files and folders a successful export wrote, which the sidebar's
     /// Reveal in Finder selects.
     var outputs: [URL] = []
+    /// What the rules checks found in the design a successful export wrote
+    /// (`HorizontalExportPreflight`); nil where they found nothing, or
+    /// weren't run.
+    var checks: HorizontalExportCheckSummary? = nil
 }
 
 enum HorizontalExportPathError: LocalizedError, Equatable {

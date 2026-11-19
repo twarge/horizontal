@@ -12,6 +12,9 @@ struct HorizontalExportSidebarView: View {
     /// caller passes `false` to avoid doubling them up.
     var providesChrome = true
     var onExportAll: () -> Void
+    /// Opens the rules results sidebar, from the warning an export gives
+    /// when the rules checks found something in what it wrote.
+    var onShowRulesResults: (() -> Void)?
 
     // Disclosure state, independent of each section's enabled flag (so a section can be
     // collapsed while enabled, or expanded to preview while disabled). Sections start
@@ -34,6 +37,10 @@ struct HorizontalExportSidebarView: View {
                         exportStatusIndicator
 
                         Spacer(minLength: 0)
+                    }
+
+                    if !isExporting, let checks = status?.checks {
+                        exportChecksWarning(checks)
                     }
 
                     // On iOS the export goes to a throwaway temp folder and the user
@@ -248,6 +255,23 @@ struct HorizontalExportSidebarView: View {
                 #endif
             }
             .font(.callout)
+        }
+    }
+
+    /// What the rules checks found in the design just exported: the files
+    /// are written, and this says they may not be fit to send.
+    private func exportChecksWarning(_ checks: HorizontalExportCheckSummary) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Label(checks.message, systemImage: checks.errors > 0 ? "exclamationmark.triangle.fill" : "exclamationmark.triangle")
+                .font(.callout)
+                .foregroundStyle(checks.errors > 0 ? .red : .orange)
+                .fixedSize(horizontal: false, vertical: true)
+            if let onShowRulesResults {
+                Button("Show", action: onShowRulesResults)
+                    .buttonStyle(.borderless)
+                    .font(.callout)
+                    .help("Show Rules Results")
+            }
         }
     }
 

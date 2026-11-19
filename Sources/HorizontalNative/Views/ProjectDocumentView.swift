@@ -1544,7 +1544,11 @@ struct ProjectWorkspaceView: View {
                 status: exportStatus,
                 isExporting: isExporting,
                 safeAreaInsets: safeAreaInsets,
-                onExportAll: exportAllEnabledSections
+                onExportAll: exportAllEnabledSections,
+                onShowRulesResults: {
+                    refreshRulesResults()
+                    rightSidebarPane = .rulesResults
+                }
             )
         case .rulesResults:
             HorizontalRulesResultsSidebarView(
@@ -2443,22 +2447,23 @@ struct ProjectWorkspaceView: View {
         // CPU + file-IO heavy) export off-main so the spinner keeps animating. The
         // security-scoped folder access granted above is process-wide, so the
         // background write still has it.
-        let settings = exportSettings
-        let exportProject = project
-        let schematicPalette = appearanceSettings.palette(for: .schematic, mode: .light)
-        let boardPalette = appearanceSettings.palette(for: .board, mode: .light)
-        let silkscreenClipping = appearanceSettings.silkscreenClipping
-
-        let result = await Task.detached(priority: .userInitiated) {
-            HorizontalExportBackend.export(
-                sections: sections,
-                settings: settings,
-                project: exportProject,
-                schematicPDFPalette: schematicPalette,
-                boardPDFPalette: boardPalette,
-                silkscreenClipping: silkscreenClipping
-            )
-        }.value
+        //
+        // Planes that Clear All Planes emptied are poured for the export, in
+        // its own copy: they stay cleared here. The rules checks run on what
+        // it writes, and what they find is the status's warning. They read
+        // the board from the project, and from the files only the rules, the
+        // blocks and the pool, which a board write left to be made does not
+        // touch: the files as last written, so Export All does not wait for
+        // that write.
+        let result = await HorizontalExportPreflight.export(
+            sections: sections,
+            settings: exportSettings,
+            project: project,
+            archive: document.settledArchive,
+            schematicPDFPalette: appearanceSettings.palette(for: .schematic, mode: .light),
+            boardPDFPalette: appearanceSettings.palette(for: .board, mode: .light),
+            silkscreenClipping: appearanceSettings.silkscreenClipping
+        )
         isExporting = false
         exportStatus = result
     }

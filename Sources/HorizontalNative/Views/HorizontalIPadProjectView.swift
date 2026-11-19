@@ -780,7 +780,12 @@ struct HorizontalIPadProjectView: View {
                     project: project,
                     appearanceSettings: appearanceSettings,
                     onClose: { rightPane = nil },
-                    settledProject: settledProjectForExport
+                    settledProject: settledProjectForExport,
+                    archive: { document.settledArchive },
+                    onShowRulesResults: {
+                        refreshRulesResults()
+                        rightPane = .rulesResults
+                    }
                 )
             }
         case .rulesResults:
@@ -3344,6 +3349,11 @@ struct HorizontalExportPanel: View {
     /// The project once any pour asked for has landed, which an export waits
     /// for; the panel's own copy when there is none.
     var settledProject: (() async -> HorizontalProject?)?
+    /// The document's archive, which the rules checks an export runs read
+    /// the rules and the blocks from.
+    var archive: () -> HorizontalProjectArchive? = { nil }
+    /// Opens the rules results, from the warning an export gives.
+    var onShowRulesResults: (() -> Void)?
 
     @State private var settings: HorizontalExportSettings
     @State private var status: HorizontalExportStatus?
@@ -3355,12 +3365,16 @@ struct HorizontalExportPanel: View {
         project: HorizontalProject,
         appearanceSettings: HorizontalAppearanceSettings,
         onClose: @escaping () -> Void = {},
-        settledProject: (() async -> HorizontalProject?)? = nil
+        settledProject: (() async -> HorizontalProject?)? = nil,
+        archive: @escaping () -> HorizontalProjectArchive? = { nil },
+        onShowRulesResults: (() -> Void)? = nil
     ) {
         self.project = project
         self.appearanceSettings = appearanceSettings
         self.onClose = onClose
         self.settledProject = settledProject
+        self.archive = archive
+        self.onShowRulesResults = onShowRulesResults
         _settings = State(initialValue: HorizontalExportSettings(project: project))
     }
 
@@ -3392,7 +3406,8 @@ struct HorizontalExportPanel: View {
                 providesChrome: false,
                 onExportAll: {
                     Task { await runExport(sections: HorizontalExportSection.allCases.filter { settings.isEnabled($0) }) }
-                }
+                },
+                onShowRulesResults: onShowRulesResults
             )
         }
         .sheet(isPresented: $documentPickerPresented) {
@@ -3418,24 +3433,19 @@ struct HorizontalExportPanel: View {
         isExporting = true
         status = nil
         // Fabrication outputs are made from the fills, so a pour asked for
-        // lands first. Then snapshot the value-type inputs on the main actor
-        // and run the (synchronous, CPU + file-IO heavy) export off-main so
-        // the spinner keeps animating.
+        // lands first. Then the (synchronous, CPU + file-IO heavy) export
+        // runs off-main so the spinner keeps animating, with the rules
+        // checks beside it: what they find is the status's warning.
         let exportProject = await settledProject?() ?? project
-        let schematicPalette = appearanceSettings.palette(for: .schematic, mode: .light)
-        let boardPalette = appearanceSettings.palette(for: .board, mode: .light)
-        let silkscreenClipping = appearanceSettings.silkscreenClipping
-
-        let result = await Task.detached(priority: .userInitiated) {
-            HorizontalExportBackend.export(
-                sections: sections,
-                settings: exportSettings,
-                project: exportProject,
-                schematicPDFPalette: schematicPalette,
-                boardPDFPalette: boardPalette,
-                silkscreenClipping: silkscreenClipping
-            )
-        }.value
+        let result = await HorizontalExportPreflight.export(
+            sections: sections,
+            settings: exportSettings,
+            project: exportProject,
+            archive: archive(),
+            schematicPDFPalette: appearanceSettings.palette(for: .schematic, mode: .light),
+            boardPDFPalette: appearanceSettings.palette(for: .board, mode: .light),
+            silkscreenClipping: appearanceSettings.silkscreenClipping
+        )
         isExporting = false
         status = result
         if result.kind == .success {
