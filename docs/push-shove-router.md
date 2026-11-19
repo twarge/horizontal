@@ -497,6 +497,32 @@ treatment the pour got:
    via entry the model lacks. Delete on a via now flags it too: its entry used to stay in
    the file, so the via came back on reload wherever a track still ended on it.
 
+   **A loop closes through a via the route drops** as it does on the route's
+   own layer. A via dropped at the end of a click, or on the route's own end,
+   joins the route to its net's copper on the other layers there
+   (`BoardTrackLoops.viaReachesCopper`): the end of a track, a pad on the far
+   side, or the middle of a track, which is cut so the via's junction is on
+   it, where the via used to stand on the track without joining it. Where
+   that copper was already joined to where the stretch began, the plain chain
+   between the two is replaced, the preview hides it and still shows the via,
+   and the next stretch starts at the via; so a reroute that goes under on
+   another layer and comes back up into the old track takes the old stretch
+   off. The route goes on from the via rather than ending, as it does from
+   any via it drops. Another net's copper under the via is neither cut nor
+   joined. So that the via can be put there, the cursor snaps to that copper
+   while a via is armed (`BoardTrackRouting.viaSnapTargets`, and `snapTracks`
+   on every layer): on the other layers, the ends and centrelines of tracks,
+   the centres of pads, and vias that don't reach the route's layer, of the
+   route's net or of none, and of any net before the route has one. With no
+   via armed a route still snaps only to copper on its own layer. What a
+   route touches is now asked layer by layer: a pad only on
+   the far side, or a via that doesn't reach the route's layer, under a click
+   that drops no via is not reached, where it used to count as the loop's
+   end, so a route passing over the far-side pad its old way led down to took
+   that way off and ended, joined to nothing. A via under a chain that
+   doesn't reach the chain's layer is not in the chain, which used to stay
+   for it.
+
    **A route starts on copper** ("Start on copper only" in the route inspector,
    on by default; `BoardTrackRouting.copperStart`). Its first click starts it
    only on copper of its layer: in a pad, from the pad's centre; within a via

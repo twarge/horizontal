@@ -496,10 +496,16 @@ struct BoardCanvasView: View {
         var pieces: [HorizontalSegment]
         /// What it does to the copper, sorted, which keys the Metal scene.
         var signature: [String]
+        /// The click still drops the armed via: the loop closes through it,
+        /// onto copper on another layer, where one closed on the route's
+        /// layer ends the route and drops none.
+        var dropsVia = false
 
         var replacesCopper: Bool { !hiddenTrackIDs.isEmpty || !hiddenViaIDs.isEmpty }
 
-        static func == (lhs: Self, rhs: Self) -> Bool { lhs.signature == rhs.signature }
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.signature == rhs.signature && lhs.dropsVia == rhs.dropsVia
+        }
 
         func applied(to board: HorizontalBoard) -> HorizontalBoard {
             guard replacesCopper else {
@@ -6764,9 +6770,20 @@ struct BoardCanvasView: View {
         // A click in a pad ends the route at its centre.
         let endPad = boardPadReference(at: cursor, layer: state.layer)
         let target = endPad?.center ?? cursor
-        guard pointKey(anchor) != pointKey(target),
-              endPad != nil
-                || BoardTrackLoops.reachesCopper(target, layer: state.layer, sparing: state.routeTrackIDs, in: current) else {
+        // On the route's own end a click only drops the armed via, and not
+        // in a pad (`addDrawTrackPoint`).
+        let onRouteEnd = pointKey(anchor) == pointKey(target)
+        if onRouteEnd {
+            guard state.placesVia, endPad == nil, !state.anchorOnPad else {
+                return nil
+            }
+        }
+        // A loop closes on copper the click reaches: on the route's layer,
+        // or on another through the via it drops.
+        guard endPad != nil
+                || BoardTrackLoops.reachesCopper(target, layer: state.layer, sparing: state.routeTrackIDs, in: current)
+                || (state.placesVia && BoardTrackLoops.viaReachesCopper(
+                    at: target, net: state.netID, sparing: state.routeTrackIDs, in: current)) else {
             return nil
         }
         // A click on another net's copper lays nothing.
@@ -6776,9 +6793,11 @@ struct BoardCanvasView: View {
         }
         let netID = state.netID ?? endNet
         // A route the router stopped short of the copper closes nothing.
-        let specs = trackSpecs(from: anchor, to: target, state: state, netID: netID)
-        guard let end = specs.last?.to, pointKey(end) == pointKey(target) else {
-            return nil
+        let specs = onRouteEnd ? [] : trackSpecs(from: anchor, to: target, state: state, netID: netID)
+        if !onRouteEnd {
+            guard let end = specs.last?.to, pointKey(end) == pointKey(target) else {
+                return nil
+            }
         }
         let head = BoardTrackRouteHead(
             anchor: anchor,
@@ -6802,8 +6821,10 @@ struct BoardCanvasView: View {
         guard step.closesLoop else {
             return nil
         }
+        let dropsVia = step.laid.vias > 0
         guard !step.removedTrackIDs.isEmpty || !step.removedViaIDs.isEmpty else {
-            return BoardRouteLoopPreview(hiddenTrackIDs: [], hiddenViaIDs: [], pieces: [], signature: [])
+            return BoardRouteLoopPreview(
+                hiddenTrackIDs: [], hiddenViaIDs: [], pieces: [], signature: [], dropsVia: dropsVia)
         }
         // What the click lays is the route preview's to draw; what is left
         // is what it does to the copper already there.
@@ -6818,7 +6839,8 @@ struct BoardCanvasView: View {
             hiddenTrackIDs: hidden,
             hiddenViaIDs: Set(step.removedViaIDs),
             pieces: pieces,
-            signature: signature
+            signature: signature,
+            dropsVia: dropsVia
         )
     }
 
@@ -7236,14 +7258,15 @@ struct BoardCanvasView: View {
     /// Where the next click drops the armed via, and its shape: on the end of
     /// the preview, or on the end of the route itself while the cursor rests
     /// there (see `addDrawTrackPoint`). Nil with no via armed, and over a pad
-    /// or where a click closes a loop, which ends the route there and drops
-    /// none.
+    /// or where a click closes a loop on the route's layer, which ends the
+    /// route there and drops none.
     private func armedViaPreview(
         _ state: DrawTrackState,
         polylines: [[HorizontalPoint]]
     ) -> (head: HorizontalPoint, via: HorizontalBoardViaTemplate)? {
-        // A click that closes a loop ends the route there, and drops none.
-        guard state.placesVia, routeLoopPreview == nil, let via = routeVia(netID: state.netID) else {
+        // A click that closes a loop on the route's layer ends the route
+        // there, and drops none; one that closes it through the via drops it.
+        guard state.placesVia, routeLoopPreview?.dropsVia ?? true, let via = routeVia(netID: state.netID) else {
             return nil
         }
         var head = polylines.last?.last
@@ -7326,6 +7349,9 @@ struct BoardCanvasView: View {
         #endif
         state.placesVia.toggle()
         drawTrackState = state
+        // The via may close a loop where the cursor rests, through copper on
+        // another layer, or no longer close it.
+        refreshRouteLoopPreview()
     }
 
     /// The via the route drops on `netID`: the board's (`HorizontalBoard.routeVia`),
@@ -15421,11 +15447,13 @@ struct BoardCanvasView: View {
         }
         // A route snaps only to copper on the layer it is drawn on, from its
         // first click: a track begun on the bottom doesn't jump to a pad or
-        // track on the top.
-        if let layer = drawTrackState?.layer {
-            let key = BoardTrackSnapTargetsKey(selectables: selectableCacheKey, layer: layer)
-            return selectableCache.trackSnapTargets(key: key) {
-                BoardTrackRouting.snapTargets(on: layer, in: selectableSceneBoard)
+        // track on the top. With a via armed it does, to its own net's: the
+        // via dropped there joins it, and closes a loop through it.
+        if let state = drawTrackState {
+            return selectableCache.trackSnapTargets(key: routeSnapTargetsKey(state)) {
+                state.placesVia
+                    ? BoardTrackRouting.viaSnapTargets(on: state.layer, netID: state.netID, in: selectableSceneBoard)
+                    : BoardTrackRouting.snapTargets(on: state.layer, in: selectableSceneBoard)
             }
         }
         return selectableCache.snapTargets(key: selectableCacheKey) {
@@ -15433,18 +15461,28 @@ struct BoardCanvasView: View {
         }
     }
 
+    /// What a route's snap targets are built for: the board, its layer, and
+    /// the via it has armed, with the net the via would join.
+    private func routeSnapTargetsKey(_ state: DrawTrackState) -> BoardTrackSnapTargetsKey {
+        BoardTrackSnapTargetsKey(
+            selectables: selectableCacheKey,
+            layer: state.layer,
+            viaArmed: state.placesVia,
+            viaNetID: state.placesVia ? state.netID.map(normalizedID) : nil)
+    }
+
     /// The tracks a route snaps to along their length, on the layer it is
-    /// drawn on (`BoardTrackRouting.snapTracks`): none with no route, or
-    /// while something is moved.
+    /// drawn on, or on every layer with a via armed
+    /// (`BoardTrackRouting.snapTracks`): none with no route, or while
+    /// something is moved.
     private func boardSnapTracks() -> [HorizontalSnapTrack] {
         guard moveState?.snapTargets == nil, let state = drawTrackState else {
             return []
         }
-        let key = BoardTrackSnapTracksKey(
-            targets: BoardTrackSnapTargetsKey(selectables: selectableCacheKey, layer: state.layer),
-            netID: state.netID.map(normalizedID))
+        let key = BoardTrackSnapTracksKey(targets: routeSnapTargetsKey(state), netID: state.netID.map(normalizedID))
         return selectableCache.trackSnapTracks(key: key) {
-            BoardTrackRouting.snapTracks(on: state.layer, netID: state.netID, in: selectableSceneBoard)
+            BoardTrackRouting.snapTracks(
+                on: state.placesVia ? nil : state.layer, netID: state.netID, in: selectableSceneBoard)
         }
     }
 

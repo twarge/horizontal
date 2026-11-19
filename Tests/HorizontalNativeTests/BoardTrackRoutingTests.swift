@@ -338,6 +338,45 @@ final class BoardTrackRoutingTests: XCTestCase {
         XCTAssertEqual(onTop, Set([p(0, 0), p(1000, 0), p(3000, 3000), p(8050, 50), p(9050, 50)].map(key)))
     }
 
+    /// With a via armed the cursor snaps to what the via would join on the
+    /// other layers too: the route's net's copper there and copper on no
+    /// net, never another net's, and all of it before the route has a net.
+    func testARouteWithAViaArmedSnapsToItsNetsCopperOnOtherLayersToo() {
+        var board = emptyBoard()
+        board.tracks = [
+            HorizontalSegment(id: "top", from: p(0, 0), to: p(1000, 0), width: 200, layer: top, netID: "n1"),
+            HorizontalSegment(id: "own", from: p(0, 5000), to: p(1000, 5000), width: 200, layer: bottom, netID: "n1"),
+            HorizontalSegment(id: "other", from: p(0, 7000), to: p(1000, 7000), width: 200, layer: bottom, netID: "n2"),
+            HorizontalSegment(id: "none", from: p(0, 9000), to: p(1000, 9000), width: 200, layer: bottom, netID: nil),
+        ]
+        board.vias = [
+            HorizontalMarker(id: "own", position: p(3000, 3000), size: 600, layer: nil, connectedLayers: [bottom], netID: "N1"),
+            HorizontalMarker(id: "other", position: p(4000, 3000), size: 600, layer: nil, connectedLayers: [bottom], netID: "n2"),
+        ]
+        board.packagePads = [
+            HorizontalPolygon(id: "pkg/pad/own", vertices: [p(9000, 0), p(9100, 0), p(9100, 100)], layer: bottom, netID: "n1"),
+            HorizontalPolygon(id: "pkg/pad/other", vertices: [p(8000, 0), p(8100, 0), p(8100, 100)], layer: bottom, netID: "n2"),
+        ]
+        board.packagePadPositions = ["pkg/own": p(9050, 50), "pkg/other": p(8050, 50)]
+
+        let onTop = [p(0, 0), p(1000, 0)]
+        let ownBelow = [p(0, 5000), p(1000, 5000), p(0, 9000), p(1000, 9000), p(3000, 3000), p(9050, 50)]
+        let othersBelow = [p(0, 7000), p(1000, 7000), p(4000, 3000), p(8050, 50)]
+        XCTAssertEqual(Set(BoardTrackRouting.snapTargets(on: top, in: board).map(key)), Set(onTop.map(key)), "with none armed")
+        XCTAssertEqual(
+            Set(BoardTrackRouting.viaSnapTargets(on: top, netID: "n1", in: board).map(key)),
+            Set((onTop + ownBelow).map(key)))
+        XCTAssertEqual(
+            Set(BoardTrackRouting.viaSnapTargets(on: top, netID: nil, in: board).map(key)),
+            Set((onTop + ownBelow + othersBelow).map(key)), "before the route has a net")
+
+        // And along the length of its net's tracks on every layer.
+        XCTAssertEqual(
+            BoardTrackRouting.snapTracks(on: nil, netID: "n1", in: board).map(\.from),
+            [p(0, 0), p(0, 5000), p(0, 9000)])
+        XCTAssertEqual(BoardTrackRouting.snapTracks(on: top, netID: "n1", in: board).map(\.from), [p(0, 0)])
+    }
+
     // MARK: - Starting on copper
 
     private func emptyBoard() -> HorizontalBoard {

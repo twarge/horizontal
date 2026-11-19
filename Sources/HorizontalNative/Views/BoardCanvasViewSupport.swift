@@ -733,6 +733,10 @@ struct BoardSilkscreenClipTrigger: Equatable {
 struct BoardTrackSnapTargetsKey: Hashable {
     var selectables: BoardSelectableCacheKey
     var layer: Int
+    /// The route has a via armed, and so snaps to its net's copper
+    /// (`viaNetID`) on the other layers too.
+    var viaArmed = false
+    var viaNetID: String?
 }
 
 struct BoardTrackSnapTracksKey: Hashable {
@@ -1103,7 +1107,9 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
     }
 
     /// The track tool's snap targets, the copper on the layer it routes on
-    /// (`BoardTrackRouting.snapTargets`), built once per board and layer.
+    /// (`BoardTrackRouting.snapTargets`) and, with a via armed, what the via
+    /// would join on the others (`viaSnapTargets`), built once per board,
+    /// layer and armed via.
     func trackSnapTargets(
         key: BoardTrackSnapTargetsKey,
         build: () -> [HorizontalPoint]

@@ -418,8 +418,10 @@ enum BoardTrackRouting {
     /// The straight tracks on `layer` the cursor snaps to along their length
     /// while a route is drawn there (`HorizontalTrackSnapIndex`): every one
     /// before the route has a net, then those of its net and those of none,
-    /// as a route joins no other.
-    static func snapTracks(on layer: Int, netID: String?, in board: HorizontalBoard) -> [HorizontalSnapTrack] {
+    /// as a route joins no other. With no `layer`, those on every layer, for
+    /// a route with a via armed, which the via would join wherever it drops
+    /// (`viaSnapTargets`).
+    static func snapTracks(on layer: Int?, netID: String?, in board: HorizontalBoard) -> [HorizontalSnapTrack] {
         let netID = netID.map(normalizedID)
         return board.tracks.compactMap { track in
             guard isOn(track.layer, layer), track.center == nil, track.width > 0 else {
@@ -481,6 +483,52 @@ enum BoardTrackRouting {
         }
         for hole in board.holes where hole.plated {
             add(hole.position)
+        }
+        return targets
+    }
+
+    /// Where the cursor snaps while a route on `layer` has a via armed (V):
+    /// the copper on its layer (`snapTargets(on:in:)`), and what the via
+    /// would join on the others where it drops
+    /// (`BoardTrackLoops.viaReachesCopper`), since a via reaches them all:
+    /// the ends of tracks there, the vias that don't reach the layer, and
+    /// the centres of pads with copper on another. Of the other layers'
+    /// copper only that of the route's net or of none, and all of it before
+    /// the route has a net: a via dropped on another net's joins nothing of
+    /// the route's.
+    static func viaSnapTargets(on layer: Int, netID: String?, in board: HorizontalBoard) -> [HorizontalPoint] {
+        var targets = snapTargets(on: layer, in: board)
+        var seen = Set(targets.map(key))
+        func add(_ point: HorizontalPoint) {
+            if seen.insert(key(point)).inserted {
+                targets.append(point)
+            }
+        }
+        let netID = netID.map(normalizedID)
+        func joins(_ other: String?) -> Bool {
+            guard let netID, let other else {
+                return true
+            }
+            return normalizedID(other) == netID
+        }
+        for track in board.tracks where !isOn(track.layer, layer) && joins(track.netID) {
+            add(track.from)
+            add(track.to)
+        }
+        for via in board.vias where !via.spansCopperLayer(layer) && joins(via.netID) {
+            add(via.position)
+        }
+        var pads = Set<String>()
+        for pad in board.packagePads {
+            guard let padLayer = pad.layer, padLayer != layer, HorizontalBoardLayers.isCopper(padLayer),
+                  joins(pad.netID), let path = padPath(forPolygonID: pad.id) else {
+                continue
+            }
+            pads.insert(path)
+        }
+        for (path, center) in board.packagePadPositions.sorted(by: { $0.key < $1.key })
+        where pads.contains(normalizedID(path)) {
+            add(center)
         }
         return targets
     }

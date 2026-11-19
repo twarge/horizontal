@@ -12,8 +12,8 @@ struct BoardTrackLoopEnd: Equatable {
 struct BoardTrackLoopStepResult: Equatable {
     var laid: BoardTrackRouteStepResult
     /// Where the route next left copper that was there before it: the click's
-    /// end when it reached some, else where the stretch began. Nil while the
-    /// route has met none.
+    /// end when it reached some, on its layer or through the via it dropped,
+    /// else where the stretch began. Nil while the route has met none.
     var loopStart: BoardTrackLoopEnd?
     /// The route's tracks so far, this click's included.
     var routeTrackIDs: Set<String>
@@ -22,15 +22,16 @@ struct BoardTrackLoopStepResult: Equatable {
     var removedTrackIDs: [String]
     var removedViaIDs: [String]
     /// Tracks cut in two at a junction because the route left or reached the
-    /// middle of one, by their old ids.
+    /// middle of one, or dropped a via on it, by their old ids.
     var splitTrackIDs: [String]
     /// The click closed a loop: it reached copper already joined to where the
-    /// stretch began.
+    /// stretch began, on its layer or through the via it dropped.
     var closesLoop: Bool
     /// The click laid the route onto copper it joins on its layer, other than
     /// its own tracks: a pad, a via or plated hole, or the end or middle of a
     /// track. That ends the route, as Horizon's router ends one on what it
-    /// connects to; so does a click that closes a loop.
+    /// connects to; so does a click that closes a loop on the route's layer.
+    /// One that closes it through a via it dropped goes on from the via.
     var endsRoute: Bool
 }
 
@@ -50,12 +51,21 @@ struct BoardTrackLoopStepResult: Equatable {
 ///
 /// A click that joins copper on the route's layer ends the route, as a click
 /// on a pad does, and drops no via there; so does one that closes a loop.
+///
+/// The route changes layers as its copper does. A via it drops, at the end of
+/// a click or on its own end, joins it to its net's copper on every layer
+/// there: a track the via stands on the middle of is cut for it, the loop
+/// that closes is replaced, and the next stretch starts at the via, from
+/// which the route goes on.
 enum BoardTrackLoops {
     /// One click: `BoardTrackRouting.lay`, after cutting a track whose middle
     /// the route leaves from or reaches, and then, when `removesLoops`, the
     /// copper the route makes redundant between `loopStart` and `target`
     /// taken off. `routeTrackIDs` are the tracks the route laid before. A
-    /// click that joins copper drops no via, since it ends the route.
+    /// click that joins copper drops no via, since it ends the route. A via
+    /// that does drop (on the route's own end, when there are no `specs`)
+    /// joins the route to its net's copper on the other layers there
+    /// (`viaReachesCopper`).
     static func lay(
         _ specs: [BoardTrackSegmentSpec],
         to target: HorizontalPoint,
@@ -85,32 +95,51 @@ enum BoardTrackLoops {
             reachesCopper = endsOnPad || touchesCopper(target, layer: head.layer, sparing: routeTrackIDs, in: board)
             joinsCopper = endsOnPad || joins(target, layer: head.layer, sparing: routeTrackIDs, in: board)
         }
-        let closesLoop = reachesCopper && loopStart.map {
+        let closesOnLayer = reachesCopper && loopStart.map {
             joined($0, BoardTrackLoopEnd(point: target, layer: head.layer), sparing: routeTrackIDs, in: board)
         } == true
-        let endsRoute = joinsCopper || closesLoop
+        let endsRoute = joinsCopper || closesOnLayer
 
         let laid = BoardTrackRouting.lay(
             specs, to: target, endsOnPad: endsOnPad, via: endsRoute ? nil : via, from: head, on: &board)
         let routeIDs = routeTrackIDs.union(laid.trackIDs)
+        // Where the click left the route: its target, or the head itself for
+        // a via dropped there.
+        let end = BoardTrackLoopEnd(point: laid.head.anchor, layer: head.layer)
+
+        // A via the click dropped joins the route to its net's copper on
+        // every layer there: a track whose middle it stands on is cut, so
+        // the via's junction is on it, and what it joins is copper reached.
+        var reachesThroughVia = false
+        var closesThroughVia = false
+        if laid.vias > 0 {
+            let net = head.netID
+            for layer in BoardTrackRouting.throughViaLayers(copperLayerCount: board.copperLayerCount) {
+                while let split = split(
+                    at: end.point, layer: layer, sparing: routeIDs, where: { netsJoin($0.netID, net) }, on: &board) {
+                    splitTrackIDs.append(split.trackID)
+                }
+            }
+            // The via just dropped is the board's last (`dropVia`).
+            reachesThroughVia = viaReachesCopper(
+                at: end.point, net: net, sparing: routeIDs, besides: board.vias.last?.id, in: board)
+            // A via dropped where the stretch began closes nothing.
+            closesThroughVia = reachesThroughVia && loopStart.map {
+                (laid.segments > 0 || Key($0.point) != Key(end.point)) && joined($0, end, sparing: routeIDs, in: board)
+            } == true
+        }
+        let reaches = (laid.segments > 0 && reachesCopper) || reachesThroughVia
 
         var removedTrackIDs = [String]()
         var removedViaIDs = [String]()
-        if removesLoops, laid.segments > 0, reachesCopper, let loopStart {
-            let redundant = redundantCopper(
-                from: loopStart,
-                to: BoardTrackLoopEnd(point: target, layer: head.layer),
-                sparing: routeIDs,
-                in: board
-            )
+        if removesLoops, reaches, let loopStart {
+            let redundant = redundantCopper(from: loopStart, to: end, sparing: routeIDs, in: board)
             remove(tracks: redundant.trackIDs, vias: redundant.viaIDs, from: &board)
             removedTrackIDs = redundant.trackIDs
             removedViaIDs = redundant.viaIDs
         }
 
-        let nextStart = laid.segments > 0 && reachesCopper
-            ? BoardTrackLoopEnd(point: target, layer: laid.head.layer)
-            : loopStart
+        let nextStart = reaches ? BoardTrackLoopEnd(point: end.point, layer: laid.head.layer) : loopStart
         return BoardTrackLoopStepResult(
             laid: laid,
             loopStart: nextStart,
@@ -118,7 +147,7 @@ enum BoardTrackLoops {
             removedTrackIDs: removedTrackIDs,
             removedViaIDs: removedViaIDs,
             splitTrackIDs: splitTrackIDs,
-            closesLoop: closesLoop,
+            closesLoop: closesOnLayer || closesThroughVia,
             endsRoute: laid.segments > 0 && endsRoute
         )
     }
@@ -140,8 +169,9 @@ enum BoardTrackLoops {
     }
 
     /// Whether a click at `point` on `layer` reaches copper that is not the
-    /// route's own: a pad, a via or a hole there, a track ending there on
-    /// that layer, or the middle of one, which the click would cut.
+    /// route's own: a pad or a via there with copper on that layer, a hole, a
+    /// track ending there on that layer, or the middle of one, which the
+    /// click would cut.
     static func reachesCopper(
         _ point: HorizontalPoint,
         layer: Int,
@@ -152,21 +182,66 @@ enum BoardTrackLoops {
             || splittableTrackIndex(at: point, layer: layer, sparing: routeTrackIDs, in: board) != nil
     }
 
+    /// Whether a via dropped at `point` by a route on `net` joins it to copper
+    /// there that is not the route's own, on any layer: a track ending there
+    /// or passing through, which the drop cuts, a pad's copper, a plated hole
+    /// or a via other than `droppedViaID`. Only copper of the route's net or
+    /// of none counts; a via dropped onto another net's joins nothing of the
+    /// route's.
+    static func viaReachesCopper(
+        at point: HorizontalPoint,
+        net: String?,
+        sparing routeTrackIDs: Set<String>,
+        besides droppedViaID: String? = nil,
+        in board: HorizontalBoard
+    ) -> Bool {
+        let key = Key(point)
+        if board.vias.contains(where: { Key($0.position) == key && $0.id != droppedViaID && netsJoin($0.netID, net) })
+            || board.packageHoles.contains(where: { $0.plated && Key($0.position) == key && netsJoin($0.netID, net) })
+            || board.tracks.contains(where: { track in
+                (Key(track.from) == key || Key(track.to) == key)
+                    && !routeTrackIDs.contains(track.id)
+                    && netsJoin(track.netID, net)
+            }) {
+            return true
+        }
+        let layers = BoardTrackRouting.throughViaLayers(copperLayerCount: board.copperLayerCount)
+        let cuts = layers.contains { layer in
+            splittableTrackIndex(
+                at: point, layer: layer, sparing: routeTrackIDs, in: board, where: { netsJoin($0.netID, net) }) != nil
+        }
+        if cuts {
+            return true
+        }
+        let pads = Set(board.packagePadPositions.filter { Key($0.value) == key }.map { normalizedID($0.key) })
+        guard !pads.isEmpty else {
+            return false
+        }
+        return board.packagePads.contains { polygon in
+            (polygon.layer.map(HorizontalBoardLayers.isCopper) ?? true)
+                && netsJoin(polygon.netID, net)
+                && BoardTrackRouting.padPath(forPolygonID: polygon.id).map { pads.contains($0) } == true
+        }
+    }
+
     // MARK: - Cutting a track
 
     /// Cuts the straight track on `layer` whose middle passes through `point`
     /// into two at a junction there, so a route from or to the point joins
-    /// it. Both halves are new tracks, since the writer names an existing
-    /// track's ends only as it read them. Returns the junction and the old
-    /// track's id, or nil when no such track can be cut.
+    /// it, as does a via dropped on it. Both halves are new tracks, since the
+    /// writer names an existing track's ends only as it read them. Returns
+    /// the junction and the old track's id, or nil when no such track
+    /// (`matches`, when given) can be cut.
     @discardableResult
     static func split(
         at point: HorizontalPoint,
         layer: Int,
         sparing routeTrackIDs: Set<String>,
+        where matches: (HorizontalSegment) -> Bool = { _ in true },
         on board: inout HorizontalBoard
     ) -> (junctionID: String, trackID: String)? {
-        guard let index = splittableTrackIndex(at: point, layer: layer, sparing: routeTrackIDs, in: board) else {
+        guard let index = splittableTrackIndex(
+            at: point, layer: layer, sparing: routeTrackIDs, in: board, where: matches) else {
             return nil
         }
         let track = board.tracks[index]
@@ -192,7 +267,8 @@ enum BoardTrackLoops {
         at point: HorizontalPoint,
         layer: Int,
         sparing routeTrackIDs: Set<String>,
-        in board: HorizontalBoard
+        in board: HorizontalBoard,
+        where matches: (HorizontalSegment) -> Bool = { _ in true }
     ) -> Int? {
         let key = Key(point)
         return board.tracks.firstIndex { track in
@@ -202,6 +278,7 @@ enum BoardTrackLoops {
                 && !track.id.contains("/")
                 && Key(track.from) != key
                 && Key(track.to) != key
+                && matches(track)
                 && BoardTrackRouting.pointLiesOnSegment(point, track)
                 && namesEnd(track.from, in: board)
                 && namesEnd(track.to, in: board)
@@ -283,7 +360,9 @@ enum BoardTrackLoops {
                 }
                 let here = ends[at] ?? []
                 let next: Int
-                if let vias = viasAt[at] {
+                // A via that doesn't reach the chain's layer is not in it.
+                let vias = (viasAt[at] ?? []).filter { layersContain(viaLayers(board.vias[$0], in: board), layer) }
+                if !vias.isEmpty {
                     guard vias.count == 1, !board.vias[vias[0]].locked, passes(board.vias[vias[0]], in: board) else {
                         break
                     }
@@ -404,8 +483,11 @@ enum BoardTrackLoops {
             }
     }
 
-    /// Copper other than the route's at `point`: a pad, a via or a hole
-    /// there, or a track ending there on `layer`.
+    /// Copper other than the route's at `point` that a route on `layer`
+    /// touches: a hole there, a pad or a via there with copper on the layer,
+    /// or a track ending there on it. A pad on the far side, or a via that
+    /// doesn't reach the layer, is not touched; a via dropped there reaches
+    /// it (`viaReachesCopper`).
     private static func touchesCopper(
         _ point: HorizontalPoint,
         layer: Int,
@@ -413,9 +495,13 @@ enum BoardTrackLoops {
         in board: HorizontalBoard
     ) -> Bool {
         let key = Key(point)
-        return board.packagePadPositions.values.contains { Key($0) == key }
-            || board.packageHoles.contains { Key($0.position) == key }
-            || board.vias.contains { Key($0.position) == key }
+        return board.packageHoles.contains { Key($0.position) == key }
+            || board.vias.contains { Key($0.position) == key && layersContain(viaLayers($0, in: board), layer) }
+            || board.packagePadPositions.contains { path, center in
+                Key(center) == key && BoardTrackRouting.padHasCopper(
+                    path: path, center: center, on: layer,
+                    packagePads: board.packagePads, packageHoles: board.packageHoles)
+            }
             || board.tracks.contains { track in
                 (Key(track.from) == key || Key(track.to) == key)
                     && layerMatches(track.layer, layer)
@@ -424,25 +510,33 @@ enum BoardTrackLoops {
     }
 
     /// The copper layers joined at a stretch's end: the route's own, and
-    /// those of any via, pad or hole there. Nil for all of them.
+    /// those of each via and pad there that has copper on a layer already
+    /// joined, so a pad only on the far side, or a via that doesn't reach
+    /// the route, adds none. A hole there joins them all, for which nil.
     private static func layers(at end: BoardTrackLoopEnd, in board: HorizontalBoard) -> Set<Int>? {
         let key = Key(end.point)
         if board.packageHoles.contains(where: { Key($0.position) == key }) {
             return nil
         }
-        var layers: Set<Int> = [end.layer]
+        var spans = [Set<Int>]()
         for via in board.vias where Key(via.position) == key {
             guard let span = viaLayers(via, in: board) else { return nil }
-            layers.formUnion(span)
+            spans.append(span)
         }
         let pads = board.packagePadPositions.filter { Key($0.value) == key }.map { normalizedID($0.key) }
-        guard !pads.isEmpty else {
-            return layers
+        if !pads.isEmpty {
+            let allLayers = BoardTrackRouting.throughViaLayers(copperLayerCount: board.copperLayerCount)
+            let padLayers = padLayers(in: board, allLayers: allLayers)
+            spans.append(contentsOf: pads.compactMap { padLayers[$0] })
         }
-        let allLayers = BoardTrackRouting.throughViaLayers(copperLayerCount: board.copperLayerCount)
-        let padLayers = padLayers(in: board, allLayers: allLayers)
-        for pad in pads {
-            layers.formUnion(padLayers[pad] ?? [])
+        var layers: Set<Int> = [end.layer]
+        var grew = true
+        while grew {
+            grew = false
+            for span in spans where !span.isDisjoint(with: layers) && !span.isSubset(of: layers) {
+                layers.formUnion(span)
+                grew = true
+            }
         }
         return layers
     }
@@ -492,6 +586,13 @@ enum BoardTrackLoops {
 
     private static func normalizedID(_ id: String) -> String {
         HorizontalCanvasModeSupport.normalizedID(id)
+    }
+
+    /// Whether copper on net `a` and copper on net `b` may be joined: the
+    /// same net, or either on none.
+    private static func netsJoin(_ a: String?, _ b: String?) -> Bool {
+        guard let a, let b else { return true }
+        return normalizedID(a) == normalizedID(b)
     }
 
     /// One point on one copper layer.
