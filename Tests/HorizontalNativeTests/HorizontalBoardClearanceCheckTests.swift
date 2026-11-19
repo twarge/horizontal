@@ -172,6 +172,45 @@ final class HorizontalBoardClearanceCheckTests: XCTestCase {
 
     /// The same copper a little further apart: nothing, and copper at exactly
     /// the clearance passes, as Horizon's overlap of offset polygons does.
+    /// A finding says how far it runs: a short track 0.05 mm from a long one
+    /// gives the long one's edge beside it, as far each way as the short
+    /// one's round ends are within the clearance, and the short one's edge
+    /// facing it. The canvas draws those stretches in orange.
+    func testAFindingGivesTheStretchOfCopperThatIsTooClose() throws {
+        let board = makeBoard(tracks: [
+            track("long", p(10, 10), p(30, 10), net: "net-a"),
+            track("short", p(15, 10.25), p(20, 10.25), net: "net-b"),
+        ])
+        let finding = try XCTUnwrap(HorizontalBoardClearanceCheck.run(board: board).first { $0.check == .copper })
+        assertNumbers(finding, distance: 0.05, clearance: 0.1, rule: "rule-cu")
+
+        // The long track's edge that faces the short one is at y = 10.1 mm.
+        let facing = finding.violation.flatMap { $0 }.filter { abs($0.y - mm(10.1)) < 1 }
+        // A point of that edge is within 0.1 mm of the short track's end,
+        // 0.15 mm above it, as far as 0.132 mm along.
+        let along = (0.2 * 0.2 - 0.15 * 0.15).squareRoot()
+        XCTAssertEqual(try XCTUnwrap(facing.map(\.x).min()), mm(15 - along), accuracy: 100)
+        XCTAssertEqual(try XCTUnwrap(facing.map(\.x).max()), mm(20 + along), accuracy: 100)
+        // The short track's facing edge is there, and neither's far side.
+        let ys = finding.violation.flatMap { $0 }.map(\.y)
+        XCTAssertTrue(ys.contains { abs($0 - mm(10.15)) < 1 })
+        XCTAssertEqual(try XCTUnwrap(ys.min()), mm(10.1), accuracy: 1)
+        XCTAssertLessThan(try XCTUnwrap(ys.max()), mm(10.25))
+        // Every point of it is copper within the clearance of the other's.
+        for point in finding.violation.flatMap({ $0 }) {
+            let toLong = HorizontalRouteClearanceProbe.segmentDistance(point, point, p(10, 10), p(30, 10))
+            let toShort = HorizontalRouteClearanceProbe.segmentDistance(point, point, p(15, 10.25), p(20, 10.25))
+            XCTAssertLessThan(min(toLong, toShort), mm(0.1) + 2_000, "on one track's edge")
+            XCTAssertLessThan(max(toLong, toShort), mm(0.2) + 1, "within the clearance of the other")
+        }
+
+        // The marker carries it, and the canvas strokes it.
+        let marker = try XCTUnwrap(HorizontalCanvasWarning.markers(clearanceFindings: [finding]).first)
+        XCTAssertEqual(marker.highlights, finding.violation)
+        XCTAssertEqual(HorizontalCanvasWarningGeometry.lines(for: [marker]).count,
+                       finding.violation.reduce(0) { $0 + $1.count - 1 })
+    }
+
     func testAClearBoardHasNoFindings() {
         let board = makeBoard(
             tracks: [

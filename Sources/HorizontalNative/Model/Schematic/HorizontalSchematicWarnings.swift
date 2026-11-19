@@ -6,6 +6,9 @@ struct HorizontalCanvasWarning: Identifiable, Hashable {
     /// Those of `messages` that are errors, a rule check's failures: the
     /// marker is drawn red when there is one.
     var errorMessages: Set<String> = []
+    /// What the warning is about, as lines of points the canvas draws in
+    /// orange: where a clearance finding's copper is too close.
+    var highlights: [[HorizontalPoint]] = []
     var id: String { HorizontalCanvasModeSupport.pointKey(position) }
 
     var isError: Bool { !errorMessages.isEmpty }

@@ -33,6 +33,20 @@ enum HorizontalCanvasWarningGeometry {
         }
     }
 
+    /// The warnings' highlights, each line of points a stroke as wide on
+    /// the screen at any zoom, in the orange the canvas keeps for what is
+    /// wrong with the copper.
+    static func lines(for warnings: [HorizontalCanvasWarning]) -> [HorizontalMetalLinePrimitive] {
+        let orange = HorizontalMetalRGBA(red: 1, green: 0.58, blue: 0, alpha: 1)
+        return warnings.flatMap { warning in
+            warning.highlights.flatMap { points in
+                zip(points, points.dropFirst()).map {
+                    HorizontalMetalLinePrimitive(from: $0, to: $1, color: orange, width: 0, minimumWidth: 2.5)
+                }
+            }
+        }
+    }
+
     enum GlyphPart: Hashable {
         case rim, fill, mark
     }
@@ -105,17 +119,20 @@ extension HorizontalCanvasWarning {
             }
             existing.messages += warning.messages.filter { !existing.messages.contains($0) }
             existing.errorMessages.formUnion(warning.errorMessages)
+            existing.highlights += warning.highlights.filter { !existing.highlights.contains($0) }
             merged[warning.id] = existing
         }
         return merged.values.sorted { $0.id < $1.id }
     }
 
     /// A marker where each clearance finding's copper comes closest, every
-    /// one an error.
+    /// one an error, with the copper's edge highlighted as far as it is too
+    /// close.
     static func markers(clearanceFindings findings: [HorizontalClearanceFinding]) -> [HorizontalCanvasWarning] {
         merging([], findings.map { finding in
             let message = "\(finding.title): \(finding.detail)"
-            return HorizontalCanvasWarning(position: finding.location, messages: [message], errorMessages: [message])
+            return HorizontalCanvasWarning(position: finding.location, messages: [message], errorMessages: [message],
+                                           highlights: finding.violation)
         })
     }
 
@@ -126,7 +143,8 @@ extension HorizontalCanvasWarning {
             guard let location = finding.location else { return nil }
             let message = finding.clearance.map { "\($0.title): \($0.detail)" } ?? finding.text
             return HorizontalCanvasWarning(position: location, messages: [message],
-                                           errorMessages: finding.level == .error ? [message] : [])
+                                           errorMessages: finding.level == .error ? [message] : [],
+                                           highlights: finding.clearance?.violation ?? [])
         })
     }
 

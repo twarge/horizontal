@@ -883,22 +883,25 @@ struct InteractiveCanvasView: View {
                 // cursorMetalLayer, so a cursor move no longer rebuilds this body.
                 let selectionDragMetalBatch = metalSelectionDragBatch(transform: transform)
                 let warningTriangles = HorizontalCanvasWarningGeometry.triangles(for: warnings)
-                let topOverlayLines = metalTopOverlayLines + selectionDragMetalBatch.worldLines
+                // The warnings' highlights join the overlay's lines as the
+                // drag's do.
+                let addedOverlayLines = selectionDragMetalBatch.worldLines + HorizontalCanvasWarningGeometry.lines(for: warnings)
+                let topOverlayLines = metalTopOverlayLines + addedOverlayLines
                 let topOverlayScreenTriangles = metalTopOverlayScreenTriangles + selectionDragMetalBatch.screenTriangles + warningTriangles
                 let topOverlayScreenLines = metalTopOverlayScreenLines + scaleBarScreenLines
                     + selectionDragMetalBatch.screenLines
-                let topOverlayLineKey = metalTopOverlayLineKey &* 31 &+ selectionDragMetalBatch.worldLines.hashValue
+                let topOverlayLineKey = metalTopOverlayLineKey &* 31 &+ addedOverlayLines.hashValue
                 // The drag's lines join the overlay's group-0 lines; any in a
                 // group of their own leave every group to upload.
                 let topOverlayGroupKeys: [Int: Int]? = metalTopOverlayGroupKeys.flatMap { keys in
-                    guard !selectionDragMetalBatch.worldLines.contains(where: { $0.compositeGroup != 0 }) else {
+                    guard !addedOverlayLines.contains(where: { $0.compositeGroup != 0 }) else {
                         return nil
                     }
-                    guard !selectionDragMetalBatch.worldLines.isEmpty else {
+                    guard !addedOverlayLines.isEmpty else {
                         return keys
                     }
                     var keys = keys
-                    keys[0] = (keys[0] ?? 0) &* 31 &+ selectionDragMetalBatch.worldLines.hashValue
+                    keys[0] = (keys[0] ?? 0) &* 31 &+ addedOverlayLines.hashValue
                     return keys
                 }
                 let topOverlayScreenTriangleKey = (metalTopOverlayScreenTriangleKey &* 31 &+ selectionDragMetalBatch.screenTriangles.hashValue)

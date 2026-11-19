@@ -74,6 +74,12 @@ struct HorizontalClearanceFinding: Identifiable, Hashable, Sendable {
     /// The nearest points themselves, on each side's copper.
     var firstPoint: HorizontalPoint
     var secondPoint: HorizontalPoint
+    /// How far the finding runs: the stretches of each side's copper edge
+    /// that are closer to the other side than the clearance, or inside it,
+    /// each a line of points. The canvas draws them over the copper. Copper
+    /// near the board's edge or a keepout gives its own edge alone; a
+    /// silkscreen finding gives none.
+    var violation: [[HorizontalPoint]] = []
 
     var id: String { "\(check.rawValue)|\(first.type.jsonString)|\(first.id)|\(second.type.jsonString)|\(second.id)" }
 
@@ -1163,8 +1169,9 @@ private struct Engine {
             } else {
                 continue
             }
-            if let finding = finding(pair.check, first.object, second.object, distance: distance, points: points,
+            if var finding = finding(pair.check, first.object, second.object, distance: distance, points: points,
                                      requirements: pair.requirements, overlaps: overlaps) {
+                finding.violation = violation(pair.first, pair.second, limit: finding.clearance, overlaps: overlaps)
                 findings.append(finding)
             }
         }
@@ -1221,8 +1228,16 @@ private struct Engine {
             }
             let reach = requirements.map(\.clearance).max() ?? 0
             if let outside = body.probes.first(where: { !insideBoard($0) }) {
-                if let finding = finding(.boardEdge, body.object, edge, distance: 0, points: (outside, outside),
+                if var finding = finding(.boardEdge, body.object, edge, distance: 0, points: (outside, outside),
                                          requirements: requirements, outsideBoard: true) {
+                    // The copper's edge outside the board, and near its edge.
+                    let outline = outline
+                    finding.violation = stretches(
+                        of: body,
+                        against: Against(runs: outlineElements, radius: 0, encloses: { point in
+                            outline.reduce(0) { $0 + ($1.contains(point) ? 1 : 0) } % 2 == 0
+                        }),
+                        limit: finding.clearance)
                     findings.append(finding)
                 }
                 continue
@@ -1242,9 +1257,11 @@ private struct Engine {
             }
             guard let best else { continue }
             let gap = best.distance - body.radius
-            if let finding = finding(.boardEdge, body.object, edge, distance: max(0, gap),
+            if var finding = finding(.boardEdge, body.object, edge, distance: max(0, gap),
                                      points: surfaces(best, body.radius, 0), requirements: requirements,
                                      overlaps: gap < -HorizontalBoardClearanceCheck.tolerance) {
+                finding.violation = stretches(
+                    of: body, against: Against(runs: outlineElements, radius: 0, encloses: nil), limit: finding.clearance)
                 findings.append(finding)
             }
         }
@@ -1372,8 +1389,14 @@ private extension Engine {
                 } else {
                     continue
                 }
-                if let finding = finding(.keepout, body.object, keepout.object, distance: distance, points: points,
+                if var finding = finding(.keepout, body.object, keepout.object, distance: distance, points: points,
                                          requirements: requirements, overlaps: overlaps) {
+                    let area = keepout.area, box = keepout.box
+                    finding.violation = stretches(
+                        of: body,
+                        against: Against(runs: Array(keepoutElements[keepout.elements]), radius: 0,
+                                         encloses: overlaps ? { box.contains($0) && area.contains($0) } : nil),
+                        limit: finding.clearance)
                     findings.append(finding)
                 }
             }
@@ -1517,8 +1540,9 @@ private extension Engine {
             } else {
                 continue
             }
-            if let finding = finding(.sameNet, first.object, second.object, distance: distance, points: points,
+            if var finding = finding(.sameNet, first.object, second.object, distance: distance, points: points,
                                      requirements: pair.requirements, overlaps: overlaps) {
+                finding.violation = violation(pair.first, pair.second, limit: finding.clearance, overlaps: overlaps)
                 findings.append(finding)
             }
         }
@@ -1967,6 +1991,149 @@ private extension Engine {
                 objectIDs: smallest.prefix(8).map { bodies[$0].object.id }.filter { !$0.isEmpty }))
         }
         return findings
+    }
+}
+
+// MARK: - How far a finding runs
+
+/// What a body's edge is measured against for `Engine.stretches`: runs of
+/// edges with `radius` of copper round each (the runs' boxes take it in), and
+/// for an area what is inside it.
+private struct Against {
+    var runs: [Element]
+    var radius: Double
+    var encloses: ((HorizontalPoint) -> Bool)?
+}
+
+private extension Engine {
+    /// A finding's `violation` between two bodies: each one's edge where it
+    /// is too close to the other, and, where they overlap, where it is
+    /// inside the other.
+    func violation(_ i: Int, _ j: Int, limit: Double, overlaps: Bool) -> [[HorizontalPoint]] {
+        func against(_ body: Body) -> Against {
+            Against(runs: Array(elements[body.elements]), radius: body.radius,
+                    encloses: overlaps && !body.regions.isEmpty ? { body.encloses($0) } : nil)
+        }
+        return stretches(of: bodies[i], against: against(bodies[j]), limit: limit)
+            + stretches(of: bodies[j], against: against(bodies[i]), limit: limit)
+    }
+
+    /// The edge of the copper one run of a body's edges stands for: the
+    /// edges themselves for an outline, and for a track, a via or a hole the
+    /// outline of the copper round each, less what lies inside the copper of
+    /// the edge before or after it.
+    func surface(of element: Element, in body: Body) -> [(HorizontalPoint, HorizontalPoint)] {
+        guard body.radius > 0 else {
+            return element.edges.compactMap { from[$0] == to[$0] ? nil : (from[$0], to[$0]) }
+        }
+        let all = elements[body.elements.lowerBound].edges.lowerBound..<elements[body.elements.upperBound - 1].edges.upperBound
+        let chords = HorizontalArcChords.count(radius: body.radius, sweep: Double.pi, atLeast: 12)
+        var segments = [(HorizontalPoint, HorizontalPoint)]()
+        for edge in element.edges {
+            let ring = Self.capsule(from[edge], to[edge], width: 2 * body.radius, segments: chords)
+            let neighbours = [edge - 1, edge + 1].filter { all.contains($0) }
+            for index in ring.indices {
+                let a = ring[index], b = ring[(index + 1) % ring.count]
+                let middle = HorizontalPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+                let covered = neighbours.contains { other in
+                    let nearest = Self.onSegment(middle, from[other], to[other])
+                    return hypot(middle.x - nearest.x, middle.y - nearest.y) < body.radius - HorizontalArcChords.tolerance
+                }
+                if !covered, a != b {
+                    segments.append((a, b))
+                }
+            }
+        }
+        return segments
+    }
+
+    /// The stretches of `body`'s edge nearer `other` than `limit`, or inside
+    /// it, as lines of points.
+    func stretches(of body: Body, against other: Against, limit: Double) -> [[HorizontalPoint]] {
+        let tolerance = HorizontalBoardClearanceCheck.tolerance
+        let reach = max(limit - tolerance, tolerance)
+        var otherBox = Box()
+        for run in other.runs {
+            otherBox.add(run.box)
+        }
+        var lines = [[HorizontalPoint]]()
+        func emit(_ a: HorizontalPoint, _ b: HorizontalPoint) {
+            if let last = lines.last?.last, abs(last.x - a.x) < 0.5, abs(last.y - a.y) < 0.5 {
+                lines[lines.count - 1].append(b)
+            } else {
+                lines.append([a, b])
+            }
+        }
+        for e in body.elements {
+            let element = elements[e]
+            guard other.encloses != nil || element.box.gap(to: otherBox) < reach else { continue }
+            let near = other.runs.filter { element.box.gap(to: $0.box) < reach }
+            guard other.encloses != nil || !near.isEmpty else { continue }
+            for (p, q) in surface(of: element, in: body) {
+                var box = Box()
+                box.add(p)
+                box.add(q)
+                var spans = [(Double, Double)]()
+                for run in near where box.gap(to: run.box) < reach {
+                    for f in run.edges {
+                        if let span = Self.span(p, q, near: from[f], to[f], within: reach + other.radius) {
+                            spans.append(span)
+                        }
+                    }
+                }
+                if let encloses = other.encloses, encloses(HorizontalPoint(x: (p.x + q.x) / 2, y: (p.y + q.y) / 2)) {
+                    spans = [(0, 1)]
+                }
+                spans.sort { $0.0 < $1.0 }
+                var merged = [(Double, Double)]()
+                for span in spans {
+                    if let last = merged.last, span.0 <= last.1 {
+                        merged[merged.count - 1].1 = max(last.1, span.1)
+                    } else {
+                        merged.append(span)
+                    }
+                }
+                for (start, end) in merged where end > start {
+                    emit(HorizontalPoint(x: p.x + (q.x - p.x) * start, y: p.y + (q.y - p.y) * start),
+                         HorizontalPoint(x: p.x + (q.x - p.x) * end, y: p.y + (q.y - p.y) * end))
+                }
+            }
+        }
+        return lines
+    }
+
+    /// The part of segment pq nearer segment cd than `distance`, as the
+    /// fractions of pq it runs between. The distance from a point moving
+    /// along pq to cd is convex, so the part is one stretch round the nearest
+    /// point, and each end is found by halving.
+    static func span(
+        _ p: HorizontalPoint, _ q: HorizontalPoint, near c: HorizontalPoint, _ d: HorizontalPoint, within distance: Double
+    ) -> (Double, Double)? {
+        let dx = q.x - p.x, dy = q.y - p.y
+        let lengthSquared = dx * dx + dy * dy
+        guard lengthSquared > 0 else { return nil }
+        func away(_ t: Double) -> Double {
+            let point = HorizontalPoint(x: p.x + t * dx, y: p.y + t * dy)
+            let nearest = onSegment(point, c, d)
+            return hypot(point.x - nearest.x, point.y - nearest.y)
+        }
+        let (least, nearest, _) = closest(p, q, c, d)
+        guard least < distance else { return nil }
+        let middle = min(max(((nearest.x - p.x) * dx + (nearest.y - p.y) * dy) / lengthSquared, 0), 1)
+        func end(_ limit: Double) -> Double {
+            guard away(limit) >= distance else { return limit }
+            var outside = limit, inside = middle
+            for _ in 0..<32 {
+                let half = (outside + inside) / 2
+                if away(half) < distance {
+                    inside = half
+                } else {
+                    outside = half
+                }
+            }
+            return inside
+        }
+        return (end(0), end(1))
     }
 }
 
