@@ -41,9 +41,7 @@ final class HorizontalStepMeshDiskCache: @unchecked Sendable {
     }
 
     static func defaultDirectory() -> URL? {
-        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("Horizontal", isDirectory: true)
-            .appendingPathComponent("step-meshes", isDirectory: true)
+        HorizontalCachesDirectory.url?.appendingPathComponent("step-meshes", isDirectory: true)
     }
 
     /// The cache file a model would use, or nil when the model cannot be

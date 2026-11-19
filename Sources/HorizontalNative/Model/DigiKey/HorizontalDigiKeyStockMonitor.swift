@@ -131,9 +131,7 @@ final class HorizontalDigiKeyStockMonitor: ObservableObject {
     }
 
     nonisolated static func defaultCacheURL() -> URL? {
-        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("Horizontal", isDirectory: true)
-            .appendingPathComponent("digikey-stock.json")
+        HorizontalCachesDirectory.url?.appendingPathComponent("digikey-stock.json")
     }
 
     var isConfigured: Bool {
