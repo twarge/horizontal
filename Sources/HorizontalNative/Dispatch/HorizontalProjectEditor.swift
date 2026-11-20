@@ -193,7 +193,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .placeTrack: "Route one straight copper segment on a layer between two points, pads or junctions. Manual routing: it draws what it is told and does not find a path."
         case .removeTrack: "Remove a copper segment, and any junction it leaves holding nothing."
         case .setTrackWidth: "Set a copper segment's width."
-        case .placeVia: "Put a via at a point, on a net, joining the layers its padstack spans. Its shape comes from the via rule that matches its net, unless a via definition or a size of its own is given; the reply says which and gives the size."
+        case .placeVia: "Put a via at a point, on a net, joining the layers its padstack spans. Its shape comes from the via rule that matches its net, unless a via definition or a size of its own is given; the reply says which and gives the size. A via a track of the batch ends on takes its net from its tracks, and follows them to another net; one standing alone holds the net it is placed on (net_pinned in the reply), as a stitching via does."
         case .removeVia: "Remove a via, and the junction it sat on when nothing else needs it."
         case .placePolygon: "Draw a closed polygon on a board layer. Layer 100 is the board outline, which is what gives a board its shape."
         case .removePolygon: "Remove a board polygon. A polygon a plane pours into belongs to that plane."
@@ -590,7 +590,8 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "definition": "A board via definition to take the padstack and size from, by name (\"mini\") or uuid (optional).",
                     "diameter_mm": "The via's own diameter, which makes its shape its own rather than the rules' (optional).",
                     "hole_mm": "The via's own drill diameter, likewise (optional).",
-                    "padstack": "Pool padstack uuid for a via shaped by itself (optional). Without any of these the via takes the padstack and size of the first via rule that matches its net, as Horizon gives it them."]
+                    "padstack": "Pool padstack uuid for a via shaped by itself (optional). Without any of these the via takes the padstack and size of the first via rule that matches its net, as Horizon gives it them.",
+                    "net_pinned": "true: the via holds the net itself (Horizon's net_set), as a stitching via does, whatever copper reaches it. false: it takes its net from the tracks it joins and follows them when the schematic moves them to another net, as a via Horizon's router drops does. Unsaid: false where a track of this batch ends on it, else true (optional)."]
         case .removeVia:
             return ["via": "Via id, from list_vias."]
         case .placeComponent:
@@ -698,7 +699,7 @@ struct HorizontalEditOperation {
             } else if ["no_populate", "is_power", "create_net", "bottom", "include_routing", "mirror", "offsheet_refs", "exposed_copper_only", "all_copper_layers",
                        "force", "cascade", "swap", "remove_routing", "display_all_pads", "no_connect", "disconnect",
                        "unanchored", "stubs", "use_primary_name", "all", "keep_wiring", "board", "is_port", "nc", "show_port", "fill_gaps", "keep", "ignore_unknown",
-                       "flip", "fit_ports", "move_texts"].contains(key) {
+                       "flip", "fit_ports", "move_texts", "net_pinned"].contains(key) {
                 try HorizontalDispatchValidation.boolean(value, key: key)
             } else if value is NSNull, ["part", "group", "tag"].contains(key) {
                 continue
@@ -893,6 +894,45 @@ final class HorizontalProjectEditor {
                 // Which op of forty failed is the first thing a caller needs.
                 throw error.inOperation(index, operation.kind.rawValue)
             }
+        }
+        try settleViaNetPins()
+    }
+
+    /// The vias this batch's place_via put down without `net_pinned`, each
+    /// with the index of its op's change, for `settleViaNetPins`.
+    private var unsettledViaPins: [(via: String, change: Int)] = []
+
+    /// A via place_via put down without saying whether it holds its net
+    /// holds it only where it stands alone. One a track or net tie ends on
+    /// takes its net from that copper, as a via Horizon's router drops does,
+    /// so it follows the copper when the schematic moves its pads to another
+    /// net; one nothing reaches keeps the net it was placed on, as Place
+    /// Via's stitching via does, or it would have none.
+    private func settleViaNetPins() throws {
+        guard !unsettledViaPins.isEmpty else {
+            return
+        }
+        defer { unsettledViaPins = [] }
+        let json = try board()
+        var vias = json["vias"] as? JSONDictionary ?? [:]
+        let ends = Set(["tracks", "net_ties"].flatMap { key in
+            json.dictionaryMap(key).values.flatMap { item in
+                ["from", "to"].compactMap { item.dictionary($0)?.string("junc")?.lowercased() }
+            }
+        })
+        var unpinned = false
+        for (id, index) in unsettledViaPins {
+            guard var via = vias[id] as? JSONDictionary, let junction = via.string("junction")?.lowercased(),
+                  ends.contains(junction) else {
+                continue
+            }
+            via.removeValue(forKey: "net_set")
+            vias[id] = via
+            unpinned = true
+            if changes.indices.contains(index) { changes[index]["net_pinned"] = false }
+        }
+        if unpinned {
+            try updateBoard { $0["vias"] = vias }
         }
     }
 
@@ -8260,19 +8300,24 @@ final class HorizontalProjectEditor {
         let id = UUID().uuidString.lowercased()
         let source = shape.string("source") ?? "rules"
         let parameters = shape.dictionary("parameter_set") ?? [:]
+        // Whether the via holds the net itself. Unsaid, the batch settles it
+        // once it has run (`settleViaNetPins`): pinned where it stands alone.
+        let pinned = params.bool("net_pinned")
         try updateBoard { board in
             var vias = board["vias"] as? JSONDictionary ?? [:]
             // The fields Via::serialize writes. net_set pins the net onto the
             // via, so it seeds propagation like a pad instead of waiting for
-            // copper to reach it.
+            // copper to reach it; without it the via takes its tracks' net.
             var via: JSONDictionary = ["junction": junction, "padstack": shape.string("padstack") ?? "", "source": source,
-                                       "from_rules": source == "rules", "locked": false, "net_set": net, "parameter_set": parameters]
+                                       "from_rules": source == "rules", "locked": false, "parameter_set": parameters]
+            if pinned != false { via["net_set"] = net }
             if let definition = shape.string("definition") { via["definition"] = definition }
             vias[id] = via
             board["vias"] = vias
         }
+        if pinned == nil { unsettledViaPins.append((via: id, change: changes.count)) }
         var change: JSONDictionary = ["via": id, "junction": junction, "net": net, "padstack": shape.string("padstack") ?? "",
-                                      "source": source]
+                                      "source": source, "net_pinned": pinned ?? true]
         if let diameter = parameters["via_diameter"] { change["diameter_mm"] = HorizontalDispatchJSON.mm(JSONHelper.doubleValue(diameter)) }
         if let hole = parameters["hole_diameter"] { change["hole_mm"] = HorizontalDispatchJSON.mm(JSONHelper.doubleValue(hole)) }
         if let rule = shape.string("rule") { change["via_rule"] = rule }

@@ -284,11 +284,12 @@ enum HorizontalBoardConnectivity {
         for hole in board.packageHoles {
             seedSpanning(hole.position, hole.netID)
         }
-        // A via with a pinned net (Horizon `net_set` — plane-stitching vias,
-        // and router-placed vias generally) is a net SOURCE like a pad: its
-        // net must survive with no track path to a pad, and copper reaching
-        // the via inherits it. Without this, any edit commit stripped the net
-        // (and its display name) off every stitching via.
+        // A via with a pinned net (Horizon `net_set`: Place Via's and Set
+        // Net…'s, plane-stitching vias) is a net SOURCE like a pad: its net
+        // must survive with no track path to a pad, and copper reaching the
+        // via inherits it. Without this, any edit commit stripped the net
+        // (and its display name) off every stitching via. A via with none,
+        // as a route leaves one, seeds nothing and takes its copper's net.
         for via in board.vias {
             guard let netSetID = via.netSetID else { continue }
             for layer in viaSpan(via, copperLayers: copperLayers) {

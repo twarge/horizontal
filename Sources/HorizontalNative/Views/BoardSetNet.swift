@@ -111,4 +111,22 @@ enum BoardSetNet {
         }
         return changed
     }
+
+    /// Clear Net on the vias among `refs` that hold their net, as Horizon's
+    /// Clear via net takes `net_set` off them: each then takes the net of the
+    /// copper it joins, as a via a route drops does, and follows it to
+    /// another. Returns whether any changed; the caller recomputes
+    /// connectivity, which gives them their copper's net, or none.
+    @discardableResult
+    static func clearNet(on refs: [HorizontalSelectableRef], in board: inout HorizontalBoard) -> Bool {
+        let ids = Set(refs.filter { $0.type == .via }.map { HorizontalCanvasModeSupport.normalizedID($0.id) })
+        var changed = false
+        for index in board.vias.indices
+        where board.vias[index].netSetID != nil && ids.contains(HorizontalCanvasModeSupport.normalizedID(board.vias[index].id)) {
+            board.vias[index].netSetID = nil
+            board.vias[index].netID = nil
+            changed = true
+        }
+        return changed
+    }
 }

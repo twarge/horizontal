@@ -3459,10 +3459,11 @@ struct BoardCanvasView: View {
     /// stay editable in every mode; editing one takes local control of the via
     /// (see takeLocalViaControl).
     private func viaProperties(_ via: HorizontalMarker) -> [HorizontalSelectionProperty] {
-        var properties = [
-            (modeProfile.mode == .board && !isReadOnly
-                ? BoardCopperLockCommands.viaNetProperty(via, in: board, options: { sortedNetOptions() }) : nil)
-                ?? readOnlyProperty("name", "Net", netDisplayName(via.netID)),
+        // Its net, from its copper or "(set)" on it, and Clear Net on a set one.
+        var properties = BoardCopperLockCommands.viaNetProperties(
+            via, in: board, editable: modeProfile.mode == .board && !isReadOnly,
+            name: { netDisplayName($0) }, options: { sortedNetOptions() })
+        properties += [
             modeProfile.mode == .board
                 ? BoardCopperLockCommands.lockedProperty(HorizontalSelectableRef(id: via.id, type: .via), locked: via.locked) : nil,
             editableNetClassProperty(for: via.netID),
@@ -6220,10 +6221,10 @@ struct BoardCanvasView: View {
                     holeSize: via.drill,
                     layer: nil,
                     connectedLayers: BoardTrackRouting.throughViaLayers(copperLayerCount: draft.copperLayerCount),
-                    netID: via.netID,
-                    // Router vias are pinned (patchNewBoardVias writes net_set),
-                    // so the model pins them too.
-                    netSetID: via.netID
+                    // Its tracks give it its net, as Horizon's router leaves
+                    // the vias it adds (`PNS_HORIZON_IFACE::AddItem`): none
+                    // is pinned, so it follows them to another net.
+                    netID: via.netID
                 )
             )
         }
@@ -18754,7 +18755,8 @@ extension BoardCanvasView {
             preview.decals.append(shifted(geometry, by: cursor))
         case .via(let template, let netID):
             let ghost = BoardTrackRouting.throughVia(
-                template, id: "place-preview-via", at: cursor, netID: netID, copperLayerCount: preview.copperLayerCount)
+                template, id: "place-preview-via", at: cursor, netID: netID, pinsNet: true,
+                copperLayerCount: preview.copperLayerCount)
             preview.vias.append(ghost.via)
             preview.viaHoles.append(ghost.hole)
         }
@@ -18904,8 +18906,10 @@ extension BoardCanvasView {
                 return
             }
             // It joins the copper ending where it goes, as a via the track
-            // tool drops does (`BoardTrackRouting.dropVia`).
-            BoardTrackRouting.dropVia(template, at: at, netID: netID, preferredJunctionID: nil, on: &draft)
+            // tool drops does (`BoardTrackRouting.dropVia`). It holds the net
+            // chosen for it, as Horizon's Place Via sets `net_set`, so it
+            // stands on it with no track to give it one.
+            BoardTrackRouting.dropVia(template, at: at, netID: netID, pinsNet: true, preferredJunctionID: nil, on: &draft)
             guard let via = draft.vias.last else {
                 return
             }

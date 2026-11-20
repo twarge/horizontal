@@ -1252,7 +1252,9 @@ class SetTrackWidth(TrackOp):
 
 class PlaceVia(Input):
     """A via on a net. Its shape comes from the via rule matching the net unless definition, or a size or
-    padstack of its own, is given."""
+    padstack of its own, is given. A via a track of the batch ends on takes its net from its tracks and
+    follows them to another net; one standing alone holds the net it is placed on, as a stitching via does.
+    net_pinned says which outright."""
     op: Literal["place_via"]
     x_mm: float
     y_mm: float
@@ -1261,6 +1263,7 @@ class PlaceVia(Input):
     definition: str | None = None
     diameter_mm: float | None = Field(default=None, gt=0)
     hole_mm: float | None = Field(default=None, gt=0)
+    net_pinned: StrictBool | None = None
 
     @model_validator(mode="after")
     def one_source(self):

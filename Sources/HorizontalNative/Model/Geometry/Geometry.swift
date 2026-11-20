@@ -508,10 +508,12 @@ struct HorizontalMarker: Identifiable, Hashable {
     var layer: Int?
     var connectedLayers: [Int] = []
     var netID: String? = nil
-    /// Horizon `net_set`: a net pinned onto the via by the user or the router
-    /// (plane-stitching vias, and router-placed vias generally). A pinned via
-    /// SEEDS net propagation like a pad instead of merely inheriting, so it
-    /// never goes net-less just because no track path reaches a pad.
+    /// Horizon `net_set`: a net the user pinned onto the via, with Place Via
+    /// or Set Net… (plane-stitching vias). A pinned via SEEDS net propagation
+    /// like a pad instead of merely inheriting, so it never goes net-less
+    /// just because no track path reaches a pad. A via with none, as
+    /// Horizon's router and Horizontal's track tool leave theirs, takes the
+    /// net of the copper it joins, and follows it to another.
     var netSetID: String? = nil
     /// Pool padstack UUID the via references on disk (raw casing preserved for
     /// byte-faithful writes). Nil for markers that aren't padstack-backed vias.
