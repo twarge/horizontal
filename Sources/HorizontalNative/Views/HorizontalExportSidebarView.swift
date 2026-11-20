@@ -320,7 +320,7 @@ struct HorizontalExportSidebarView: View {
                 Toggle(isOn: enableBinding(section, isEnabled)) {
                     Label(section.title, systemImage: section.symbolName)
                 }
-                .checkboxToggleStyle()
+                .checkboxTogglesOnMac()
             }
         }
     }
@@ -400,7 +400,7 @@ struct HorizontalExportSidebarView: View {
                     Text("-")
                         .foregroundStyle(.secondary)
                     Toggle("Fill", isOn: fillModeBinding($layer.mode))
-                        .checkboxToggleStyle()
+                        .checkboxTogglesOnMac()
                     .disabled(!layer.enabled)
                     Spacer(minLength: 0)
                 }
@@ -420,7 +420,7 @@ struct HorizontalExportSidebarView: View {
                     Text("-")
                         .foregroundStyle(.secondary)
                     Toggle("Fill", isOn: fillModeBinding($layer.mode))
-                        .checkboxToggleStyle()
+                        .checkboxTogglesOnMac()
                     Spacer(minLength: 0)
                 }
                 .padding(.vertical, 1)
@@ -464,19 +464,5 @@ struct HorizontalExportSidebarView: View {
         case .warning: .orange
         case .error: .red
         }
-    }
-}
-
-private extension View {
-    /// Applies the macOS `.checkbox` toggle style. The checkbox style is
-    /// unavailable on iOS, so this is a no-op there (the default toggle
-    /// style is used instead), keeping macOS behavior byte-identical.
-    @ViewBuilder
-    func checkboxToggleStyle() -> some View {
-        #if os(macOS)
-        self.toggleStyle(.checkbox)
-        #else
-        self
-        #endif
     }
 }

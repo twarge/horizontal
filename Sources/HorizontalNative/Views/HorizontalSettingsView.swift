@@ -138,6 +138,7 @@ struct HorizontalSettingsView: View {
             HorizontalMouserSettingsSection()
         }
         .formStyle(.grouped)
+        .checkboxTogglesOnMac()
         // The macOS Settings window (HorizontalSettingsWindow) can be made as
         // narrow as the colour matrix's four columns and a short label fit,
         // and no wider than the form has a use for; in height it goes down to

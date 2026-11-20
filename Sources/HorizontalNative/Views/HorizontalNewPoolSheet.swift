@@ -60,6 +60,7 @@ struct HorizontalNewPoolSheet: View {
                 }
             }
             .formStyle(.grouped)
+            .checkboxTogglesOnMac()
             .navigationTitle("New Pool")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
