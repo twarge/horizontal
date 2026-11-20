@@ -26,6 +26,9 @@ enum HorizontalBoardConnectivity {
     /// holes stand on each.
     private struct Graph {
         var seeds = [String: Set<String>]()
+        /// The seeds pads and package holes give, leaving out the nets
+        /// pinned vias bring: what copper's net would be with no pin on it.
+        var padSeeds = [String: Set<String>]()
         var neighbors = [String: Set<String>]()
         var trackIdx = [String: [Int]]()
         var viaIdx = [String: [Int]]()
@@ -203,9 +206,54 @@ enum HorizontalBoardConnectivity {
         }
     }
 
+    /// The copper a via is part of, as `viaRuns` floods it: how many tracks
+    /// it has, and the nets its pads and its vias' pins each bring.
+    struct ViaRun: Equatable {
+        var trackCount: Int
+        /// The nets the pads and package holes it reaches bring, leaving out
+        /// every via's pin: the net its copper would have with none pinned.
+        var padNets: Set<String>
+        /// The net pinned on each of its vias that holds one, by via id.
+        var pins: [String: String]
+    }
+
+    /// The run of copper each via is part of, by via id (lowercased), the
+    /// graph built once and each run flooded once however many vias it has.
+    static func viaRuns(in board: HorizontalBoard) -> [String: ViaRun] {
+        guard !board.vias.isEmpty else {
+            return [:]
+        }
+        let built = graph(board)
+        var visited = Set<String>()
+        var runs = [String: ViaRun]()
+        for via in board.vias where runs[normalizedID(via.id)] == nil {
+            guard let layer = viaSpan(via, copperLayers: built.copperLayers).first else {
+                continue
+            }
+            let start = HorizontalCopperConnectivity.node(via.position, layer: layer)
+            guard !visited.contains(start) else {
+                continue
+            }
+            let component = flood(from: start, graph: built, visited: &visited)
+            var pins = [String: String]()
+            for index in component.vias {
+                if let pin = board.vias[index].netSetID {
+                    pins[normalizedID(board.vias[index].id)] = normalizedID(pin)
+                }
+            }
+            let run = ViaRun(trackCount: component.tracks.count,
+                             padNets: Set(component.padNets.map(normalizedID)), pins: pins)
+            for index in component.vias {
+                runs[normalizedID(board.vias[index].id)] = run
+            }
+        }
+        return runs
+    }
+
     private struct Component {
         var keys = [String]()
         var nets = Set<String>()
+        var padNets = Set<String>()
         var tracks = Set<Int>()
         var vias = Set<Int>()
         var viaHoles = Set<Int>()
@@ -218,6 +266,7 @@ enum HorizontalBoardConnectivity {
         while let k = stack.popLast() {
             component.keys.append(k)
             component.nets.formUnion(graph.seeds[k] ?? [])
+            component.padNets.formUnion(graph.padSeeds[k] ?? [])
             for i in graph.trackIdx[k] ?? [] { component.tracks.insert(i) }
             for i in graph.viaIdx[k] ?? [] { component.vias.insert(i) }
             for i in graph.viaHoleIdx[k] ?? [] { component.viaHoles.insert(i) }
@@ -284,6 +333,7 @@ enum HorizontalBoardConnectivity {
         for hole in board.packageHoles {
             seedSpanning(hole.position, hole.netID)
         }
+        let padSeeds = seeds
         // A via with a pinned net (Horizon `net_set`: Place Via's and Set
         // Net…'s, plane-stitching vias) is a net SOURCE like a pad: its net
         // must survive with no track path to a pad, and copper reaching the
@@ -341,6 +391,7 @@ enum HorizontalBoardConnectivity {
         }
         var built = Graph()
         built.seeds = seeds
+        built.padSeeds = padSeeds
         built.neighbors = graph.neighbors
         built.trackIdx = trackIdx
         built.viaIdx = viaIdx

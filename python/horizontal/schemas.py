@@ -1278,6 +1278,15 @@ class RemoveVia(Targeted):
     via: StrictStr | None = None
 
 
+class UnpinVias(Input):
+    """Let vias follow their tracks: net_set taken off every via whose copper, with no pin on it, reaches pads of
+    the one net it is pinned to, so no net changes. Stitching vias, vias whose tracks reach no pad, vias on a short
+    and vias pinned to another net than their pads' (conflicts, listed) keep their pins. Each via is judged by its own
+    copper, so it is made in no other block instance and goes in a batch of its own; dry_run lists what it would
+    unpin."""
+    op: Literal["unpin_vias"]
+
+
 class CopyLayout(Input):
     op: Literal["copy_group_layout"]
     source: StrictStr
@@ -1292,7 +1301,7 @@ EditOperation = Annotated[EnsureComponent | RemoveComponent | RemovePlacement | 
                           SetGroup | EnsureNet | RenameNet | SetNetClass | SetDiffpair | ClearDiffpair | RetireNet | Connect | Disconnect |
                           Place | PlaceSymbol | MoveSymbols | MoveToOtherSheet | RemoveSymbol | DrawNetLine | PlaceJunction | SetNetLineEndpoint | RemapPart | PlaceText | RemoveText |
                           RemoveNetLine | RemoveJunction | PruneSheet | TerminatePin | SetSymbolDisplay | SetCustomValue | Smash | SetNoConnect | SetPinAlternate |
-                          PlaceTrack | RemoveTrack | SetTrackWidth | PlaceVia | RemoveVia |
+                          PlaceTrack | RemoveTrack | SetTrackWidth | PlaceVia | RemoveVia | UnpinVias |
                           PlacePowerSymbol | PlaceNetLabel | RemoveSheetMark |
                           AddSheet | RenameSheet | SetSheetFrame | RemoveSheet |
                           PlacePolygon | RemovePolygon | PlacePlane | RemovePlane |

@@ -84,6 +84,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     case setTrackWidth = "set_track_width"
     case placeVia = "place_via"
     case removeVia = "remove_via"
+    case unpinVias = "unpin_vias"
     case placePolygon = "place_polygon"
     case removePolygon = "remove_polygon"
     case placePlane = "place_plane"
@@ -195,6 +196,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .setTrackWidth: "Set a copper segment's width."
         case .placeVia: "Put a via at a point, on a net, joining the layers its padstack spans. Its shape comes from the via rule that matches its net, unless a via definition or a size of its own is given; the reply says which and gives the size. A via a track of the batch ends on takes its net from its tracks, and follows them to another net; one standing alone holds the net it is placed on (net_pinned in the reply), as a stitching via does."
         case .removeVia: "Remove a via, and the junction it sat on when nothing else needs it."
+        case .unpinVias: "Let vias follow their tracks: take the pinned net (Horizon's net_set) off every via whose copper, with no pin on it, reaches pads of one net, the one it is pinned to, so no net changes and it follows its tracks when the schematic moves them to another net. Every other pinned via keeps its pin: one standing alone (stitching), one whose tracks reach no pad on a net, one on copper joining several nets, and one pinned to a net its pads don't give (a conflict, listed with where it is). Each via is judged by its own copper, so nothing it does is made in the other instances of a block laid out alike, and it goes in a batch of its own; with dry_run the reply lists what it would unpin."
         case .placePolygon: "Draw a closed polygon on a board layer. Layer 100 is the board outline, which is what gives a board its shape."
         case .removePolygon: "Remove a board polygon. A polygon a plane pours into belongs to that plane."
         case .placePlane: "Define a copper pour: a polygon on a copper layer, filled with one net. Defining it does not fill it — pour_planes does that."
@@ -594,6 +596,8 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "net_pinned": "true: the via holds the net itself (Horizon's net_set), as a stitching via does, whatever copper reaches it. false: it takes its net from the tracks it joins and follows them when the schematic moves them to another net, as a via Horizon's router drops does. Unsaid: false where a track of this batch ends on it, else true (optional)."]
         case .removeVia:
             return ["via": "Via id, from list_vias."]
+        case .unpinVias:
+            return [:]
         case .placeComponent:
             return ["component": component, "x_mm": "X position.", "y_mm": "Y position.", "angle_deg": "Rotation (optional, default 0 or unchanged).", "bottom": "Place on the bottom side (optional)."]
         case .copyGroupLayout:
@@ -885,6 +889,14 @@ final class HorizontalProjectEditor {
     // MARK: - Applying
 
     func apply(_ operations: [HorizontalEditOperation]) throws {
+        // unpin_vias reads the copper's nets from the project as it loaded,
+        // which another op of the batch would change, and is kept out of the
+        // block sync another op of the batch would ask for.
+        if operations.count > 1, let index = operations.firstIndex(where: { $0.kind == .unpinVias }) {
+            throw HorizontalDispatchError.invalidParams(
+                "unpin_vias goes in a batch of its own: it reads the board as the project has it, and is made in no other block instance."
+            ).inOperation(index, HorizontalEditOperationKind.unpinVias.rawValue)
+        }
         for (index, operation) in operations.enumerated() {
             var operation = operation
             if !reusedIDs.isEmpty { operation.params = withReusedIDs(operation.params) }
@@ -1264,6 +1276,8 @@ final class HorizontalProjectEditor {
             change.merge(try placeVia(params)) { _, new in new }
         case .removeVia:
             change.merge(try removeVia(params)) { _, new in new }
+        case .unpinVias:
+            change.merge(try unpinVias()) { _, new in new }
         case .placeComponent:
             let id = try boardComponentID(params)
             change["component"] = id
@@ -8353,6 +8367,35 @@ final class HorizontalProjectEditor {
             board["vias"] = vias
         }
         return ["via": id, "junctions_removed": try collectJunctions()]
+    }
+
+    /// unpin_vias: `net_set` off every via its pads already give the net it
+    /// is pinned to (`HorizontalPinnedVias`), as Let Vias Follow Their
+    /// Tracks… takes it off in the app. The copper's nets come from the
+    /// project as it loaded, which is why it goes in a batch of its own.
+    private func unpinVias() throws -> JSONDictionary {
+        var vias = try board()["vias"] as? JSONDictionary ?? [:]
+        guard let loaded = project.board else {
+            throw HorizontalDispatchError.notFound("The project has no board.")
+        }
+        let review = HorizontalPinnedVias.review(loaded)
+        var unpinned = [String]()
+        for via in review.following {
+            guard let key = vias.keys.first(where: { $0.caseInsensitiveCompare(via.id) == .orderedSame }),
+                  var entry = vias[key] as? JSONDictionary,
+                  entry.string("net_set")?.lowercased() == via.pin else {
+                continue
+            }
+            // Via::serialize writes net_set only on a via that holds a net.
+            entry.removeValue(forKey: "net_set")
+            vias[key] = entry
+            unpinned.append(key)
+        }
+        if !unpinned.isEmpty {
+            try updateBoard { $0["vias"] = vias }
+        }
+        return HorizontalDispatchPinnedVias.reply(review, unpinned: Set(unpinned.map { $0.lowercased() }),
+                                                  name: { self.boardNetName($0) })
     }
 
     // MARK: - Board polygons and planes
