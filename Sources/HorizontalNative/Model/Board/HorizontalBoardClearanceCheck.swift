@@ -2019,8 +2019,8 @@ private extension Engine {
 /// Runs of edges as `Engine.stretches` reads them, with `radius` of copper or
 /// ink round each edge (the runs' boxes take it in), and the edges the runs
 /// index: the engine's own for a body, the board's outline and a keepout,
-/// and a table of their own for a silkscreen object and a piece of bare
-/// copper, which are no body.
+/// and a table of their own for a silkscreen object, a piece of bare copper
+/// and the copper of a short, which are no body.
 private struct Edges {
     var from: [HorizontalPoint]
     var to: [HorizontalPoint]
@@ -2030,6 +2030,15 @@ private struct Edges {
     /// finding the edges have: a silkscreen object's, which may crowd
     /// several pads. Nil for a run to work out when it is needed.
     var surfaces: [[(HorizontalPoint, HorizontalPoint)]?]?
+    /// Each edge's own radius, by its index in `from`, where the edges are
+    /// copper of several widths: a short's tracks and vias. Nil where every
+    /// edge has `radius`, which is then the most of them.
+    var radii: [Double]?
+
+    /// The radius of copper or ink round edge `index`.
+    func radius(of index: Int) -> Double {
+        radii?[index] ?? radius
+    }
 }
 
 /// What an edge is measured against for `Engine.stretches`: runs of edges,
@@ -2042,7 +2051,7 @@ private struct Against {
 private extension Engine {
     /// Runs of the engine's edges: a body's, the outline's or a keepout's.
     func edges(_ runs: [Element], radius: Double) -> Edges {
-        Edges(from: from, to: to, runs: runs, radius: radius, surfaces: nil)
+        Edges(from: from, to: to, runs: runs, radius: radius)
     }
 
     func edges(of body: Body) -> Edges {
@@ -2054,7 +2063,7 @@ private extension Engine {
     static func edges(_ segments: [(HorizontalPoint, HorizontalPoint)], radius: Double, length: Int = runLength) -> Edges {
         Edges(from: segments.map(\.0), to: segments.map(\.1),
               runs: runs(of: segments, length: length).map { Element(body: -1, edges: $0.edges, box: $0.box.grown(radius)) },
-              radius: radius, surfaces: nil)
+              radius: radius)
     }
 
     /// A silkscreen object's ink as `violation` measures it: in short runs,
@@ -2110,18 +2119,19 @@ private extension Engine {
     /// The edge of the copper or ink one run of edges stands for: the edges
     /// themselves for an outline, and for a track, a via, a hole or a stroke
     /// the outline of the copper round each, less what lies inside the
-    /// copper round another of the edges, as where a line's strokes meet or
-    /// a letter's bar runs into its uprights.
+    /// copper round another of the edges, as where a line's strokes meet, a
+    /// letter's bar runs into its uprights or a track runs into a via.
     static func surface(of run: Element, in edges: Edges) -> [(HorizontalPoint, HorizontalPoint)] {
-        let from = edges.from, to = edges.to, radius = edges.radius
-        guard radius > 0 else {
+        let from = edges.from, to = edges.to
+        guard edges.radius > 0 else {
             return run.edges.compactMap { from[$0] == to[$0] ? nil : (from[$0], to[$0]) }
         }
-        let chords = HorizontalArcChords.count(radius: radius, sweep: Double.pi, atLeast: 12)
-        let inside = radius - HorizontalArcChords.tolerance
+        let tolerance = HorizontalArcChords.tolerance
         var segments = [(HorizontalPoint, HorizontalPoint)]()
         var covered = [(Double, Double)]()
         for edge in run.edges {
+            let radius = edges.radius(of: edge)
+            let chords = HorizontalArcChords.count(radius: radius, sweep: Double.pi, atLeast: 12)
             let ring = capsule(from[edge], to[edge], width: 2 * radius, segments: chords)
             chords: for index in ring.indices {
                 let a = ring[index], b = ring[(index + 1) % ring.count]
@@ -2135,7 +2145,9 @@ private extension Engine {
                 // of a curve mostly do each other's.
                 covered.removeAll(keepingCapacity: true)
                 for other in edges.runs where other.box.gap(to: box) == 0 {
-                    for f in other.edges where f != edge && gap(box, from[f], to[f]) < inside {
+                    for f in other.edges where f != edge {
+                        let inside = edges.radius(of: f) - tolerance
+                        guard gap(box, from[f], to[f]) < inside else { continue }
                         if let part = span(a, b, near: from[f], to[f], within: inside) {
                             guard part.0 > 0 || part.1 < 1 else { continue chords }
                             covered.append(part)
@@ -2176,11 +2188,7 @@ private extension Engine {
         // Kept from one edge to the next, so measuring one allocates nothing.
         var spans = [(Double, Double)](), cuts = [Double](), merged = [(Double, Double)]()
         func emit(_ a: HorizontalPoint, _ b: HorizontalPoint) {
-            if let last = lines.last?.last, abs(last.x - a.x) < 0.5, abs(last.y - a.y) < 0.5 {
-                lines[lines.count - 1].append(b)
-            } else {
-                lines.append([a, b])
-            }
+            extend(&lines, a, b)
         }
         for (index, element) in edges.runs.enumerated() {
             // A run, or an edge of it, too far from the other's edges to be
@@ -2209,9 +2217,10 @@ private extension Engine {
                 spans.removeAll(keepingCapacity: true)
                 // Measured until some edge of the other is near all of pq.
                 var whole = false
-                let within = reach + other.edges.radius
                 measuring: for run in near where box.gap(to: run.box) < reach {
-                    for f in run.edges where gap(box, otherFrom[f], otherTo[f]) < within {
+                    for f in run.edges {
+                        let within = reach + other.edges.radius(of: f)
+                        guard gap(box, otherFrom[f], otherTo[f]) < within else { continue }
                         if let span = span(p, q, near: otherFrom[f], otherTo[f], within: within) {
                             spans.append(span)
                             if span.0 == 0, span.1 == 1 {
@@ -2265,6 +2274,65 @@ private extension Engine {
         return lines
     }
 
+    /// `lines` with segment ab added: to the last line where it starts at
+    /// that line's end, as the segments of an edge's surface follow on one
+    /// from another, else as a line of its own.
+    static func extend(_ lines: inout [[HorizontalPoint]], _ a: HorizontalPoint, _ b: HorizontalPoint) {
+        if let last = lines.last?.last, abs(last.x - a.x) < 0.5, abs(last.y - a.y) < 0.5 {
+            lines[lines.count - 1].append(b)
+        } else {
+            lines.append([a, b])
+        }
+    }
+
+    /// The outline of `tracks` and `vias` together: the edge of each one's
+    /// copper as `surface` gives it, less what lies inside another's on a
+    /// layer they share, so where two tracks meet or a track runs into a via
+    /// the outline goes round both, and where tracks on two layers cross
+    /// each is outlined whole.
+    static func outline(tracks: [HorizontalSegment], vias: [HorizontalMarker]) -> [[HorizontalPoint]] {
+        var from = [HorizontalPoint](), to = [HorizontalPoint](), radii = [Double](), layers = [UInt64]()
+        for track in tracks where track.width > 0 {
+            guard let layer = track.layer.flatMap(Self.bit) else { continue }
+            let path = track.pathPoints
+            guard !path.isEmpty else { continue }
+            for (a, b) in path.count == 1 ? [(path[0], path[0])] : Array(zip(path, path.dropFirst())) {
+                from.append(a)
+                to.append(b)
+                radii.append(track.width / 2)
+                layers.append(layer)
+            }
+        }
+        for via in vias where via.size > 0 {
+            from.append(via.position)
+            to.append(via.position)
+            radii.append(via.size / 2)
+            layers.append(via.connectedLayers.isEmpty ? .max : Self.mask(via.connectedLayers))
+        }
+        guard let most = radii.max() else { return [] }
+        // An edge a run, trimmed against the runs a grid finds near it on
+        // its layers only.
+        let runs = from.indices.map { index -> Element in
+            Element(body: -1, edges: index..<(index + 1), box: box([from[index], to[index]]).grown(radii[index]))
+        }
+        let grid = Grid(boxes: runs.map(\.box))
+        var lines = [[HorizontalPoint]]()
+        var near = Set<Int>()
+        for (index, run) in runs.enumerated() {
+            near.removeAll(keepingCapacity: true)
+            grid.forEach(overlapping: run.box) { other in
+                if layers[other] & layers[index] != 0 {
+                    near.insert(other)
+                }
+            }
+            let edges = Edges(from: from, to: to, runs: near.sorted().map { runs[$0] }, radius: most, radii: radii)
+            for (a, b) in surface(of: run, in: edges) {
+                extend(&lines, a, b)
+            }
+        }
+        return lines
+    }
+
     /// Where segment pq meets segment cd, as the fraction of pq; nil where
     /// they don't meet, and where they run side by side.
     static func crossing(_ p: HorizontalPoint, _ q: HorizontalPoint, _ c: HorizontalPoint, _ d: HorizontalPoint) -> Double? {
@@ -2313,6 +2381,14 @@ private extension Engine {
 }
 
 extension HorizontalBoardClearanceCheck {
+    /// The outline of `tracks` and `vias` together, as lines of points: the
+    /// edge of their copper as a clearance finding's stretches follow it,
+    /// going round where two of them meet on a layer; what the canvas
+    /// strokes for copper that joins two nets.
+    static func outline(tracks: [HorizontalSegment], vias: [HorizontalMarker]) -> [[HorizontalPoint]] {
+        Engine.outline(tracks: tracks, vias: vias)
+    }
+
     /// The pairs of nets the design's net ties join (`netPairKey`), from its
     /// top block, which the board's nets are.
     static func tiedNets(of project: HorizontalProject) -> Set<String> {
