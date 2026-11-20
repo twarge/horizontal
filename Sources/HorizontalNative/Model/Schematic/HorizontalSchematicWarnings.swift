@@ -7,7 +7,7 @@ struct HorizontalCanvasWarning: Identifiable, Hashable {
     /// marker is drawn red when there is one.
     var errorMessages: Set<String> = []
     /// What the warning is about, as lines of points the canvas draws in
-    /// orange: where a clearance finding's copper is too close.
+    /// orange: where a clearance finding's copper or silkscreen is too close.
     var highlights: [[HorizontalPoint]] = []
     var id: String { HorizontalCanvasModeSupport.pointKey(position) }
 
