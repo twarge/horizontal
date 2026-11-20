@@ -1575,8 +1575,12 @@ enum HorizontalDispatchMethods {
                 HorizontalPoolLibrary.invalidateCache()
             }
         }
+        // unpin_vias judges each via by its own copper, so a pin it takes off
+        // in one block instance says nothing of the via laid out like it in
+        // another, which may be a conflict it must leave alone.
+        let syncs = !operations.contains { $0.kind == .unpinVias }
         return try HorizontalDispatchMutation.execute(session: session, entry: entry, params: params, byDigestAlone: byDigestAlone,
-                                                      syncsBlockInstances: true) { store in
+                                                      syncsBlockInstances: syncs) { store in
             if let items = params["pool_items"] as? [JSONDictionary] {
                 _ = try writePoolItems(poolTargets(poolItems(items, entry: entry), entry: entry, store: store), to: store)
             }

@@ -127,6 +127,10 @@ struct HorizontalCanvasCommandActions {
     var canLockSelection: Bool = false
     var canUnlockSelection: Bool = false
     var canUnlockAllCopper: Bool = false
+    /// Clear Via Net on the selected vias that hold a net, and Let Vias
+    /// Follow Their Tracks… (`BoardViaNetCommands`).
+    var canClearViaNets: Bool = false
+    var canLetViasFollowTracks: Bool = false
     var canShowInPoolManager: Bool = false
     var canShowInProjectPoolManager: Bool = false
     var canRoundOffVertex: Bool = false
@@ -172,6 +176,10 @@ struct HorizontalCanvasCommandActions {
     /// open, and choosing one there, for the same reason.
     var holePadstackChoices: [HorizontalPoolPadstackInfo]? = nil
     var chooseHolePadstack: ((String) -> Void)? = nil
+    /// What the open Let Vias Follow Their Tracks alert found, nil while none
+    /// is open, and its confirming button, for the same reason.
+    var pinnedViaReview: HorizontalPinnedVias.Review? = nil
+    var confirmLetViasFollowTracks: (() -> Void)? = nil
     /// Picks a row of the unplaced column by its object's id, as a click on
     /// it does, for the same reason: the row's button can't be pressed from
     /// a test.
@@ -756,6 +764,18 @@ struct HorizontalViewCommands: Commands {
                     canvasCommandActions?.dispatch(.unlockAllCopper)
                 }
                 .disabled(canvasCommandActions?.canUnlockAllCopper != true)
+
+                // A via's pinned net (net_set) taken off, so it follows its
+                // tracks: on the selected vias, or on every via the pads
+                // already give the net it is pinned to.
+                Button("Clear Via Net") {
+                    canvasCommandActions?.dispatch(.clearViaNets)
+                }
+                .disabled(canvasCommandActions?.canClearViaNets != true)
+                Button("Let Vias Follow Their Tracks…") {
+                    canvasCommandActions?.dispatch(.letViasFollowTracks)
+                }
+                .disabled(canvasCommandActions?.canLetViasFollowTracks != true)
             }
             Button("Show in Pool Manager") {
                 canvasCommandActions?.dispatch(.showInPoolManager)

@@ -741,6 +741,8 @@ struct BoardCanvasView: View {
     @State private var decalPickerIndex: HorizontalPoolLibraryIndex?
     /// The net chooser, while it is up, and what it chooses a net for.
     @State private var netPickerPurpose: BoardNetPickerPurpose?
+    /// What Let Vias Follow Their Tracks… found, while its alert asks.
+    @State private var pinnedViaReview: HorizontalPinnedVias.Review?
     /// Place Board Hole…'s chooser, while it is up: the hole and mechanical
     /// padstacks the pools hold.
     @State private var holePadstackChoices: [HorizontalPoolPadstackInfo]?
@@ -1485,9 +1487,9 @@ struct BoardCanvasView: View {
                     // They name the nets they edit, so the selection, two
                     // nets' to pair, stays as it is.
                     break
-                case .replacePart:
-                    // It names the components it replaces: a selection the
-                    // package is part of stays.
+                case .replacePart, .clearViaNets:
+                    // It names the components it replaces, or acts on every
+                    // selected via: a selection the object is part of stays.
                     if !selectedObjects.contains(ref) { setSelectedObject(ref) }
                 default:
                     setSelectedObject(ref)
@@ -1616,6 +1618,19 @@ struct BoardCanvasView: View {
                 onPick: { chooseNet($0) },
                 onCancel: { netPickerPurpose = nil }
             )
+        }
+        .alert(BoardViaNetCommands.title, isPresented: Binding(
+            get: { pinnedViaReview != nil },
+            set: { if !$0 { pinnedViaReview = nil } }
+        ), presenting: pinnedViaReview) { review in
+            if let confirm = BoardViaNetCommands.confirmTitle(review) {
+                Button(confirm) { confirmLetViasFollowTracks() }
+                Button("Cancel", role: .cancel) { pinnedViaReview = nil }
+            } else {
+                Button("OK", role: .cancel) { pinnedViaReview = nil }
+            }
+        } message: { review in
+            Text(BoardViaNetCommands.message(review, name: { netDisplayName($0) ?? $0 }))
         }
         .sheet(isPresented: Binding(
             get: { holePadstackChoices != nil },
@@ -1997,6 +2012,10 @@ struct BoardCanvasView: View {
         hasher.combine(holePadstackChoices != nil)
         // Lock, Unlock and Unlock All, as the copper is (an undo too).
         hasher.combine(BoardCopperLock.commandSignature(selectedObjects, in: board))
+        // Clear Net and Let Vias Follow Their Tracks…, as the vias' pins
+        // are, and its alert coming up or going.
+        hasher.combine(BoardViaNetCommands.commandSignature(selectedObjects, in: board))
+        hasher.combine(pinnedViaReview != nil)
         return hasher.finalize()
     }
 
@@ -3724,6 +3743,8 @@ struct BoardCanvasView: View {
         actions.chooseNet = { chooseNet($0) }
         actions.holePadstackChoices = holePadstackChoices
         actions.chooseHolePadstack = { chooseHolePadstack($0) }
+        actions.pinnedViaReview = pinnedViaReview
+        actions.confirmLetViasFollowTracks = { confirmLetViasFollowTracks() }
         actions.pickUnplacedObject = { id in
             guard let object = currentUnplacedObjects.first(where: { $0.id == id }) else {
                 return
@@ -3988,6 +4009,7 @@ struct BoardCanvasView: View {
             // it floods the copper each selected track and via is part of.
             handlers.setNet = { requestSetNet() }
             installCopperLockHandlers(&handlers)
+            installViaNetHandlers(&handlers)
             handlers.tuneTrack = { beginTuneTrack() }
             handlers.dragCopper = { beginCopperDrag() }
             let alignable = BoardAlignment.alignableRefs(selectedObjects, in: editedBoard ?? sourceBoard)
@@ -4373,6 +4395,12 @@ struct BoardCanvasView: View {
             } else {
                 entries.append(.command(title: "Set Net…", .setNet))
             }
+        }
+        // Clear Net on the selected vias that hold a net (Horizon's Clear
+        // via net), so each takes its tracks' net again.
+        if writable, modeProfile.mode == .board,
+           let entry = BoardViaNetCommands.menuEntry(for: ref, selection: selectedObjects, in: board) {
+            entries.append(entry)
         }
 
         // The run of track (Horizon's Select More, + and =).
@@ -18544,8 +18572,44 @@ extension BoardCanvasView {
         }
     }
 
-    /// One undoable edit of the lock. It stays in the block instance it is
-    /// made in: a lock is the copper's own, not the layout's.
+    /// Clear Net on the selected vias that hold a net, and Let Vias Follow
+    /// Their Tracks…, which asks first (`BoardViaNetCommands`). The board
+    /// command is offered wherever a via holds a net; which of them can
+    /// follow their tracks is worked out when it is asked for.
+    private func installViaNetHandlers(_ handlers: inout HorizontalCanvasCommandHandlerSet) {
+        let refs = selectedObjects
+        if !BoardViaNetCommands.pinnedVias(among: refs, in: board).isEmpty {
+            handlers.clearViaNets = { editCopperLock("Clear Net") { BoardViaNetCommands.clearNets(on: refs, in: &$0) } }
+        }
+        if board.vias.contains(where: { $0.netSetID != nil }) {
+            handlers.letViasFollowTracks = { requestLetViasFollowTracks() }
+        }
+    }
+
+    private func requestLetViasFollowTracks() {
+        guard !isReadOnly, modeProfile.mode == .board, pinnedViaReview == nil else {
+            return
+        }
+        pinnedViaReview = HorizontalPinnedVias.review(board)
+    }
+
+    /// The alert's Unpin: one undoable edit, from the board as it is now.
+    private func confirmLetViasFollowTracks() {
+        guard pinnedViaReview != nil else {
+            return
+        }
+        pinnedViaReview = nil
+        let review = HorizontalPinnedVias.review(editedBoard ?? sourceBoard)
+        let count = review.count(.follows)
+        editCopperLock(BoardViaNetCommands.title) { BoardViaNetCommands.letViasFollow(review, in: &$0) }
+        if count > 0 {
+            showCanvasNote(count == 1 ? "1 via follows its tracks" : "\(count) vias follow their tracks")
+        }
+    }
+
+    /// One undoable edit of the lock, or of a via's pinned net. It stays in
+    /// the block instance it is made in: a lock and a pin are the copper's
+    /// own, not the layout's.
     private func editCopperLock(_ actionName: String, _ edit: (inout HorizontalBoard) -> Bool) {
         guard !isReadOnly else {
             return
