@@ -2,12 +2,12 @@ import Foundation
 
 /// Where Spotlight (L) brings what it spotlights into view in each view, when
 /// the setting asks it to: the board and the 3D view on the components' pads
-/// and the nets' pads, tracks, airwires and vias, much as `zoom_to` frames
-/// them; the schematic on the sheet that draws the most of it, the one showing
-/// when it draws as much as any other. A view moves only when what is spotlit
-/// is out of it, and then only scrolls, or turns the page, at the scale it
-/// was drawn at; the view L was pressed in stays where it is. Ids are compared
-/// lowercased.
+/// and the nets' pads, tracks, airwires, vias, planes and polygons, much as
+/// `zoom_to` frames them; the schematic on the sheet that draws the most of
+/// it, the one showing when it draws as much as any other. A view moves only
+/// when what is spotlit is out of it, and then only scrolls, or turns the
+/// page, at the scale it was drawn at; the view L was pressed in stays where
+/// it is. Ids are compared lowercased.
 enum HorizontalSpotlightFraming {
     /// The setting: Spotlight brings what it spotlights into every other view
     /// showing. On by default, since a view moves only when what is spotlit
@@ -49,6 +49,9 @@ enum HorizontalSpotlightFraming {
         for via in board.vias where onNet(via.netID) {
             points.append(via.position)
         }
+        // And its planes where they are filled, and its polygons, a plane's
+        // on the plane's net, as Spotlight lights them.
+        points.append(contentsOf: BoardSpotlightNets(board).spotlitPoints(in: board, spotlighting: nets))
         return framed(points, smallest: 2_000_000, margin: margin)
     }
 
