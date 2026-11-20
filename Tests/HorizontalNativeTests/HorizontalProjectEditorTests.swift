@@ -174,6 +174,28 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertEqual(terminals.first { $0.string("name") == "MH" }?.string("role"), "mechanical")
     }
 
+    /// A pad on a padstack its package keeps of its own, in a file named for
+    /// what it is rather than its uuid, takes that padstack's kind, as the
+    /// board loader finds it: a mounting hole is a mechanical terminal.
+    func testAPadOnItsPackagesOwnMechanicalPadstackIsAMechanicalTerminal() throws {
+        let pool = packageURL.appendingPathComponent("pool")
+        let part = try HorizontalPoolPartItem(json: JSONHelper.loadDictionary(from: pool.appendingPathComponent("parts/cache/\(partID).json")))
+        let packageDirectory = pool.appendingPathComponent("packages/cache/\(try XCTUnwrap(part.packageID))", isDirectory: true)
+        let packageFile = packageDirectory.appendingPathComponent("package.json")
+        var package = try HorizontalPoolPackage(json: JSONHelper.loadDictionary(from: packageFile))
+        let mechanical = HorizontalPoolItemFactory.newPadstack(type: .mechanical)
+        var pad = try XCTUnwrap(package.pads[padIDs[0]])
+        pad.id = UUID().uuidString.lowercased(); pad.name = "MH"; pad.padstackID = mechanical.uuid
+        package.pads[pad.id] = pad
+        _ = try HorizontalPoolItemFactory.write(.package(package), to: packageFile, replacingExisting: true)
+        _ = try HorizontalPoolItemFactory.write(.padstack(mechanical), to: packageDirectory.appendingPathComponent("padstacks/Mounting hole.json"))
+        _ = try result("reload_project")
+        _ = try apply([["op": "ensure_component", "refdes": "R1", "part": partID]])
+        let terminals = try XCTUnwrap(try component("R1")["physical_terminals"] as? [JSONDictionary])
+        XCTAssertEqual(terminals.first { $0.string("name") == "MH" }?.string("role"), "mechanical")
+        XCTAssertEqual(terminals.first { $0.string("name") == "1" }?.string("role"), "electrical")
+    }
+
     func testCreateConnectPlaceAndReadBack() throws {
         let applied = try apply([
             ["op": "ensure_component", "refdes": "R1", "part": partID, "value": "10k"],

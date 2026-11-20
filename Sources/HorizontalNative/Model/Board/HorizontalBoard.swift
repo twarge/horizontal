@@ -5039,15 +5039,13 @@ struct HorizontalBoard {
         return (pads, holes, positions, netIDs)
     }
 
+    /// A package pad's padstack: the package's own, found by its uuid whatever
+    /// its file is called (`HorizontalPackagePadstacks`), else the pool's.
     private static func loadPadstack(_ padstackID: String, packageID: String, poolURL: URL) -> JSONDictionary? {
         let padstackID = normalizedID(padstackID)
-        if let packageDirectory = packageDirectory(for: packageID, poolURL: poolURL) {
-            let packagePadstackURL = packageDirectory
-                .appendingPathComponent("padstacks")
-                .appendingPathComponent("\(padstackID).json")
-            if let packagePadstackURL = existingFileURL(packagePadstackURL) {
-                return try? JSONHelper.loadDictionary(from: packagePadstackURL)
-            }
+        if let packageDirectory = packageDirectory(for: packageID, poolURL: poolURL),
+           let packagePadstack = HorizontalPackagePadstacks.json(padstackID, packageDirectory: packageDirectory) {
+            return packagePadstack
         }
 
         let globalPadstackURL = poolURL

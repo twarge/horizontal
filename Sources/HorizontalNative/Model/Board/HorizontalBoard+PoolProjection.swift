@@ -21,8 +21,9 @@ struct HorizontalPoolEditorContext {
     /// package-local, then the pool catalog (which also covers discovered
     /// base pools), then the library index.
     func padstackJSON(id: String) -> JSONDictionary? {
-        if let local = packageLocalPadstacks().first(where: { $0.id == id.lowercased() }) {
-            return try? JSONHelper.loadDictionary(from: local.url)
+        if let packageDirectoryURL,
+           let local = HorizontalPackagePadstacks.json(id, packageDirectory: packageDirectoryURL) {
+            return local
         }
         if let json = HorizontalPoolPadstacks.padstack(id: id, poolURL: poolURL) {
             return json
@@ -57,30 +58,21 @@ struct HorizontalPoolEditorContext {
         var id: String
         var name: String
         var type: String
-        var url: URL
     }
 
+    /// The package's own padstacks, as the board loader finds them.
     private func packageLocalPadstacks() -> [LocalPadstack] {
-        guard let directory = packageDirectoryURL?.appendingPathComponent("padstacks", isDirectory: true),
-              let files = try? FileManager.default.contentsOfDirectory(
-                  at: directory,
-                  includingPropertiesForKeys: nil,
-                  options: [.skipsHiddenFiles]
-              ) else {
+        guard let packageDirectoryURL else {
             return []
         }
-        return files.compactMap { url in
-            guard url.pathExtension.lowercased() == "json",
-                  let json = try? JSONHelper.loadDictionary(from: url),
-                  json.string("type") == "padstack",
-                  let uuid = json.string("uuid") else {
-                return nil
-            }
-            return LocalPadstack(
-                id: uuid.lowercased(),
-                name: json.string("name") ?? url.deletingPathExtension().lastPathComponent,
-                type: json.string("padstack_type") ?? "top",
-                url: url
+        return HorizontalPackagePadstacks.padstacks(packageDirectory: packageDirectoryURL).map { padstack in
+            LocalPadstack(
+                id: padstack.id,
+                name: padstack.json.string("name") ?? padstack.url.deletingPathExtension().lastPathComponent,
+                // An older padstack gives its kind as its type.
+                type: padstack.json.string("padstack_type")
+                    ?? padstack.json.string("type").flatMap { $0 == "padstack" ? nil : $0 }
+                    ?? "top"
             )
         }
         .sorted { $0.name.localizedLowercase < $1.name.localizedLowercase }
