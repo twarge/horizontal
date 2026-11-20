@@ -2018,11 +2018,15 @@ struct BoardCanvasView: View {
         }
 
         if board.planes.contains(where: {
-            displayOptions.isLayerVisible($0.layer) && matches($0.netID) && !$0.renderFragments.isEmpty
+            displayOptions.isLayerVisible($0.layer) && BoardSpotlightNets.lights($0, spotlighting: highlightedNetIDs)
+                && !$0.renderFragments.isEmpty
         }) {
             return true
         }
-        if board.polygons.contains(where: { displayOptions.isLayerVisible($0.layer) && matches($0.netID) }) {
+        let spotlightNets = BoardSpotlightNets(board)
+        if board.polygons.contains(where: {
+            displayOptions.isLayerVisible($0.layer) && spotlightNets.lights($0, spotlighting: highlightedNetIDs)
+        }) {
             return true
         }
         if board.lines.contains(where: { displayOptions.isLayerVisible($0.layer) && matches($0.netID) }) {
@@ -2763,7 +2767,7 @@ struct BoardCanvasView: View {
         }
 
         let plane = board.planes.first { normalizedID($0.polygonID) == normalizedID(polygon.id) }
-        let netID = plane?.netID ?? polygon.netID
+        let netID = BoardSpotlightNets(board).netID(of: polygon)
         let keepout = plane == nil ? keepoutBackedByPolygon(polygon.id, in: board) : nil
         let net = plane.map { "Plane \(netDisplayName($0.netID) ?? "with no net")" }
             ?? keepout.map { _ in "Keepout" }
@@ -4844,8 +4848,14 @@ struct BoardCanvasView: View {
         guard !nets.isEmpty else {
             return
         }
+        // A polygon by its own net, not its plane's (`BoardSpotlightNets`):
+        // Select Net, and a Delete after it, take a net's copper but leave its
+        // planes' outlines, which Spotlight lights with the net.
         let matching = boardSelectableScene().refs().filter { ref in
-            guard let net = netID(for: ref).map(normalizedID) else { return false }
+            let net = [.polygonEdge, .polygonVertex, .polygonArcCenter].contains(ref.type)
+                ? boardPolygon(for: ref.id, in: board)?.netID
+                : netID(for: ref)
+            guard let net = net.map(normalizedID) else { return false }
             return nets.contains(net)
         }
         guard !matching.isEmpty else {
@@ -10504,7 +10514,8 @@ struct BoardCanvasView: View {
         case .plane:
             return board.planes.first { normalizedID($0.id) == normalizedID(ref.id) }?.netID
         case .polygonArcCenter, .polygonEdge, .polygonVertex:
-            return boardPolygon(for: ref.id, in: board)?.netID
+            // A plane's polygon is on the plane's net (`BoardSpotlightNets`).
+            return boardPolygon(for: ref.id, in: board).flatMap(BoardSpotlightNets(board).netID(of:))
         case .text:
             return (board.texts + board.packageTexts).first { normalizedID($0.id) == normalizedID(ref.id) }?.netID
         case .blockSymbolPort, .boardDecal, .boardPackage, .boardPanel, .busLabel, .busRipper, .dimension, .drawingArc, .drawingLine, .junction, .keepout, .lineNet, .netLabel, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .padstackShape, .symbolPin:
@@ -10538,6 +10549,8 @@ struct BoardCanvasView: View {
         let pads = index(.pad, board.packagePads, id: \.id, net: \.netID)
         let vias = index(.via, board.vias, id: \.id, net: \.netID)
         let texts = index(.text, board.texts + board.packageTexts, id: \.id, net: \.netID)
+        let polygons = types.isDisjoint(with: [.polygonEdge, .polygonVertex, .polygonArcCenter])
+            ? [:] : BoardSpotlightNets.polygonNetIDs(in: board)
         return { ref in
             let id = normalizedID(ref.id)
             switch ref.type {
@@ -10549,6 +10562,7 @@ struct BoardCanvasView: View {
             case .pad: return pads[id] ?? nil
             case .via: return vias[id] ?? nil
             case .text: return texts[id] ?? nil
+            case .polygonEdge, .polygonVertex, .polygonArcCenter: return polygons[id] ?? nil
             default: return netID(for: ref)
             }
         }
@@ -16727,12 +16741,16 @@ struct BoardCanvasView: View {
         }
 
         let color = theme.junction
+        // A plane lights its fill and its polygon, which is on its net
+        // (`BoardSpotlightNets`); the board outline is lit by no spotlight.
+        let spotlit = shownHighlightNetIDs
+        let spotlightNets = BoardSpotlightNets(board)
 
-        for plane in board.planes where displayOptions.isLayerVisible(plane.layer) && matchesHighlightedNet(plane.netID) {
+        for plane in board.planes where displayOptions.isLayerVisible(plane.layer) && BoardSpotlightNets.lights(plane, spotlighting: spotlit) {
             drawHighlightedPlane(plane, color: color, context: context, transform: transform)
         }
 
-        for polygon in board.polygons where displayOptions.isLayerVisible(polygon.layer) && !isBoardBodyLayer(polygon.layer) && matchesHighlightedNet(polygon.netID) {
+        for polygon in board.polygons where displayOptions.isLayerVisible(polygon.layer) && spotlightNets.lights(polygon, spotlighting: spotlit) {
             drawHighlightedPolygon(polygon, color: color, context: context, transform: transform)
         }
 

@@ -78,10 +78,11 @@ enum BoardHighlightSubset {
         subset.arcs = board.arcs.filter { onNet($0.netID) }
         subset.connectionLines = board.connectionLines.filter { onNet($0.netID) }
         subset.airwires = board.airwires.filter { onNet($0.netID) }
-        subset.polygons = board.polygons.filter {
-            onNet($0.netID) && !($0.layer.map(HorizontalBoardLayers.isOutline) ?? false)
-        }
-        subset.planes = board.planes.filter { onNet($0.netID) }
+        // A plane's polygon is on the plane's net, and drawn with it where an
+        // edit has it among the polygons (`BoardSpotlightNets`).
+        let spotlightNets = BoardSpotlightNets(board)
+        subset.polygons = board.polygons.filter { spotlightNets.lights($0, spotlighting: netIDs) }
+        subset.planes = board.planes.filter { BoardSpotlightNets.lights($0, spotlighting: netIDs) }
         subset.vias = board.vias.filter { onNet($0.netID) }
         // A via's drill goes with the via (`HorizontalBoard.viaHoleID(ofVia:)`).
         let viaIDs = Set(subset.vias.map { $0.id.lowercased() })
