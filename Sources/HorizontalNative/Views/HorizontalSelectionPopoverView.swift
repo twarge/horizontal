@@ -662,8 +662,43 @@ struct HorizontalSelectionPopoverView: View {
             pinFunctionsRow(property, editor: editor, value: value, group: group, item: item)
         } else if property.editor == .action {
             actionRow(property, group: group, item: item)
+        } else if case .segmented = property.editor, !isReadOnly {
+            segmentedPropertyRow(property, group: group, item: item, appliesToAll: appliesToAll)
         } else {
             standardPropertyRow(property, group: group, item: item, appliesToAll: appliesToAll)
+        }
+    }
+
+    private func propertyLabel(_ property: HorizontalSelectionProperty) -> some View {
+        Text(property.label)
+            .font(propertyLabelFont)
+            .foregroundStyle(foregroundColor.opacity(0.66))
+            .frame(width: propertyLabelWidth, alignment: .leading)
+            .lineLimit(1)
+    }
+
+    /// A Rules / Custom row, whose picker keeps its own width: on one line
+    /// where that leaves room for the All toggle, else with the picker under
+    /// the label, never wider than the inspector
+    /// (`HorizontalSelectionPropertyRowLayout`). No unit column: a choice has
+    /// no unit, and the column's width is what pushed the row past the
+    /// sidebar's edge.
+    private func segmentedPropertyRow(
+        _ property: HorizontalSelectionProperty,
+        group: HorizontalSelectionDetailGroup,
+        item: HorizontalSelectionDetailItem,
+        appliesToAll: Bool
+    ) -> some View {
+        HorizontalSelectionPropertyRowLayout(spacing: 7, lineSpacing: 4) {
+            propertyLabel(property)
+            editor(for: property, group: group, item: item)
+            HStack(spacing: 7) {
+                actionButton(for: property, group: group, item: item)
+                if appliesToAll {
+                    allToggle(for: property, group: group, item: item)
+                }
+                removeButton(for: property, group: group, item: item)
+            }
         }
     }
 
@@ -674,11 +709,7 @@ struct HorizontalSelectionPopoverView: View {
         appliesToAll: Bool
     ) -> some View {
         HStack(alignment: .center, spacing: 7) {
-            Text(property.label)
-                .font(propertyLabelFont)
-                .foregroundStyle(foregroundColor.opacity(0.66))
-                .frame(width: propertyLabelWidth, alignment: .leading)
-                .lineLimit(1)
+            propertyLabel(property)
 
             if property.isEditable && !isReadOnly {
                 editor(for: property, group: group, item: item)
@@ -1038,7 +1069,8 @@ struct HorizontalSelectionPopoverView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .controlSize(.small)
-            .fixedSize()
+            // Not fixed at its own width: it doesn't grow past it, and on a
+            // line of its own it can go narrower (`segmentedPropertyRow`).
             .focusable(false)
         case .pinFunctions, .readOnly, .action:
             EmptyView()
