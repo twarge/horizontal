@@ -720,30 +720,38 @@ enum BoardTrackRouting {
     /// junction they share, which connectivity unifies by position. The via
     /// opens the solder mask where the template says its padstack does
     /// (`HorizontalBoard.viaWithMaskOpenings`). Returns the junction's id.
+    ///
+    /// `pinsNet` is whether the via holds `netID` itself (Horizon's
+    /// `net_set`), as one Place Via drops holds the net its user chose. A via
+    /// a route drops holds none: it takes the net of the tracks it joins, as
+    /// Horizon's router leaves its vias, and so follows them when the
+    /// schematic moves their pads to another net.
     @discardableResult
     static func dropVia(
         _ via: HorizontalBoardViaTemplate,
         at point: HorizontalPoint,
         netID: String?,
+        pinsNet: Bool = false,
         preferredJunctionID: String?,
         on board: inout HorizontalBoard
     ) -> String {
         let junctionID = mergeJunctions(at: point, preferredID: preferredJunctionID, netID: netID, board: &board)
-        let made = throughVia(via, id: UUID().uuidString.lowercased(), at: point, netID: netID,
+        let made = throughVia(via, id: UUID().uuidString.lowercased(), at: point, netID: netID, pinsNet: pinsNet,
                               copperLayerCount: board.copperLayerCount)
         board.vias.append(made.via)
         board.viaHoles.append(made.hole)
         return junctionID
     }
 
-    /// A through via of `via`'s shape at `point`, pinned on `netID`, and its
-    /// hole, which `dropVia` puts on the board and the Place Via tool's ghost
-    /// draws.
+    /// A through via of `via`'s shape at `point` on `netID`, and its hole,
+    /// which `dropVia` puts on the board and the Place Via tool's ghost
+    /// draws. It holds the net itself (`netSetID`) only where `pinsNet`.
     static func throughVia(
         _ via: HorizontalBoardViaTemplate,
         id viaID: String,
         at point: HorizontalPoint,
         netID: String?,
+        pinsNet: Bool = false,
         copperLayerCount: Int
     ) -> (via: HorizontalMarker, hole: HorizontalHole) {
         let marker = HorizontalMarker(
@@ -754,9 +762,7 @@ enum BoardTrackRouting {
             layer: nil,
             connectedLayers: throughViaLayers(copperLayerCount: copperLayerCount),
             netID: netID,
-            // Track-tool vias are pinned (patchNewBoardVias writes net_set),
-            // so the model pins them too.
-            netSetID: netID,
+            netSetID: pinsNet ? netID : nil,
             padstackID: via.padstackID,
             fromRules: via.fromRules,
             parameterSet: via.viaParameterSet,

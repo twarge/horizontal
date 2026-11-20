@@ -1727,8 +1727,9 @@ def apply_ops(ops: list[EditOperation] = [], path: str | None = None, dry_run: b
 
     Board rules: add_rule takes fields and orders the rule after its kind's; set_rule merges objects key by key.
     place_via takes the shape of the via rule matching its net, a via definition, or a size of its own; a change to
-    the via rules reshapes the vias they shape. warnings says when a pin moves to another net with copper on its pad,
-    and check reports copper joining two nets.
+    the via rules reshapes the vias they shape. A via a track of the batch ends on takes its tracks' net and follows
+    them to another; one standing alone holds the net it is placed on (net_pinned says which outright). warnings
+    says when a pin moves to another net with copper on its pad, and check reports copper joining two nets.
 
     Decals: place_decal puts a pool decal on the board, as Place Decal… in the app does — by uuid or a name only one
     decal has, from the project pool or a pool it draws from (search_pool with kind decal finds one) — at x_mm, y_mm,

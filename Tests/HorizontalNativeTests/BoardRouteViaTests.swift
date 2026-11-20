@@ -252,7 +252,7 @@ final class BoardRouteViaTests: XCTestCase {
         XCTAssertEqual(via.holeSize, 400_000)
         XCTAssertTrue(via.fromRules)
         XCTAssertEqual(via.netID, gnd)
-        XCTAssertEqual(via.netSetID, gnd)
+        XCTAssertNil(via.netSetID, "on its tracks' net, as Horizon's router leaves a via, not pinned on it")
         XCTAssertEqual(via.connectedLayers, [HorizontalBoardLayers.topCopper, HorizontalBoardLayers.bottomCopper])
         XCTAssertEqual(board.viaHoles.map(\.position), [target])
         XCTAssertEqual(board.viaHoles.first?.diameter, 400_000)
