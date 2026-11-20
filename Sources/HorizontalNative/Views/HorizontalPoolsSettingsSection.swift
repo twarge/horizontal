@@ -373,6 +373,7 @@ struct HorizontalManagePoolsSheet: View {
                 HorizontalPoolsSettingsSection()
             }
             .formStyle(.grouped)
+            .checkboxTogglesOnMac()
             .navigationTitle("Pools")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {

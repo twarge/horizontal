@@ -113,7 +113,7 @@ struct HorizontalPlaneSettingsPopover: View {
                     HStack(spacing: 8) {
                         Toggle("", isOn: $draft.settings.keepOrphans)
                             .labelsHidden()
-                            .toggleStyle(.switch)
+                            .checkboxTogglesOnMac()
                         Text("Fill that touches no copper on the net is dropped unless kept")
                             .font(.caption)
                             .foregroundStyle(.secondary)
