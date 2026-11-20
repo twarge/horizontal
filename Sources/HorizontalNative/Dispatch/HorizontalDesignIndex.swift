@@ -874,6 +874,9 @@ final class HorizontalDispatchPoolIndex {
     private var parts: [String: JSONDictionary] = [:]
     private var packages: [String: JSONDictionary] = [:]
     private var padstacks: [String: JSONDictionary] = [:]
+    /// The padstacks packages keep of their own, beside their package.json,
+    /// by the uuid each carries whatever its file is called.
+    private var packagePadstacks: [String: JSONDictionary] = [:]
 
     init(project: HorizontalProject, snapshot: HorizontalDispatchSnapshot? = nil) {
         guard let poolDirectory = project.poolDirectory else {
@@ -892,7 +895,10 @@ final class HorizontalDispatchPoolIndex {
             for url in files(category) {
                 guard let json = read(url), let id = json.string("uuid")?.lowercased() else { continue }
                 if category == "parts" { parts[id] = json }
-                else if category == "packages" { packages[id] = json }
+                else if category == "packages" {
+                    if url.deletingLastPathComponent().lastPathComponent == "padstacks" { packagePadstacks[id] = json }
+                    else { packages[id] = json }
+                }
                 else { padstacks[id] = json }
             }
         }
@@ -1065,7 +1071,10 @@ final class HorizontalDispatchPoolIndex {
         let mappings = part.dictionaryMap("pad_map")
         return package.dictionaryMap("pads").map { id, pad -> JSONDictionary in
             let mapping = mappings.first { ($0.value.string("pad") ?? $0.key).caseInsensitiveCompare(id) == .orderedSame }?.value
-            let type = pad.string("padstack").flatMap { padstacks[$0.lowercased()]?.string("padstack_type") }
+            // As the board loader finds it: the package's own, then the pool's.
+            let type = pad.string("padstack").flatMap {
+                (packagePadstacks[$0.lowercased()] ?? padstacks[$0.lowercased()])?.string("padstack_type")
+            }
             var result: JSONDictionary = ["id": id, "name": pad.string("name") ?? "",
                                            "role": ["hole", "mechanical"].contains(type ?? "") ? "mechanical" : mapping == nil ? "unmapped" : "electrical"]
             if let mapping, let gate = mapping.string("gate"), let pin = mapping.string("pin") {
