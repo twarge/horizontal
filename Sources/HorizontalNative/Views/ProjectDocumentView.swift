@@ -6434,7 +6434,7 @@ private struct SidebarBeforeRouting: Equatable {
     var pane: HorizontalWorkspaceRightSidebar
 }
 
-private struct SelectionSidebarSection: Identifiable {
+struct SelectionSidebarSection: Identifiable {
     var pane: HorizontalPane
     var state: HorizontalSelectionDetailState
 
@@ -6709,7 +6709,9 @@ private struct HorizontalNetSegmentSelectionSidebarView: View {
     }
 }
 
-private struct SelectionSidebarView: View {
+/// The selection sidebar: what each visible pane has selected, or the route
+/// inspector while a track is routed. Internal for its tests.
+struct SelectionSidebarView: View {
     var sections: [SelectionSidebarSection]
     var netSegmentSelection: HorizontalNetSegmentSelectionSidebarState?
     @ObservedObject var routeInspector: HorizontalRouteInspectorModel
