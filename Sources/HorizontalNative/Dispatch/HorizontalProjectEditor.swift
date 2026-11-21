@@ -5622,8 +5622,17 @@ final class HorizontalProjectEditor {
                     let current = try refdes(symbol.component, in: block, path: path)
                     guard !current.contains("?") else { continue }
                     if let number = Int(current.dropFirst(thePrefix.count)), current.hasPrefix(thePrefix), number > 0 {
-                        counters[thePrefix, default: []].append(number)
-                        counters[thePrefix]?.sort()
+                        // A part is met once for each of its gates, and again
+                        // on every later sheet one of them is drawn on. It has
+                        // the one number: counted twice, it would read to the
+                        // gap filler below as a gap after itself. Horizon
+                        // counts it each time, and with fill gaps on gives
+                        // the number after it to every part that follows;
+                        // here the two differ, on purpose.
+                        if counters[thePrefix]?.contains(number) != true {
+                            counters[thePrefix, default: []].append(number)
+                            counters[thePrefix]?.sort()
+                        }
                     } else if !ignoreUnknown {
                         try setRefdes(symbol.component, in: block, path: path, to: "?")
                     }
@@ -5637,7 +5646,10 @@ final class HorizontalProjectEditor {
                         if !used.isEmpty {
                             number = used.last! + 1
                             if fillGaps, used.count >= 2 {
-                                for (value, next) in zip(used, used.dropFirst()) where value > offset && next != value + 1 {
+                                // A gap is a number missing between two in
+                                // use; the same number twice is not one
+                                // (Horizon tests `!=`, which takes it for one).
+                                for (value, next) in zip(used, used.dropFirst()) where value > offset && next > value + 1 {
                                     number = value + 1
                                     break
                                 }

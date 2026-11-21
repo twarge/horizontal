@@ -758,4 +758,66 @@ final class SchematicBlocksTests: XCTestCase {
         XCTAssertEqual(try instanceRefdes(second), "R301")
         XCTAssertEqual(try apply([["op": "annotate"]]).first?["annotated"] as? Int, 0, "again changes nothing")
     }
+
+    /// Top-level parts `refdes` names, each drawn where `symbols` says: a
+    /// part with several gates is listed once for each.
+    private func drawParts(_ refdes: [String: String], symbols: [[(component: String, x: Int)]]) throws {
+        while try file("top_schematic.json").dictionaryMap("sheets").count < symbols.count {
+            try apply([["op": "add_sheet", "name": "More"]])
+        }
+        var top = try file("top_block.json")
+        top["components"] = refdes.mapValues { ["refdes": $0, "value": "", "connections": JSONDictionary()] as JSONDictionary }
+        try put("top_block.json", top)
+        var schematic = try file("top_schematic.json")
+        var sheets = schematic.dictionaryMap("sheets")
+        let order = sheets.sorted { ($0.value.int("index") ?? 0) < ($1.value.int("index") ?? 0) }.map(\.key)
+        for (sheetID, drawn) in zip(order, symbols) {
+            var sheet = try XCTUnwrap(sheets[sheetID])
+            sheet["symbols"] = Dictionary(uniqueKeysWithValues: drawn.enumerated().map { index, symbol in
+                ("\(sheetID)-\(index)", ["symbol": "part-symbol", "component": symbol.component, "gate": "gate-\(index)",
+                                        "placement": ["shift": [symbol.x, 0], "angle": 0, "mirror": false]] as JSONDictionary)
+            }) as JSONDictionary
+            sheets[sheetID] = sheet
+        }
+        schematic["sheets"] = sheets
+        try put("top_schematic.json", schematic)
+        try reload()
+    }
+
+    private func topRefdes() throws -> [String: String] {
+        try file("top_block.json").dictionaryMap("components").compactMapValues { $0.string("refdes") }
+    }
+
+    /// A part with gates on two sheets has one number. Met again on the
+    /// second sheet it is no gap after itself, so the number after it, which
+    /// another part has, is not given out a second time — and a third, and
+    /// to every part of that prefix on every later sheet.
+    func testAnnotateNumbersEachPartOnceWhenAPartHasGatesOnTwoSheets() throws {
+        try drawParts(["a": "U?", "b": "U?", "c": "U?", "d": "U?"], symbols: [
+            [("a", 0), ("b", 10_000_000)],
+            [("a", 0), ("c", 10_000_000), ("d", 20_000_000)],
+        ])
+        try apply([["op": "annotate", "mode": "sequential", "order": "right_down", "keep": false, "fill_gaps": true]])
+        XCTAssertEqual(try topRefdes(), ["a": "U1", "b": "U2", "c": "U3", "d": "U4"])
+        XCTAssertEqual(try apply([["op": "annotate"]]).first?["annotated"] as? Int, 0, "again changes nothing")
+    }
+
+    /// Keeping the numbers there are, a part drawn as two gates still has
+    /// one, and the parts numbered after it get one each.
+    func testAnnotateKeepingNumbersCountsATwoGatePartOnce() throws {
+        try drawParts(["a": "U1", "b": "U?", "c": "U?"], symbols: [
+            [("a", 0), ("a", 5_000_000), ("b", 10_000_000), ("c", 20_000_000)],
+        ])
+        try apply([["op": "annotate", "mode": "sequential", "order": "right_down", "keep": true, "fill_gaps": true]])
+        XCTAssertEqual(try topRefdes(), ["a": "U1", "b": "U2", "c": "U3"])
+    }
+
+    /// A real gap is still filled: that is what the option is for.
+    func testAnnotateFillsAGapBetweenKeptNumbers() throws {
+        try drawParts(["a": "U1", "b": "U3", "c": "U?", "d": "U?"], symbols: [
+            [("a", 0), ("a", 5_000_000), ("b", 10_000_000), ("c", 20_000_000), ("d", 30_000_000)],
+        ])
+        try apply([["op": "annotate", "mode": "sequential", "order": "right_down", "keep": true, "fill_gaps": true]])
+        XCTAssertEqual(try topRefdes(), ["a": "U1", "b": "U3", "c": "U2", "d": "U4"])
+    }
 }
