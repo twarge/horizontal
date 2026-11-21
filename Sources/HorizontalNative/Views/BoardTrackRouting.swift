@@ -764,7 +764,9 @@ enum BoardTrackRouting {
     }
 
     /// Drops `via` at `point` on `board`: a through via, its hole and the
-    /// junction they share, which connectivity unifies by position. The via
+    /// junction it stands on (`HorizontalMarker.junctionID`), which the
+    /// junctions at the point on its net or on none fold into; one on
+    /// another net stays its own, and the via doesn't join it. The via
     /// opens the solder mask where the template says its padstack does
     /// (`HorizontalBoard.viaWithMaskOpenings`). Returns the junction's id.
     ///
@@ -783,8 +785,9 @@ enum BoardTrackRouting {
         on board: inout HorizontalBoard
     ) -> String {
         let junctionID = mergeJunctions(at: point, preferredID: preferredJunctionID, netID: netID, board: &board)
-        let made = throughVia(via, id: UUID().uuidString.lowercased(), at: point, netID: netID, pinsNet: pinsNet,
+        var made = throughVia(via, id: UUID().uuidString.lowercased(), at: point, netID: netID, pinsNet: pinsNet,
                               copperLayerCount: board.copperLayerCount)
+        made.via.junctionID = junctionID
         board.vias.append(made.via)
         board.viaHoles.append(made.hole)
         return junctionID
@@ -835,9 +838,10 @@ enum BoardTrackRouting {
     /// on save. A track or net tie end goes on a junction there its layer can
     /// join (`HorizontalBoard.junctionIDs(at:joining:)`), else on a new one,
     /// which the copies ending there on that layer share; a track end on a
-    /// pad's centre stays on the pad. A via joins every junction at its point,
-    /// as one dropped there does. A line or arc end, or an arc's centre,
-    /// takes any junction at its point, else a new one.
+    /// pad's centre stays on the pad. A via goes on a junction as one dropped
+    /// there does (`dropVia`): the junctions at its point fold into it, but
+    /// one on another net than a net the via holds itself. A line or arc end,
+    /// or an arc's centre, takes any junction at its point, else a new one.
     static func attachJunctions(
         tracks trackIDs: Set<String>,
         netTies netTieIDs: Set<String> = [],
@@ -865,13 +869,20 @@ enum BoardTrackRouting {
         reindex()
 
         // A via first: folding the junctions at its point re-points their ends.
-        for via in board.vias where viaIDs.contains(via.id) {
+        // Each is taken off the board while its junctions fold, as one being
+        // dropped isn't there yet: left on, naming its original's junction,
+        // it would join every net at its point. Only a net the copy holds
+        // itself keeps another's junction apart; the net of a via that holds
+        // none is its original's still.
+        for index in board.vias.indices where viaIDs.contains(board.vias[index].id) {
+            var via = board.vias.remove(at: index)
             if byKey[key(via.position)] == nil {
-                _ = newJunction(at: via.position, netID: via.netID)
+                via.junctionID = newJunction(at: via.position, netID: via.netID)
             } else {
-                mergeJunctions(at: via.position, preferredID: nil, netID: via.netID, board: &board)
+                via.junctionID = mergeJunctions(at: via.position, preferredID: nil, netID: via.netSetID, board: &board)
                 reindex()
             }
+            board.vias.insert(via, at: index)
         }
 
         var layers = board.junctionLayers()
@@ -882,10 +893,15 @@ enum BoardTrackRouting {
             let here = byKey[pointKey] ?? []
             let chosen: String?
             if let layer, viaSpans[pointKey]?.contains(where: { $0.spansCopperLayer(layer) }) != true {
+                // Whatever its net: a copy's net is still its original's, and
+                // it takes the net of what it lands on.
                 chosen = here.first { layers[$0.lowercased()]?.contains(layer) == true }
                     ?? here.first { layers[$0.lowercased()] == nil }
             } else {
-                chosen = here.first
+                // At a via, the junction the via stands on, which another
+                // net's can stand beside.
+                let own = viaSpans[pointKey]?.compactMap { board.junctionID(of: $0) } ?? []
+                chosen = here.first(where: own.contains) ?? here.first
             }
             let id = chosen ?? newJunction(at: point, netID: netID)
             if let layer {
@@ -925,8 +941,11 @@ enum BoardTrackRouting {
     /// one, on that junction's net or `netID`. Any others it can join are
     /// folded into it, their tracks' ends with them; a junction only another
     /// layer's copper is on is left alone, as no via joins the two. With no
-    /// `layer`, as for a via, which joins them all, every junction there is
-    /// folded in.
+    /// `layer`, every junction there is one it can join.
+    ///
+    /// A junction on another net is never folded in: it stays a junction of
+    /// its own at the point, and the tracks on it stay on their net
+    /// (`foldJunctions`).
     @discardableResult
     static func mergeJunctions(
         at point: HorizontalPoint,
@@ -955,33 +974,35 @@ enum BoardTrackRouting {
         for place in places {
             let key = HorizontalBoard.junctionPointKey(place.point)
             let before = board.junctions[place.preferredID]
+            let here = byPoint[key] ?? []
             let kept = foldJunctions(
-                byPoint[key] ?? [],
+                here,
                 at: place.point,
                 preferredID: place.preferredID,
                 netID: board.junctionNetIDs[place.preferredID] ?? place.netID,
                 board: &board
             )
             // The junctions here are now the one kept, which has left the
-            // point it was at.
+            // point it was at, and any on another net it left standing.
             if kept == place.preferredID, let before {
                 let left = HorizontalBoard.junctionPointKey(before)
                 if left != key {
                     byPoint[left]?.removeAll { $0 == kept }
                 }
             }
-            byPoint[key] = [kept]
+            byPoint[key] = standing(here, with: kept, on: board)
         }
     }
 
     /// Takes junctions from where they stand to new points, group after
-    /// group, each group folded into one with what it meets where it lands,
-    /// as moving them and then `mergeJunctions(at:preferredID:netID:board:)`
-    /// there does, with the junctions keyed by point once for all the
-    /// groups. The first of a group, by id, is the one kept, with its own
-    /// net or else the group's. Every junction that goes has left its point
-    /// before any lands, so one that lands where another stood, itself
-    /// about to go, doesn't take that one in.
+    /// group, each group folded into one with what it meets on its net where
+    /// it lands, as moving them and then
+    /// `mergeJunctions(at:preferredID:netID:board:)` there does, with the
+    /// junctions keyed by point once for all the groups. The first of a
+    /// group, by id, is the one kept, with its own net or else the group's.
+    /// Every junction that goes has left its point before any lands, so one
+    /// that lands where another stood, itself about to go, doesn't take that
+    /// one in.
     static func carryJunctions(
         _ groups: [(ids: [String], to: HorizontalPoint, netID: String?)],
         board: inout HorizontalBoard
@@ -1002,19 +1023,41 @@ enum BoardTrackRouting {
                 continue
             }
             let key = HorizontalBoard.junctionPointKey(group.to)
+            let here = ((byPoint[key] ?? []) + group.ids).sorted()
             let kept = foldJunctions(
-                ((byPoint[key] ?? []) + group.ids).sorted(),
+                here,
                 at: group.to,
                 preferredID: preferred,
                 netID: board.junctionNetIDs[preferred] ?? group.netID,
                 board: &board
             )
-            byPoint[key] = [kept]
+            byPoint[key] = standing(here, with: kept, on: board)
         }
+    }
+
+    /// The junctions of `ids` the board still has once they were folded
+    /// into `kept`, sorted: `kept`, and those on another net, which a fold
+    /// leaves standing.
+    private static func standing(_ ids: [String], with kept: String, on board: HorizontalBoard) -> [String] {
+        var standing = ids.filter { $0 != kept && board.junctions[$0] != nil }
+        standing.append(kept)
+        return standing.sorted()
     }
 
     /// Folds the junctions `matchingIDs` at `point` into one, as
     /// `mergeJunctions` says.
+    ///
+    /// Only junctions on one net fold: the net of the junction kept, else
+    /// `netID`, else the first net met among them; a junction on no net folds
+    /// with any. One on another net stays as it is, at the same point. Folded
+    /// in, its tracks would end on the other net's junction: the two nets
+    /// would be one piece of copper, and a move of either would take both.
+    /// Left apart, each keeps its net (`HorizontalCopperConnectivity.JunctionNodes`),
+    /// the clearance check says they touch, and either can be moved away.
+    /// A via is on its own junction and folds as any copper does. Only one
+    /// that names no junction at its point, as a copy of a block's layout
+    /// does, joins every junction there whatever its net, and where one
+    /// stands they all fold.
     @discardableResult
     private static func foldJunctions(
         _ matchingIDs: [String],
@@ -1029,10 +1072,28 @@ enum BoardTrackRouting {
                 ? preferred
                 : board.junctions.keys.first { normalizedID($0) == normalizedID(preferred) }
         }
-        let keepID = existingPreferredID ?? matchingIDs.first ?? preferredID ?? UUID().uuidString.lowercased()
+        // The junctions that fold, in order. The vias are looked through only
+        // once two nets meet, which is rare, and a move folds at many points.
+        var foldNetID = existingPreferredID.flatMap { board.junctionNetIDs[$0] } ?? netID
+        var viaJoinsThem: Bool?
+        var foldingIDs = [String]()
+        for junctionID in matchingIDs {
+            let itsNetID = board.junctionNetIDs[junctionID]
+            if !netsMatch(foldNetID, itsNetID) {
+                let joined = viaJoinsThem
+                    ?? board.vias.contains { key($0.position) == key(point) && board.junctionID(of: $0) == nil }
+                viaJoinsThem = joined
+                guard joined else {
+                    continue
+                }
+            }
+            foldingIDs.append(junctionID)
+            foldNetID = foldNetID ?? itsNetID
+        }
+        let keepID = existingPreferredID ?? foldingIDs.first ?? preferredID ?? UUID().uuidString.lowercased()
         let keepNetID = board.junctionNetIDs[keepID]
             ?? netID
-            ?? matchingIDs.compactMap { board.junctionNetIDs[$0] }.first
+            ?? foldingIDs.compactMap { board.junctionNetIDs[$0] }.first
 
         board.junctions[keepID] = point
         if let keepNetID {
@@ -1042,7 +1103,7 @@ enum BoardTrackRouting {
         }
 
         var folded = Set<String>()
-        for junctionID in matchingIDs where normalizedID(junctionID) != normalizedID(keepID) {
+        for junctionID in foldingIDs where normalizedID(junctionID) != normalizedID(keepID) {
             board.junctions.removeValue(forKey: junctionID)
             board.junctionNetIDs.removeValue(forKey: junctionID)
             folded.insert(junctionID)
@@ -1127,6 +1188,15 @@ enum BoardTrackRouting {
 
     private static func normalizedID(_ id: String) -> String {
         HorizontalCanvasModeSupport.normalizedID(id)
+    }
+
+    /// Whether copper on `lhs` and on `rhs` can be one piece: the same net,
+    /// or either on none.
+    private static func netsMatch(_ lhs: String?, _ rhs: String?) -> Bool {
+        guard let lhs, let rhs else {
+            return true
+        }
+        return normalizedID(lhs) == normalizedID(rhs)
     }
 }
 

@@ -1400,9 +1400,10 @@ enum HorizontalProjectJSONApplicator {
     private static func patchNewBoardTracks(_ json: inout JSONDictionary, board: HorizontalBoard) {
         var map = json["tracks"] as? JSONDictionary ?? [:]
         let junctionLayers = board.junctionLayers()
-        func endpoint(_ point: HorizontalPoint, junctionID: String?, layer: Int?) -> JSONDictionary? {
+        func endpoint(_ point: HorizontalPoint, junctionID: String?, of track: HorizontalSegment) -> JSONDictionary? {
             boardTrackEndpoint(
-                at: point, junctionID: junctionID, layer: layer, board: board, junctionLayers: junctionLayers)
+                at: point, junctionID: junctionID, layer: track.layer, netID: track.netID, board: board,
+                junctionLayers: junctionLayers)
         }
         // Own-board geometry has plain UUID ids; panel-instance copies are
         // prefixed "panelID/…" — never serialize those into the host board.
@@ -1411,8 +1412,8 @@ enum HorizontalProjectJSONApplicator {
             guard matchingKey(track.id, in: map) == nil else {
                 continue
             }
-            guard let fromEndpoint = endpoint(track.from, junctionID: track.fromJunctionID, layer: track.layer),
-                  let toEndpoint = endpoint(track.to, junctionID: track.toJunctionID, layer: track.layer) else {
+            guard let fromEndpoint = endpoint(track.from, junctionID: track.fromJunctionID, of: track),
+                  let toEndpoint = endpoint(track.to, junctionID: track.toJunctionID, of: track) else {
                 continue
             }
 
@@ -1452,11 +1453,12 @@ enum HorizontalProjectJSONApplicator {
         at point: HorizontalPoint,
         junctionID: String?,
         layer: Int?,
+        netID: String?,
         board: HorizontalBoard,
         junctionLayers: [String: Set<Int>]
     ) -> JSONDictionary? {
         if let junctionID = trackEndJunction(
-            at: point, named: junctionID, layer: layer, board: board, junctionLayers: junctionLayers) {
+            at: point, named: junctionID, layer: layer, netID: netID, board: board, junctionLayers: junctionLayers) {
             return boardJunctionEndpoint(junctionID)
         }
         let key = jsonPointKey(point)
@@ -1469,12 +1471,15 @@ enum HorizontalProjectJSONApplicator {
     /// The junction a track end at `point` on `layer` goes on: the one the
     /// model names, when it is there; else one copper on the layer can join,
     /// never one only another layer's copper is on while there is another
-    /// (`HorizontalBoard.junctionIDs(at:joining:)`); else, rather than lose
-    /// the track, any junction there.
+    /// (`HorizontalBoard.junctionIDs(at:joining:)`), and one on the track's
+    /// net (`netID`) or on none sooner than another net's, which can stand
+    /// at the same point (`BoardTrackRouting.mergeJunctions`); else, rather
+    /// than lose the track, any junction there.
     private static func trackEndJunction(
         at point: HorizontalPoint,
         named junctionID: String?,
         layer: Int?,
+        netID: String?,
         board: HorizontalBoard,
         junctionLayers: [String: Set<Int>]
     ) -> String? {
@@ -1484,7 +1489,9 @@ enum HorizontalProjectJSONApplicator {
            jsonPointKey(named.value) == key {
             return named.key
         }
-        return board.junctionIDs(at: point, joining: layer, layers: junctionLayers).first
+        let joinable = board.junctionIDs(at: point, joining: layer, layers: junctionLayers)
+        return joinable.first { netsMatch(board.junctionNetIDs[$0], netID) }
+            ?? joinable.first
             ?? Self.junctionID(at: point, in: board.junctions)
     }
 
@@ -1875,15 +1882,17 @@ enum HorizontalProjectJSONApplicator {
         json["junctions"] = junctions
     }
 
-    /// The junction a via already in the file stands on. Horizon finds a via's
-    /// junction by its uuid alone (`brd->junctions.at`), and a board whose via
-    /// names one it lacks loses the via ("couldn't load Via … map::at"). The
-    /// model knows a via by its position, so when the junction the file names
-    /// went — folded into another at its point by a route or a move, as
-    /// `BoardTrackRouting.mergeJunctions` folds them — the via goes on the
-    /// junction now at its point, the one its tracks end on; with none there,
-    /// the one it names is written back at its point, or, where that one is
-    /// still elsewhere, a new one.
+    /// The junction a via stands on. Horizon finds a via's junction by its
+    /// uuid alone (`brd->junctions.at`), and a board whose via names one it
+    /// lacks loses the via ("couldn't load Via … map::at"). It is the one the
+    /// model has the via on (`HorizontalMarker.junctionID`), while that one
+    /// is at the via's point: another net's junction can stand there too,
+    /// and isn't the via's. A via the model has on none there keeps the one
+    /// the file names; when that one went — folded into another at its point
+    /// by a route or a move, as `BoardTrackRouting.mergeJunctions` folds
+    /// them — it goes on the junction now at its point, the one its tracks
+    /// end on; with none there, the one it names is written back at its
+    /// point, or, where that one is still elsewhere, a new one.
     private static func viaJunction(
         _ via: HorizontalMarker,
         named current: String?,
@@ -1891,6 +1900,9 @@ enum HorizontalProjectJSONApplicator {
         junctions: inout JSONDictionary
     ) -> String {
         let here = jsonPointKey(via.position)
+        if let own = via.junctionID.flatMap({ points.junction(named: $0) }), jsonPointKey(own.value) == here {
+            return matchingKey(own.key, in: junctions) ?? own.key
+        }
         let named = current.flatMap { points.junction(named: $0) }
         if let current, let named, jsonPointKey(named.value) == here {
             return current

@@ -98,6 +98,18 @@ final class PinnedViaFixture {
         try reload()
     }
 
+    /// Pins the via at (`x`, `y`) mm to `net`, whatever net its copper is on:
+    /// the conflict a pin moved to another net in the schematic leaves a
+    /// pinned via in. No op writes one: `place_via` refuses a point where
+    /// another net's junction stands. Written as the canvas saves a board.
+    func repin(viaAt x: Double, _ y: Double, to net: String) throws {
+        var board = try board
+        let point = HorizontalPoint(x: x * 1_000_000, y: y * 1_000_000)
+        let index = try XCTUnwrap(board.vias.firstIndex { $0.position == point }, "no via at (\(x), \(y))")
+        board.vias[index].netSetID = try self.net(net)
+        try commit(board)
+    }
+
     /// The project as it is now, on disk, for the dispatch layer to open.
     func writeToDisk() throws {
         try archive.write(to: url)

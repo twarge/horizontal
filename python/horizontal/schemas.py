@@ -1254,7 +1254,8 @@ class PlaceVia(Input):
     """A via on a net. Its shape comes from the via rule matching the net unless definition, or a size or
     padstack of its own, is given. A via a track of the batch ends on takes its net from its tracks and
     follows them to another net; one standing alone holds the net it is placed on, as a stitching via does.
-    net_pinned says which outright."""
+    net_pinned says which outright. It shares the junction of copper of its net, or of none, already at the
+    point; a point where a junction on another net stands is refused, as the via would short the two."""
     op: Literal["place_via"]
     x_mm: float
     y_mm: float

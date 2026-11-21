@@ -7774,7 +7774,7 @@ final class HorizontalProjectEditor {
 
     /// Folds every junction at `point` into `kept`, as a via there joins the
     /// copper on all of them: what ends on another moves to it, and the
-    /// others go.
+    /// others go. `placeVia` has refused a point with another net's junction.
     private func foldJunctions(at point: [Int], into kept: String) throws {
         try updateBoard { board in
             var junctions = board["junctions"] as? JSONDictionary ?? [:]
@@ -8314,14 +8314,24 @@ final class HorizontalProjectEditor {
         let shape = try viaShape(net: net, params)
         let point = [Self.nanometres(x), Self.nanometres(y)]
         let junctions = try board()["junctions"] as? JSONDictionary ?? [:]
-        let junction: String
-        if let existing = junctions.first(where: { ($0.value as? JSONDictionary)?["position"] as? [Int] == point }) {
-            junction = existing.key
-        } else {
-            junction = UUID().uuidString.lowercased()
+        let here = junctions.filter { ($0.value as? JSONDictionary)?["position"] as? [Int] == point }.map(\.key).sorted()
+        // A via joins the copper on the junctions at its point, so one on
+        // another net there would short the two, and the junction it shared
+        // would take the via onto that net. Refused, as a track between two
+        // nets is; the board editor, where it can be seen, lets it stand on
+        // a junction of its own (`BoardTrackRouting.dropVia`).
+        for id in here {
+            if let other = boardJunctionNet(id, in: junctions), other != net.lowercased() {
+                throw HorizontalDispatchError.invalidParams(
+                    "A junction on \(boardNetName(other)) is at that point (\(id)); a via on \(boardNetName(net)) there would short them. Place it clear of that copper, or on \(boardNetName(other))."
+                )
+            }
         }
+        // The one there already on its net, else one on no net, else a new one.
+        let junction = here.first { boardJunctionNet($0, in: junctions) != nil } ?? here.first ?? UUID().uuidString.lowercased()
         try writeJunction(junction, point: point, net: net)
-        // The via joins the copper on every junction there.
+        // The via joins the copper on every junction there: all on its net
+        // or on none.
         try foldJunctions(at: point, into: junction)
         let id = UUID().uuidString.lowercased()
         let source = shape.string("source") ?? "rules"

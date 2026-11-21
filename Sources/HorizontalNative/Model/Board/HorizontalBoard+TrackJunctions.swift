@@ -7,7 +7,26 @@ import Foundation
 /// track's ends as positions, with the junctions the file named
 /// (`HorizontalSegment.fromJunctionID`), and these say which junction at a
 /// point belongs to copper on which layer.
+///
+/// A via stands on one junction too (`HorizontalMarker.junctionID`), and
+/// joins the copper on that junction alone: another net's junction can stand
+/// at its point, and stays its own. A via that names no junction at its
+/// point, as a copy does, joins every junction there.
 extension HorizontalBoard {
+    /// The junction `via` stands on: the one it names, while that junction is
+    /// at the via's point. Nil for a via that names none there.
+    func junctionID(of via: HorizontalMarker) -> String? {
+        Self.junctionID(of: via, in: junctions)
+    }
+
+    static func junctionID(of via: HorizontalMarker, in junctions: [String: HorizontalPoint]) -> String? {
+        guard let named = via.junctionID, let point = junctions[named],
+              junctionPointKey(point) == junctionPointKey(via.position) else {
+            return nil
+        }
+        return named
+    }
+
     /// The copper layers each junction joins, by lowercased id: the layers of
     /// the tracks and net ties that name it.
     func junctionLayers() -> [String: Set<Int>] {
@@ -62,7 +81,8 @@ extension HorizontalBoard {
             let span = listed.isEmpty
                 ? HorizontalBoardLayers.bottomCopper...HorizontalBoardLayers.topCopper
                 : listed.min()!...listed.max()!
-            for id in byPoint[Self.junctionPointKey(via.position)] ?? [] {
+            // On its own junction; one that names none, on all at its point.
+            for id in junctionID(of: via).map({ [$0] }) ?? byPoint[Self.junctionPointKey(via.position)] ?? [] {
                 viaSpans[id.lowercased()] = widened(viaSpans[id.lowercased()], by: span)
             }
         }
@@ -82,9 +102,12 @@ extension HorizontalBoard {
     }
 
     /// The junctions at `point` copper on `layer` can end on, by id: every one
-    /// there when a via there reaches the layer; else those tracks on the
-    /// layer name, then those nothing names; never one only copper on another
-    /// layer is on. Every junction at the point when `layer` is nil.
+    /// there when a via there reaches the layer, the via's own first; else
+    /// those tracks on the layer name, then those nothing names; never one
+    /// only copper on another layer is on, nor one only a via that doesn't
+    /// reach the layer stands on. Every junction at the point when `layer` is
+    /// nil. Which of them copper may be joined to is for its net to say
+    /// (`BoardTrackRouting.mergeJunctions`).
     func junctionIDs(
         at point: HorizontalPoint,
         joining layer: Int?,
@@ -98,16 +121,16 @@ extension HorizontalBoard {
         guard let layer, !here.isEmpty else {
             return here
         }
-        if let viasByPoint {
-            if viasByPoint[key]?.contains(where: { $0.spansCopperLayer(layer) }) == true {
-                return here
-            }
-        } else if vias.contains(where: { Self.junctionPointKey($0.position) == key && $0.spansCopperLayer(layer) }) {
-            return here
+        let viasHere = viasByPoint.map { $0[key] ?? [] } ?? vias.filter { Self.junctionPointKey($0.position) == key }
+        let reaching = viasHere.filter { $0.spansCopperLayer(layer) }
+        if !reaching.isEmpty {
+            let own = Set(reaching.compactMap { junctionID(of: $0) })
+            return here.filter(own.contains) + here.filter { !own.contains($0) }
         }
         let layers = layers ?? junctionLayers()
         let named = here.filter { layers[$0.lowercased()]?.contains(layer) == true }
-        let unnamed = here.filter { layers[$0.lowercased()] == nil }
+        let onVias = Set(viasHere.compactMap { junctionID(of: $0) })
+        let unnamed = here.filter { layers[$0.lowercased()] == nil && !onVias.contains($0) }
         return named + unnamed
     }
 
@@ -115,7 +138,8 @@ extension HorizontalBoard {
     /// tracks and net ties with an end naming it, or an end naming none at its
     /// point that the layer rule gives it (`junctionIDs(at:joining:)`), the
     /// lines and arcs with an end (or an arc's centre) at its point, and the
-    /// vias standing on it, which are nothing without their junction.
+    /// vias standing on it, which are nothing without their junction: those
+    /// that name it, and those at its point that name none.
     func refsEnding(onJunction id: String, layers: [String: Set<Int>]? = nil) -> [HorizontalSelectableRef] {
         let target = id.lowercased()
         guard let point = junctions.first(where: { $0.key.lowercased() == target })?.value else {
@@ -143,13 +167,14 @@ extension HorizontalBoard {
             .filter { [$0.from, $0.to, $0.center].contains { Self.junctionPointKey($0) == key } }
             .map { HorizontalSelectableRef(id: $0.id, type: .boardArc) }
         refs += vias
-            .filter { Self.junctionPointKey($0.position) == key }
+            .filter { Self.junctionPointKey($0.position) == key && (junctionID(of: $0).map { $0.lowercased() == target } ?? true) }
             .map { HorizontalSelectableRef(id: $0.id, type: .via) }
         return refs
     }
 
-    /// Points the track and net tie ends that name a junction in `folded` at
-    /// `kept` instead, as junctions at one point are folded into one.
+    /// Points the track and net tie ends that name a junction in `folded`,
+    /// and the vias that stand on one, at `kept` instead, as junctions at one
+    /// point are folded into one.
     mutating func repointJunctionEnds(from folded: Set<String>, to kept: String) {
         let folded = Set(folded.map { $0.lowercased() })
         guard !folded.isEmpty else {
@@ -167,6 +192,11 @@ extension HorizontalBoard {
         }
         repoint(&tracks)
         repoint(&netTies)
+        for index in vias.indices {
+            if let id = vias[index].junctionID, folded.contains(id.lowercased()) {
+                vias[index].junctionID = kept
+            }
+        }
     }
 
     static func junctionPointKey(_ point: HorizontalPoint) -> String {
@@ -179,20 +209,21 @@ extension HorizontalBoard {
     /// next edit.
     struct JunctionHolds {
         /// The points (`junctionPointKey`) where something holds a junction
-        /// by its position alone: a via, a line, an arc, a track or net tie
-        /// end that names no junction there.
+        /// by its position alone: a line, an arc, a track or net tie end
+        /// that names no junction there, a via that names none.
         var heldByPosition = Set<String>()
-        /// The junctions a track or net tie end names, by lowercased id.
+        /// The junctions a track or net tie end names, or a via stands on,
+        /// by lowercased id.
         var named = Set<String>()
-        /// The layers of the tracks and net ties that name each junction, by
-        /// lowercased id.
+        /// The layers of the tracks and net ties that name each junction,
+        /// and those the via on it spans, by lowercased id.
         var layers = [String: Set<Int>]()
 
         /// The copper layers a junction takes its net from. A junction
         /// carries no layer, and a point can hold one a layer: where a bend
         /// of one net lies over a bend of another on another layer, each
-        /// junction belongs to its own tracks. So one that only the tracks
-        /// and net ties naming it hold takes the net of their layers. One
+        /// junction belongs to its own tracks. So one that only the tracks,
+        /// net ties and via naming it hold takes the net of their layers. One
         /// that something holds by position joins whatever is at its point,
         /// and takes the net of every layer there, or none where they differ.
         func netLayers(of id: String, at point: HorizontalPoint, copperLayers: [Int]) -> [Int] {
@@ -204,11 +235,15 @@ extension HorizontalBoard {
     }
 
     /// `segments` are the tracks and net ties; `heldPoints` the places of
-    /// what holds a junction without naming it: vias, the ends of lines, and
-    /// the ends and centres of arcs.
+    /// what holds a junction without naming it: the ends of lines, and the
+    /// ends and centres of arcs. A via holds the junction it stands on, on
+    /// the layers it spans (all of `copperLayers` where it lists none), and
+    /// one that names none holds its point.
     static func junctionHolds(
         junctions: [String: HorizontalPoint],
         segments: [HorizontalSegment],
+        vias: [HorizontalMarker],
+        copperLayers: [Int],
         heldPoints: [HorizontalPoint]
     ) -> JunctionHolds {
         var holds = JunctionHolds()
@@ -225,6 +260,15 @@ extension HorizontalBoard {
                     holds.layers[id.lowercased(), default: []].insert(layer)
                 }
             }
+        }
+        for via in vias {
+            guard let id = junctionID(of: via, in: junctions)?.lowercased() else {
+                holds.heldByPosition.insert(junctionPointKey(via.position))
+                continue
+            }
+            holds.named.insert(id)
+            let listed = via.connectedLayers.filter(HorizontalBoardLayers.isCopper)
+            holds.layers[id, default: []].formUnion(listed.isEmpty ? copperLayers : listed)
         }
         for point in heldPoints {
             holds.heldByPosition.insert(junctionPointKey(point))

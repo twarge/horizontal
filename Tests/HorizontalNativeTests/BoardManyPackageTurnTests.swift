@@ -301,6 +301,7 @@ final class BoardManyPackageTurnTests: XCTestCase {
     /// Junctions carried from several pads to one point fold there one group
     /// after another, the last to land kept, as they did package by package;
     /// one that lands where another stood, itself about to go, leaves it be.
+    /// Those of two nets stay two (`BoardJunctionsOnDifferentNetsTests`).
     func testJunctionsCarriedToOnePointFoldInTheOrderTheyLand() {
         var board = ManyPackageBoard.board(packages: 4, columns: 4, padPairs: 1)
         board.tracks = []
@@ -311,7 +312,7 @@ final class BoardManyPackageTurnTests: XCTestCase {
         board.junctionNetIDs = ["at-b": "net-b"]
 
         var folded = board
-        BoardTrackRouting.carryJunctions([(["at-a"], landing, "net-a"), (["at-b"], landing, nil)], board: &folded)
+        BoardTrackRouting.carryJunctions([(["at-a"], landing, nil), (["at-b"], landing, nil)], board: &folded)
         XCTAssertEqual(folded.junctions, ["at-b": landing, "at-c": c])
         XCTAssertEqual(folded.junctionNetIDs, ["at-b": "net-b"])
 

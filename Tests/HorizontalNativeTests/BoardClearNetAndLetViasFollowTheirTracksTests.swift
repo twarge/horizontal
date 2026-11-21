@@ -176,9 +176,10 @@ final class BoardClearNetAndLetViasFollowTheirTracksTests: XCTestCase {
         try fixture.edit(PinnedViaFixture.route(down: (20, 20, "+3V3", true), up: (30, 20, "+3V3", true)))
         try fixture.edit([
             PinnedViaFixture.track(from: "R1", pad: "2", to: 15, 0),
-            PinnedViaFixture.via(15, 0, "+3V3", pinned: true),
+            PinnedViaFixture.via(15, 0, "+5V", pinned: true),
             PinnedViaFixture.via(50, 30, "+3V3", pinned: true),
         ])
+        try fixture.repin(viaAt: 15, 0, to: "+3V3")
         let board = try fixture.board
         let all = pinned(board)
         XCTAssertEqual(all.count, 4)

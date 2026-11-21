@@ -112,8 +112,9 @@ final class OnlyViasPinnedToTheirPadsNetAreUnpinnedTests: XCTestCase {
             PinnedViaFixture.track(from: "R1", pad: "1", to: 20, 20),
             PinnedViaFixture.via(20, 20, "+3V3", pinned: true),
             PinnedViaFixture.track((20, 20), (30, 20), layer: -100),
-            PinnedViaFixture.via(30, 20, "+5V", pinned: true),
+            PinnedViaFixture.via(30, 20, "+3V3", pinned: true),
         ])
+        try fixture.repin(viaAt: 30, 20, to: "+5V")
         let found = try review()
         XCTAssertEqual(try kind(at: 30, 20, in: found), .conflict)
         XCTAssertEqual(try kind(at: 20, 20, in: found), .short)
@@ -142,11 +143,12 @@ final class OnlyViasPinnedToTheirPadsNetAreUnpinnedTests: XCTestCase {
         try fixture.edit(PinnedViaFixture.route(down: (20, 20, "+3V3", true), up: (30, 20, "+3V3", true)))
         try fixture.edit([
             PinnedViaFixture.track(from: "R1", pad: "2", to: 15, 0),
-            PinnedViaFixture.via(15, 0, "+3V3", pinned: true),
+            PinnedViaFixture.via(15, 0, "+5V", pinned: true),
             PinnedViaFixture.via(50, 30, "+3V3", pinned: true),
             PinnedViaFixture.track((60, 30), (65, 30), layer: 0, net: "+5V"),
             PinnedViaFixture.via(65, 30, "+5V", pinned: true),
         ])
+        try fixture.repin(viaAt: 15, 0, to: "+3V3")
     }
 
     /// The dry run lists the vias it would unpin and the conflicts it

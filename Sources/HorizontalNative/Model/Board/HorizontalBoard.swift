@@ -1814,14 +1814,20 @@ struct HorizontalBoard {
         var viaIndicesByPoint = [String: [Int]]()
         var viaHoleIndicesByPoint = [String: [Int]]()
         var allPointKeys = Set<String>()
+        // Track ends on junctions of their own at one point, which the
+        // editor's pass keeps apart where their nets differ.
+        let junctionNodes = HorizontalCopperConnectivity.JunctionNodes(
+            tracks: tracks, junctions: junctions, vias: vias, viaHoles: viaHoles, copperLayers: copperLayers)
 
         for (index, track) in resolvedTracks.enumerated() {
             // A track lives on exactly one layer; data with none is treated as
             // spanning rather than dropped, so it keeps its old behaviour.
             let layers = track.layer.map { [$0] } ?? copperLayers
             for layer in layers {
-                let fromKey = HorizontalCopperConnectivity.node(track.from, layer: layer)
-                let toKey = HorizontalCopperConnectivity.node(track.to, layer: layer)
+                let fromKey = junctionNodes.node(
+                    track.from, layer: layer, junction: track.layer == nil ? nil : track.fromJunctionID)
+                let toKey = junctionNodes.node(
+                    track.to, layer: layer, junction: track.layer == nil ? nil : track.toJunctionID)
                 graph.connect(fromKey, toKey)
                 trackIndicesByPoint[fromKey, default: []].append(index)
                 trackIndicesByPoint[toKey, default: []].append(index)
@@ -1836,19 +1842,18 @@ struct HorizontalBoard {
             // A blind or buried via spans only its own layers; an empty list
             // means a plain through-hole via.
             let listed = via.connectedLayers.filter(HorizontalBoardLayers.isCopper)
-            let spanned = listed.isEmpty ? copperLayers : listed
-            graph.join(spanned, at: via.position)
-            for layer in spanned {
-                let key = HorizontalCopperConnectivity.node(via.position, layer: layer)
+            let nodes = (listed.isEmpty ? copperLayers : listed).map { junctionNodes.node(of: via, layer: $0) }
+            graph.join(nodes)
+            for key in nodes {
                 viaIndicesByPoint[key, default: []].append(index)
                 allPointKeys.insert(key)
             }
         }
 
         for (index, hole) in resolvedViaHoles.enumerated() {
-            graph.join(copperLayers, at: hole.position)
-            for layer in copperLayers {
-                let key = HorizontalCopperConnectivity.node(hole.position, layer: layer)
+            let nodes = copperLayers.map { junctionNodes.node(ofViaHole: hole, layer: $0) }
+            graph.join(nodes)
+            for key in nodes {
                 viaHoleIndicesByPoint[key, default: []].append(index)
                 allPointKeys.insert(key)
             }
@@ -1876,6 +1881,24 @@ struct HorizontalBoard {
         for nodes in padNodesByPath.values {
             graph.join(nodes)
             allPointKeys.formUnion(nodes)
+        }
+
+        if !junctionNodes.isEmpty {
+            // The nets each node brings, as the flood below gathers them.
+            var seeds = anchors
+            func seed(_ indices: [String: [Int]], _ netID: (Int) -> String?) {
+                for (key, here) in indices {
+                    for index in here {
+                        if let netID = netID(index) {
+                            seeds[key, default: []].insert(normalizedID(netID))
+                        }
+                    }
+                }
+            }
+            seed(trackIndicesByPoint) { resolvedTracks[$0].netID }
+            seed(viaIndicesByPoint) { resolvedVias[$0].netID }
+            seed(viaHoleIndicesByPoint) { resolvedViaHoles[$0].netID }
+            graph.join(junctionNodes, seeds: seeds)
         }
 
         let neighbors = graph.neighbors
@@ -1946,11 +1969,11 @@ struct HorizontalBoard {
         // there that went with the first edit or pour: one board opened with
         // twelve where it had none.
         let holds = junctionHolds(junctions: junctions, segments: resolvedTracks + netTies,
-                                  heldPoints: resolvedVias.map(\.position) + heldPoints)
+                                  vias: resolvedVias, copperLayers: copperLayers, heldPoints: heldPoints)
         var junctionNetIDs = [String: String]()
         for (id, point) in junctions {
             let layers = holds.netLayers(of: id, at: point, copperLayers: copperLayers)
-            let netsHere = Set(layers.compactMap { netForKey[HorizontalCopperConnectivity.node(point, layer: $0)] })
+            let netsHere = Set(layers.compactMap { netForKey[junctionNodes.node(point, layer: $0, junction: id)] })
             if netsHere.count == 1, let netID = netsHere.first {
                 junctionNetIDs[id] = netID
             }
@@ -3032,7 +3055,8 @@ struct HorizontalBoard {
                 parameterSet: doubleParameters(parameterSet),
                 topMaskExpansion: maskExpansions.top,
                 bottomMaskExpansion: maskExpansions.bottom,
-                locked: item.bool("locked") ?? false
+                locked: item.bool("locked") ?? false,
+                junctionID: junctionID
             )
         }
     }

@@ -6259,8 +6259,10 @@ struct BoardCanvasView: View {
         }
 
         for via in commit.addedVias {
+            // The junction it stands on, which another net's doesn't fold into.
+            var junctionID: String?
             if !isPadCenter(via.position, in: draft) {
-                _ = mergeBoardJunctions(at: via.position, preferredID: nil, netID: via.netID, board: &draft)
+                junctionID = mergeBoardJunctions(at: via.position, preferredID: nil, netID: via.netID, board: &draft)
             }
             draft.vias.append(
                 HorizontalMarker(
@@ -6273,7 +6275,8 @@ struct BoardCanvasView: View {
                     // Its tracks give it its net, as Horizon's router leaves
                     // the vias it adds (`PNS_HORIZON_IFACE::AddItem`): none
                     // is pinned, so it follows them to another net.
-                    netID: via.netID
+                    netID: via.netID,
+                    junctionID: junctionID
                 )
             )
         }

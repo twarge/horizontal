@@ -15,7 +15,9 @@ import Foundation
 /// The editor runs `recompute` after every board edit. Connections are
 /// position-based (rounded-nm point keys) — matching how the loader and the draw
 /// tool place track endpoints exactly on junctions / pad centers / vias — so the
-/// pass is linear in the number of copper objects.
+/// pass is linear in the number of copper objects. The one thing a position
+/// doesn't join is two track ends on junctions of their own whose copper is on
+/// different nets (`HorizontalCopperConnectivity.JunctionNodes`).
 enum HorizontalBoardConnectivity {
 
     /// A copy of `board` with track / via / via-hole / junction nets re-derived
@@ -37,6 +39,18 @@ enum HorizontalBoardConnectivity {
         /// The pad ("package/pad") that seeds each node, for naming them.
         var padAtKey = [String: String]()
         var copperLayers = [Int]()
+        /// The track ends on nodes of their junction's own.
+        var junctionNodes = HorizontalCopperConnectivity.JunctionNodes()
+
+        /// The node `track` ends on at its `from` on `layer`.
+        func node(from track: HorizontalSegment, layer: Int) -> String {
+            junctionNodes.node(track.from, layer: layer, junction: track.layer == nil ? nil : track.fromJunctionID)
+        }
+
+        /// The node `track` ends on at its `to` on `layer`.
+        func node(to track: HorizontalSegment, layer: Int) -> String {
+            junctionNodes.node(track.to, layer: layer, junction: track.layer == nil ? nil : track.toJunctionID)
+        }
     }
 
     static func recompute(_ board: HorizontalBoard) -> HorizontalBoard {
@@ -84,8 +98,9 @@ enum HorizontalBoardConnectivity {
         let holds = HorizontalBoard.junctionHolds(
             junctions: board.junctions,
             segments: tracks + board.netTies,
-            heldPoints: vias.map(\.position) + board.lines.flatMap { [$0.from, $0.to] }
-                + board.arcs.flatMap { [$0.from, $0.to, $0.center] })
+            vias: vias,
+            copperLayers: copperLayers,
+            heldPoints: board.lines.flatMap { [$0.from, $0.to] } + board.arcs.flatMap { [$0.from, $0.to, $0.center] })
 
         var junctions = board.junctions
         var junctionNetIDs = board.junctionNetIDs
@@ -101,9 +116,11 @@ enum HorizontalBoardConnectivity {
             // its point where something holds it by position, since a junction
             // where two nets cross on different layers belongs to neither;
             // the layers of its tracks where only the tracks that name it do.
+            // Where another net's junction stands at its point on its layer,
+            // it is the net of its own tracks there.
             let layers = holds.netLayers(of: id, at: point, copperLayers: copperLayers)
             let netsHere = Set(layers.compactMap {
-                netForKey[HorizontalCopperConnectivity.node(point, layer: $0)]
+                netForKey[built.junctionNodes.node(point, layer: $0, junction: id)]
             })
             if netsHere.count == 1, let net = netsHere.first {
                 junctionNetIDs[id] = net
@@ -187,13 +204,13 @@ enum HorizontalBoardConnectivity {
                       let layer = track.layer ?? built.copperLayers.first else {
                     return nil
                 }
-                start = HorizontalCopperConnectivity.node(track.from, layer: layer)
+                start = built.node(from: track, layer: layer)
             case .via(let id):
                 guard let via = board.vias.first(where: { normalizedID($0.id) == normalizedID(id) }),
                       let layer = viaSpan(via, copperLayers: built.copperLayers).first else {
                     return nil
                 }
-                start = HorizontalCopperConnectivity.node(via.position, layer: layer)
+                start = built.junctionNodes.node(of: via, layer: layer)
             }
             var visited = Set<String>()
             let component = flood(from: start, graph: built, visited: &visited)
@@ -230,7 +247,7 @@ enum HorizontalBoardConnectivity {
             guard let layer = viaSpan(via, copperLayers: built.copperLayers).first else {
                 continue
             }
-            let start = HorizontalCopperConnectivity.node(via.position, layer: layer)
+            let start = built.junctionNodes.node(of: via, layer: layer)
             guard !visited.contains(start) else {
                 continue
             }
@@ -340,10 +357,14 @@ enum HorizontalBoardConnectivity {
         // via inherits it. Without this, any edit commit stripped the net
         // (and its display name) off every stitching via. A via with none,
         // as a route leaves one, seeds nothing and takes its copper's net.
+        var built = Graph()
+        built.junctionNodes = HorizontalCopperConnectivity.JunctionNodes(
+            tracks: board.tracks, junctions: board.junctions, vias: board.vias, viaHoles: board.viaHoles,
+            copperLayers: copperLayers)
         for via in board.vias {
             guard let netSetID = via.netSetID else { continue }
             for layer in viaSpan(via, copperLayers: copperLayers) {
-                seed(via.position, layer: layer, netSetID)
+                seeds[built.junctionNodes.node(of: via, layer: layer), default: []].insert(netSetID)
             }
         }
 
@@ -360,8 +381,8 @@ enum HorizontalBoardConnectivity {
         for (i, track) in board.tracks.enumerated() {
             // Data with no layer is treated as spanning rather than dropped.
             for layer in track.layer.map({ [$0] }) ?? copperLayers {
-                let f = HorizontalCopperConnectivity.node(track.from, layer: layer)
-                let t = HorizontalCopperConnectivity.node(track.to, layer: layer)
+                let f = built.node(from: track, layer: layer)
+                let t = built.node(to: track, layer: layer)
                 graph.connect(f, t)
                 trackIdx[f, default: []].append(i)
                 trackIdx[t, default: []].append(i)
@@ -372,24 +393,27 @@ enum HorizontalBoardConnectivity {
         // Vias and drill holes are what legitimately tie layers together at one
         // coordinate. A blind or buried via spans only its own layers, so use
         // them when present; an empty span means through-hole.
+        // Each is on its junction's node on a layer (`JunctionNodes`), the
+        // point's own unless another junction stands there.
         for (i, via) in board.vias.enumerated() {
-            let spanned = viaSpan(via, copperLayers: copperLayers)
-            graph.join(spanned, at: via.position)
-            for layer in spanned {
-                let k = HorizontalCopperConnectivity.node(via.position, layer: layer)
+            let nodes = viaSpan(via, copperLayers: copperLayers).map { built.junctionNodes.node(of: via, layer: $0) }
+            graph.join(nodes)
+            for k in nodes {
                 viaIdx[k, default: []].append(i)
                 allKeys.insert(k)
             }
         }
         for (i, hole) in board.viaHoles.enumerated() {
-            graph.join(copperLayers, at: hole.position)
-            for layer in copperLayers {
-                let k = HorizontalCopperConnectivity.node(hole.position, layer: layer)
+            let nodes = copperLayers.map { built.junctionNodes.node(ofViaHole: hole, layer: $0) }
+            graph.join(nodes)
+            for k in nodes {
                 viaHoleIdx[k, default: []].append(i)
                 allKeys.insert(k)
             }
         }
-        var built = Graph()
+        // Last, with all the copper in: junctions of their own at one point
+        // are one piece again unless that joins two nets.
+        graph.join(built.junctionNodes, seeds: seeds)
         built.seeds = seeds
         built.padSeeds = padSeeds
         built.neighbors = graph.neighbors

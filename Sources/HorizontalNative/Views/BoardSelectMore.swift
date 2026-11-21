@@ -15,7 +15,8 @@ import Foundation
 /// Horizon's via has one junction, which every track at it ends on. A point
 /// here can hold a junction per layer, which a via there joins
 /// (`HorizontalBoard+TrackJunctions`), so the junctions at a via are one
-/// stop on the run, as Horizon's one junction is.
+/// stop on the run, as Horizon's one junction is. Not a junction of another
+/// net standing at the via's point, which the via doesn't join.
 enum BoardSelectMore {
     /// Whether Select More has anything to start from: a track, junction or
     /// via, as Horizon makes the action sensitive.
@@ -129,7 +130,7 @@ enum BoardSelectMore {
             // A via's junctions are its stop's whether or not a track ends on
             // them, so a selected via brings the junction it stands on.
             for key in viasByPoint.keys {
-                stopJunctions[.via(key), default: []].formUnion(byPoint[key] ?? [])
+                stopJunctions[.via(key), default: []].formUnion((byPoint[key] ?? []).filter { viaJoins($0, at: key, layer: nil) })
             }
             for (index, track) in board.tracks.enumerated() {
                 let id = HorizontalCanvasModeSupport.normalizedID(track.id)
@@ -155,11 +156,28 @@ enum BoardSelectMore {
         func stop(forJunction junction: String, layer: Int?) -> Stop {
             if let point = board.junctions[junction] {
                 let key = HorizontalBoard.junctionPointKey(point)
-                if let vias = viasByPoint[key], vias.contains(where: { layer.map($0.spansCopperLayer) ?? true }) {
+                if viaJoins(junction, at: key, layer: layer) {
                     return .via(key)
                 }
             }
             return .junction(HorizontalCanvasModeSupport.normalizedID(junction))
+        }
+
+        /// Whether a via at `key` that reaches `layer` (any via there, for
+        /// nil) joins `junction`: the one it stands on, any when it names
+        /// none, and one on its net or on no net, as connectivity joins them
+        /// (`HorizontalCopperConnectivity.JunctionNodes`).
+        private func viaJoins(_ junction: String, at key: String, layer: Int?) -> Bool {
+            (viasByPoint[key] ?? []).contains { via in
+                guard layer.map(via.spansCopperLayer) ?? true else {
+                    return false
+                }
+                guard let own = board.junctionID(of: via), own != junction,
+                      let viaNet = via.netID, let junctionNet = board.junctionNetIDs[junction] else {
+                    return true
+                }
+                return HorizontalCanvasModeSupport.normalizedID(viaNet) == HorizontalCanvasModeSupport.normalizedID(junctionNet)
+            }
         }
 
         /// The junction a track end is on, as the writer gives it one: the

@@ -850,6 +850,43 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertEqual(ends, [kept, kept], "both tracks end on the via's junction")
     }
 
+    /// A via is not placed on another net's junction: the two nets would be
+    /// one piece of copper, and the via, sharing the junction, would take the
+    /// other's net whatever net it was placed on. Before, it shared the
+    /// junction and its reply still named its own net. One of the junction's
+    /// own net shares it.
+    func testAViaOnAnotherNetsJunctionIsRefused() throws {
+        try placedDivider()
+        let routed = try apply([
+            ["op": "place_track", "from": ["component": "R1", "pad": "1"], "to": ["x_mm": 20, "y_mm": 20],
+             "layer": 0, "width_mm": 0.25]
+        ])
+        let junction = try XCTUnwrap(((routed["changes"] as? [[String: Any]])?.first?["junctions_created"] as? [String])?.first)
+
+        let refused = try call("apply", ["ops": [["op": "place_via", "x_mm": 20, "y_mm": 20, "net": "GND"]]])
+        let error = try XCTUnwrap(refused["error"] as? [String: Any], "a GND via on the end of a VCC track")
+        let message = try XCTUnwrap(error["message"] as? String)
+        XCTAssertTrue(message.contains("VCC") && message.contains("GND") && message.contains("short"), message)
+        XCTAssertEqual((try result("list_vias") as? [String: Any])?["total"] as? Int, 0)
+
+        // The same where the junction is one an op of the same batch made,
+        // and the batch leaves nothing behind.
+        let together = try call("apply", ["ops": [
+            ["op": "place_track", "from": ["component": "R1", "pad": "2"], "to": ["x_mm": 20, "y_mm": 5],
+             "layer": 0, "width_mm": 0.25],
+            ["op": "place_via", "x_mm": 20, "y_mm": 5, "net": "VCC"]
+        ]])
+        XCTAssertTrue(((together["error"] as? [String: Any])?["message"] as? String)?.contains("short") == true, "\(together)")
+        let tracks = try XCTUnwrap(try result("list_tracks") as? [String: Any])
+        XCTAssertEqual(tracks["total"] as? Int, 1)
+        XCTAssertTrue((tracks["tracks"] as? [[String: Any]])?.allSatisfy { $0["net_name"] as? String == "VCC" } == true)
+
+        let placed = try apply([["op": "place_via", "x_mm": 20, "y_mm": 20, "net": "VCC"]])
+        XCTAssertEqual((placed["changes"] as? [[String: Any]])?.first?["junction"] as? String, junction,
+                       "a via of the junction's own net shares it")
+        XCTAssertEqual((try result("list_vias") as? [String: Any])?["total"] as? Int, 1)
+    }
+
     /// A via that takes its shape from the rules but whose parameters leave
     /// out its hole, as three of Board C's did, is drawn as Horizon draws it:
     /// with its padstack's default hole, so it has a drill on the canvas and in

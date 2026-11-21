@@ -571,6 +571,12 @@ struct HorizontalMarker: Identifiable, Hashable {
     var span: HorizontalViaSpan? = nil
     /// Horizon's `locked` on a via.
     var locked: Bool = false
+    /// The junction a via stands on, as Horizon's via names one: the file's,
+    /// or the one it was dropped on. It counts only while that junction is
+    /// at the via's point (`HorizontalBoard.junctionID(of:)`); a via that
+    /// names none there, as a copy does until it is put on one, joins
+    /// whatever is at its point.
+    var junctionID: String? = nil
 
     var boundsPoints: [HorizontalPoint] {
         let radius = size / 2
