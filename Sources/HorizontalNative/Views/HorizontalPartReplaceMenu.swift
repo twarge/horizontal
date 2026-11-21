@@ -93,12 +93,114 @@ enum HorizontalPartReplaceMenu {
         return Content(title: title, entries: entries)
     }
 
+    // MARK: - Change Value
+
+    static let changeValueTitle = "Change Value"
+    static let sameFootprintTitle = "Change Value, Same Footprint"
+    /// The most values listed flat; more are put under their decades.
+    static let valueGroupLimit = 30
+
+    /// Change Value for the component right-clicked: the parts for its
+    /// entity of every other value, and the same list kept to the footprint
+    /// it has now, which the menu shows while Option is held. As Replace,
+    /// several selected components are changed together where they share an
+    /// entity. Nil where there is neither list.
+    static func valueEntry(
+        catalog: HorizontalPartAlternatesCatalog,
+        componentID: String,
+        selection: Set<String>,
+        replacement: (Set<String>) -> HorizontalPartReplacement?
+    ) -> HorizontalTargetItemMenuEntry? {
+        var candidates = [Set<String>]()
+        if selection.count > 1, selection.contains(componentID) {
+            candidates.append(selection)
+        }
+        candidates.append([componentID])
+        for componentIDs in candidates {
+            guard let replacement = replacement(componentIDs),
+                  let anyFootprint = catalog.values(for: replacement, samePackage: false) else {
+                continue
+            }
+            return valueEntry(anyFootprint: anyFootprint, sameFootprint: catalog.values(for: replacement, samePackage: true))
+        }
+        return nil
+    }
+
+    static func valueEntry(
+        anyFootprint: HorizontalPartValuesOffer,
+        sameFootprint: HorizontalPartValuesOffer?
+    ) -> HorizontalTargetItemMenuEntry {
+        let usual = valueContent(for: anyFootprint)
+        let usualEntry = HorizontalTargetItemMenuEntry.submenu(title: usual.title, usual.entries)
+        guard let sameFootprint else {
+            return usualEntry
+        }
+        let kept = valueContent(for: sameFootprint)
+        return .optionAlternate(usualEntry, .submenu(title: kept.title, kept.entries))
+    }
+
+    /// One submenu's worth: each value, with its part where one part has it
+    /// and its parts under it where several do; a long list under decades
+    /// ("1 kΩ – 9.76 kΩ").
+    static func valueContent(for offer: HorizontalPartValuesOffer, groupLimit: Int = valueGroupLimit) -> Content {
+        let replacement = offer.replacement
+        var title = offer.samePackage ? sameFootprintTitle : changeValueTitle
+        if replacement.targets.count > 1 {
+            title += " of \(replacement.refdesList)"
+        }
+        guard !offer.values.isEmpty else {
+            let wherefrom = offer.samePackage ? "in the same footprint" : "for the same entity"
+            return Content(title: title, entries: [
+                .unavailable(title: "No Other Values", reason: "No pool this project draws on has a part of another value \(wherefrom)."),
+            ])
+        }
+        let componentIDs = replacement.targets.map(\.componentID)
+        func choice(_ part: HorizontalPartAlternatesCatalog.Part, title: String) -> HorizontalTargetItemMenuEntry {
+            .choice(
+                title: title,
+                badge: part.isInProjectPool ? inProjectBadge : nil,
+                help: help(for: part),
+                isOn: false,
+                .replacePart(part: part.uuid, components: componentIDs)
+            )
+        }
+        func entry(_ value: HorizontalPartValuesOffer.Value) -> HorizontalTargetItemMenuEntry {
+            if value.parts.count == 1, let part = value.parts.first {
+                return choice(part, title: value.text + " · " + Self.title(of: part, namesPackage: !offer.samePackage))
+            }
+            return .submenu(title: value.text, value.parts.map {
+                choice($0, title: Self.title(of: $0, namesPackage: !offer.samePackage))
+            })
+        }
+        guard offer.values.count > groupLimit else {
+            return Content(title: title, entries: offer.values.map(entry))
+        }
+        // By decade, in the order the values are in; those that are no
+        // number, which come last, together.
+        var groups = [(decade: Int?, values: [HorizontalPartValuesOffer.Value])]()
+        for value in offer.values {
+            let decade = value.number.flatMap { $0 > 0 ? Int(floor(log10($0) + 1e-9)) : Int.min }
+            if let last = groups.last, last.decade == decade {
+                groups[groups.count - 1].values.append(value)
+            } else {
+                groups.append((decade, [value]))
+            }
+        }
+        return Content(title: title, entries: groups.map { group in
+            let first = group.values.first?.text ?? "", last = group.values.last?.text ?? ""
+            let name = group.decade == nil ? "Other" : (first == last ? first : "\(first) – \(last)")
+            return .submenu(title: name, group.values.map(entry))
+        })
+    }
+
     /// The package first, which is what tells one alternate from the next:
     /// "0402 · RC0402FR-0710KL · Yageo". A package named for its one part,
     /// as a connector's often is, is not said twice.
-    static func title(of part: HorizontalPartAlternatesCatalog.Part) -> String {
+    /// Without the package (`namesPackage` false) where every part listed
+    /// has the same one.
+    static func title(of part: HorizontalPartAlternatesCatalog.Part, namesPackage: Bool = true) -> String {
         var words = [String]()
-        for word in [part.packageName, part.item.name, part.item.manufacturer] {
+        for word in [namesPackage ? part.packageName : "", part.item.name, part.item.manufacturer] {
             let word = word.trimmingCharacters(in: .whitespaces)
             if !word.isEmpty, !words.contains(where: { $0.caseInsensitiveCompare(word) == .orderedSame }) {
                 words.append(word)
@@ -133,6 +235,9 @@ struct HorizontalPartReplaceActions {
     /// The submenu for the component right-clicked, with the components
     /// selected along with it (empty when it isn't selected), each by uuid.
     var content: (_ componentID: String, _ selection: Set<String>) -> HorizontalPartReplaceMenu.Content?
+    /// Change Value for the same, nil while the pools are being read or
+    /// where there is nothing to list.
+    var valueEntry: (_ componentID: String, _ selection: Set<String>) -> HorizontalTargetItemMenuEntry?
     /// Gives the components the part, as one undoable edit.
     var replace: (_ partID: String, _ componentIDs: [String]) -> Void
 }
@@ -232,6 +337,12 @@ struct HorizontalPartReplaceMenuSource: ViewModifier {
                 }
                 return HorizontalPartReplaceMenu.content(
                     catalog: catalog, componentID: componentID, selection: selection, replacement: replacement)
+            },
+            valueEntry: { componentID, selection in
+                store.catalog.flatMap {
+                    HorizontalPartReplaceMenu.valueEntry(
+                        catalog: $0, componentID: componentID, selection: selection, replacement: replacement)
+                }
             },
             replace: { partID, componentIDs in
                 guard let part = store.catalog?.part(partID), let replacement = replacement(Set(componentIDs)),

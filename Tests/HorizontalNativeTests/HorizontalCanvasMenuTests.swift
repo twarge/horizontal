@@ -27,6 +27,7 @@ final class HorizontalCanvasMenuTests: XCTestCase {
                  .choice(let title, _, _, _, _): title
             case .unavailable(let title, let reason): "\(title) (\(reason))"
             case .submenu(let title, let children): "\(title) [\(titles(children).joined(separator: ", "))]"
+            case .optionAlternate(let usual, let withOption): titles([usual, withOption]).joined(separator: " | ")
             }
         }
     }

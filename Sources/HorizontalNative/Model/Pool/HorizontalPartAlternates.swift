@@ -47,8 +47,8 @@ struct HorizontalPartAlternatesCatalog: Sendable {
         var uuid: String { item.uuid }
     }
 
-    private var parts = [String: Part]()
-    private var partIDsByEntity = [String: [String]]()
+    fileprivate var parts = [String: Part]()
+    fileprivate var partIDsByEntity = [String: [String]]()
 
     /// `items` as a scan of the pools gives them, the project pool's first
     /// and inheritance resolved (`HorizontalPoolLibrary.resolvingInheritance`).
@@ -82,7 +82,7 @@ struct HorizontalPartAlternatesCatalog: Sendable {
 
     /// What a component is, for finding its like: its part's value, or the
     /// value it stores itself while it has no part (or one no pool has).
-    private func value(of target: HorizontalPartReplacement.Target) -> (value: HorizontalPartValue, text: String) {
+    fileprivate func value(of target: HorizontalPartReplacement.Target) -> (value: HorizontalPartValue, text: String) {
         if let part = target.partID.flatMap({ self.part($0) }) {
             return (part.value, part.item.value)
         }
@@ -136,5 +136,88 @@ struct HorizontalPartAlternatesOffer: Equatable {
     /// component already has.
     var others: [HorizontalPartAlternatesCatalog.Part] {
         parts.filter { !isCurrent($0) }
+    }
+}
+
+/// What Change Value offers some components: the parts for their entity of
+/// every other value, so a 10 kΩ resistor can become a 4.7 kΩ one. Value by
+/// value, each with the parts that have it.
+struct HorizontalPartValuesOffer: Equatable {
+    struct Value: Equatable {
+        /// The value as the first of its parts writes it.
+        var text: String
+        /// The number it gives, nil for one that is no number ("LM358").
+        var number: Double?
+        /// In the components' own package first, then by package, the
+        /// project pool's before another pool's, then by name.
+        var parts: [HorizontalPartAlternatesCatalog.Part]
+    }
+
+    var replacement: HorizontalPartReplacement
+    /// Only parts in the package the components have now.
+    var samePackage: Bool
+    /// Numbers first, rising, then the rest by their text.
+    var values: [Value]
+}
+
+extension HorizontalPartAlternatesCatalog {
+    /// The package every one of the components' parts has, nil when one has
+    /// no part a pool holds, or they are in more than one.
+    func package(of replacement: HorizontalPartReplacement) -> String? {
+        let packages = Set(replacement.targets.map { $0.partID.flatMap { part($0) }?.item.packageID ?? "" })
+        guard packages.count == 1, let package = packages.first, !package.isEmpty else {
+            return nil
+        }
+        return package
+    }
+
+    /// The parts for the entity the components share, of every value but
+    /// the one they all have already, grouped by value. With `samePackage`,
+    /// only those in the package the components have now. Parts with no
+    /// value, and base parts, are left out. Nil when the components are on
+    /// different entities or, for `samePackage`, share no package.
+    func values(for replacement: HorizontalPartReplacement, samePackage: Bool) -> HorizontalPartValuesOffer? {
+        guard let entityID = replacement.entityID else {
+            return nil
+        }
+        let package = package(of: replacement)
+        if samePackage, package == nil {
+            return nil
+        }
+        let current = replacement.targets.map { value(of: $0).value }
+        let fitting = (partIDsByEntity[entityID] ?? [])
+            .compactMap { parts[$0] }
+            .filter { part in
+                !part.item.isBasePart && !part.value.text.isEmpty
+                    && (!samePackage || part.item.packageID == package)
+                    && !current.allSatisfy { $0.matches(part.value) }
+            }
+            .sorted { lhs, rhs in
+                switch (lhs.value.number, rhs.value.number) {
+                case let (l?, r?) where l != r: return l < r
+                case (.some, nil): return true
+                case (nil, .some): return false
+                case (nil, nil) where lhs.value.text != rhs.value.text: return lhs.value.text < rhs.value.text
+                default: break
+                }
+                let lhsOwn = lhs.item.packageID == package, rhsOwn = rhs.item.packageID == package
+                if lhsOwn != rhsOwn { return lhsOwn }
+                let byPackage = lhs.packageName.localizedStandardCompare(rhs.packageName)
+                if byPackage != .orderedSame { return byPackage == .orderedAscending }
+                if lhs.isInProjectPool != rhs.isInProjectPool { return lhs.isInProjectPool }
+                let name = lhs.item.name.localizedStandardCompare(rhs.item.name)
+                return name == .orderedSame ? lhs.uuid < rhs.uuid : name == .orderedAscending
+            }
+        var values = [HorizontalPartValuesOffer.Value]()
+        for part in fitting {
+            if let last = values.last, let first = last.parts.first, first.value.matches(part.value) {
+                values[values.count - 1].parts.append(part)
+            } else {
+                values.append(.init(
+                    text: part.item.value.trimmingCharacters(in: .whitespacesAndNewlines),
+                    number: part.value.number, parts: [part]))
+            }
+        }
+        return HorizontalPartValuesOffer(replacement: replacement, samePackage: samePackage, values: values)
     }
 }

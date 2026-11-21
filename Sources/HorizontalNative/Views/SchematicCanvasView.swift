@@ -9023,6 +9023,7 @@ struct SchematicCanvasView: View {
             entries.append(contentsOf: info)
         }
         if let alternates = alternatePartsEntry(for: ref) { entries.append(alternates) }
+        if let values = changeValueEntry(for: ref) { entries.append(values) }
         if onRevealPoolSymbol != nil, symbolPoolID(for: ref) != nil {
             entries.append(.separator)
             entries.append(.command(title: "Show in Pool Manager", .showInPoolManager))
@@ -9053,6 +9054,7 @@ struct SchematicCanvasView: View {
             entries.append(contentsOf: info)
         }
         if let alternates = alternatePartsEntry(for: ref) { entries.append(alternates) }
+        if let values = changeValueEntry(for: ref) { entries.append(values) }
         return entries.count > 1 ? entries : []
         #endif
     }
@@ -9104,6 +9106,26 @@ struct SchematicCanvasView: View {
             content = partReplaceActions.content(normalizedID(componentID), selection)
         }
         return HorizontalPartReplaceMenu.entry(content, browses: poolRevealAction != nil)
+    }
+
+    /// Change Value, for a symbol of a component in a project window that
+    /// can be edited: the parts for its entity of every other value
+    /// (`HorizontalPartReplaceMenu.valueEntry`), and with Option held those
+    /// in the footprint it has now. A symbol right-clicked among a selection
+    /// speaks for the selection's components, as Replace has it.
+    private func changeValueEntry(for ref: HorizontalSelectableRef) -> HorizontalTargetItemMenuEntry? {
+        guard !isReadOnly, !editorProfile.isPoolMode, ref.type == .schematicSymbol, let partReplaceActions,
+              let symbol = sheet.symbols.first(where: { normalizedID($0.id) == normalizedID(ref.id) }),
+              let componentID = symbol.componentID else {
+            return nil
+        }
+        var selection = Set<String>()
+        if selectedObjects.contains(ref) {
+            let selected = Set(selectedObjects.filter { $0.type == .schematicSymbol }.map { normalizedID($0.id) })
+            selection = Set(sheet.symbols.filter { selected.contains(normalizedID($0.id)) }
+                .compactMap { $0.componentID.map(normalizedID) })
+        }
+        return partReplaceActions.valueEntry(normalizedID(componentID), selection)
     }
 
     /// Horizon's Push into block and Edit block symbol, for a block symbol.

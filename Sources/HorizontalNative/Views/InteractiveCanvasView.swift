@@ -355,6 +355,11 @@ enum HorizontalTargetItemMenuEntry {
     /// An action the candidate can't take, shown disabled with why: Set Net…
     /// on a track that reaches no via.
     case unavailable(title: String, reason: String)
+    /// Two entries in one place: the first as a rule, the second while the
+    /// Option key is held, as a Mac menu's alternate items go (Change Value,
+    /// and Change Value in the same footprint). Where there is no Option key
+    /// to hold, both are listed.
+    indirect case optionAlternate(HorizontalTargetItemMenuEntry, HorizontalTargetItemMenuEntry)
     case separator
 }
 
@@ -1850,11 +1855,12 @@ struct InteractiveCanvasView: View {
             // without the extra "ItemName ▸" nesting. Every top-level item maps to
             // the object so hovering keeps it highlighted.
             for entry in entries {
-                let item = makeTargetMenuEntryItem(entry, ref: ref, target: target)
-                if !item.isSeparatorItem {
-                    refForItem[ObjectIdentifier(item)] = ref
+                for item in makeTargetMenuEntryItems(entry, ref: ref, target: target) {
+                    if !item.isSeparatorItem {
+                        refForItem[ObjectIdentifier(item)] = ref
+                    }
+                    menu.addItem(item)
                 }
-                menu.addItem(item)
             }
         } else {
             appendTargetMenuItems(targets, to: menu, refForItem: &refForItem)
@@ -1882,9 +1888,11 @@ struct InteractiveCanvasView: View {
         let run = onCommand
         let menu = NSMenu()
         for entry in entries {
-            menu.addItem(makeMenuEntryItem(entry, select: nil) { command in
+            for item in makeMenuEntryItems(entry, select: nil, run: { command in
                 DispatchQueue.main.async { run(command) }
-            })
+            }) {
+                menu.addItem(item)
+            }
         }
         menuPresenter.present(menu, NSEvent.mouseLocation)
     }
@@ -1945,7 +1953,9 @@ struct InteractiveCanvasView: View {
                 parent = NSMenuItem(title: target.menuTitle, action: nil, keyEquivalent: "")
                 let submenu = NSMenu()
                 for entry in entries {
-                    submenu.addItem(makeTargetMenuEntryItem(entry, ref: ref, target: target))
+                    for item in makeTargetMenuEntryItems(entry, ref: ref, target: target) {
+                        submenu.addItem(item)
+                    }
                 }
                 parent.submenu = submenu
             }
@@ -1968,14 +1978,35 @@ struct InteractiveCanvasView: View {
 
     /// Recursively builds a submenu entry. `target` is forwarded so a `.select`
     /// entry runs the same default action as a legacy click-to-select item.
-    private func makeTargetMenuEntryItem(
+    private func makeTargetMenuEntryItems(
         _ entry: HorizontalTargetItemMenuEntry,
         ref: HorizontalSelectableRef,
         target: HorizontalSelectionTargetItem
-    ) -> NSMenuItem {
-        makeMenuEntryItem(entry, select: { performTargetMenuAction(target) }) { command in
+    ) -> [NSMenuItem] {
+        makeMenuEntryItems(entry, select: { performTargetMenuAction(target) }, run: { command in
             onTargetMenuCommand(ref, command)
+        })
+    }
+
+    /// The menu items for an entry: one, or for `.optionAlternate` two, the
+    /// second an alternate of the first, which the menu shows in its place
+    /// while Option is held. AppKit pairs an item with the alternate after
+    /// it when they have one key equivalent (here none) and modifiers that
+    /// differ.
+    private func makeMenuEntryItems(
+        _ entry: HorizontalTargetItemMenuEntry,
+        select: (() -> Void)?,
+        run: @escaping (HorizontalCanvasCommand) -> Void
+    ) -> [NSMenuItem] {
+        guard case .optionAlternate(let usual, let withOption) = entry else {
+            return [makeMenuEntryItem(entry, select: select, run: run)]
         }
+        let item = makeMenuEntryItem(usual, select: select, run: run)
+        item.keyEquivalentModifierMask = []
+        let alternate = makeMenuEntryItem(withOption, select: select, run: run)
+        alternate.keyEquivalentModifierMask = [.option]
+        alternate.isAlternate = true
+        return [item, alternate]
     }
 
     /// One menu item for an entry. `select` is what a `.select` entry does,
@@ -1989,6 +2020,9 @@ struct InteractiveCanvasView: View {
         switch entry {
         case .separator:
             return .separator()
+        case .optionAlternate(let usual, _):
+            // The pair is `makeMenuEntryItems`'s to make.
+            return makeMenuEntryItem(usual, select: select, run: run)
         case .todo(let title):
             // No target/action → AppKit auto-disables (greyed). Discoverable but
             // clearly not yet wired up.
@@ -2064,7 +2098,9 @@ struct InteractiveCanvasView: View {
             let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
             let submenu = NSMenu()
             for child in entries {
-                submenu.addItem(makeMenuEntryItem(child, select: select, run: run))
+                for childItem in makeMenuEntryItems(child, select: select, run: run) {
+                    submenu.addItem(childItem)
+                }
             }
             item.submenu = submenu
             return item
@@ -3799,6 +3835,9 @@ struct HorizontalMultitouchView: UIViewRepresentable {
                     current.append(UIAction(title: title) { [weak self] _ in self?.onContextMenuTargetAction(item) })
                 case .submenu(let title, let children):
                     current.append(UIMenu(title: title, children: menuElements(for: children, ref: ref, target: target)))
+                case .optionAlternate(let usual, let withOption):
+                    // No Option key to hold: both, one after the other.
+                    current.append(contentsOf: menuElements(for: [usual, withOption], ref: ref, target: target))
                 }
             }
             if !current.isEmpty {
