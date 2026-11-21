@@ -80,6 +80,8 @@ final class HorizontalBoardClearanceCheckTests: XCTestCase {
         vias: [HorizontalMarker] = [],
         holes: [HorizontalHole] = [],
         planes: [HorizontalPlane] = [],
+        lines: [HorizontalSegment] = [],
+        texts: [HorizontalText] = [],
         junctionNetIDs: [String: String] = [:],
         rules: JSONDictionary? = nil
     ) -> HorizontalBoard {
@@ -93,12 +95,12 @@ final class HorizontalBoardClearanceCheckTests: XCTestCase {
             ],
             userLayers: [], junctions: [:], junctionNetIDs: junctionNetIDs,
             netDetails: nets.reduce(into: [:]) { $0[$1.key] = HorizontalNetDetails(id: $1.key, name: $1.value) },
-            tracks: tracks, netTies: netTies, lines: [], arcs: [], connectionLines: [], airwires: [],
+            tracks: tracks, netTies: netTies, lines: lines, arcs: [], connectionLines: [], airwires: [],
             polygons: [outline], planes: planes, keepouts: [], dimensions: [], decals: [], holes: holes,
             vias: vias, viaHoles: [], packages: [HorizontalPlacement(id: "pkg", position: p(10, 10), angle: 0, mirrored: false,
                                                                      label: "U1", componentID: "comp-u1")],
             packagePads: pads, packageHoles: [],
-            packagePolygons: [], packageLines: [], packageArcs: [], packageTexts: [], texts: [],
+            packagePolygons: [], packageLines: [], packageArcs: [], packageTexts: [], texts: texts,
             boardPanels: [], physicalBounds: .empty, bounds: .empty
         )
         board.takeRules(rules ?? self.rules)
@@ -170,8 +172,6 @@ final class HorizontalBoardClearanceCheckTests: XCTestCase {
         XCTAssertFalse(edgeFinding?.outsideBoard ?? true)
     }
 
-    /// The same copper a little further apart: nothing, and copper at exactly
-    /// the clearance passes, as Horizon's overlap of offset polygons does.
     /// A finding says how far it runs: a short track 0.05 mm from a long one
     /// gives the long one's edge beside it, as far each way as the short
     /// one's round ends are within the clearance, and the short one's edge
@@ -211,6 +211,214 @@ final class HorizontalBoardClearanceCheckTests: XCTestCase {
                        finding.violation.reduce(0) { $0 + $1.count - 1 })
     }
 
+    // MARK: How far a silkscreen finding runs
+
+    /// The rules above with silkscreen kept 0.15 mm from bare copper, pads
+    /// only, on both sides.
+    private var silkscreenRules: JSONDictionary {
+        var rules = self.rules
+        rules["clearance_silkscreen_exposed_copper"] = ["enabled": true, "pads_only": true,
+                                                        "clearance_top": 150_000, "clearance_bottom": 150_000] as JSONDictionary
+        return rules
+    }
+
+    /// A square pad of `size` mm and the opening 0.05 mm wider each way that
+    /// bares it in its side's mask.
+    private func barePad(_ name: String, at center: HorizontalPoint, size: Double = 1, net: String?,
+                         bottom: Bool = false) -> [HorizontalPolygon] {
+        [pad("pkg/pad/\(name)/shape/s1", at: center, size: size, net: net, layer: bottom ? self.bottom : top),
+         pad("pkg/pad/\(name)/shape/mask", at: center, size: size + 0.1, net: nil,
+             layer: bottom ? HorizontalBoardLayers.bottomMask : HorizontalBoardLayers.topMask)]
+    }
+
+    /// How far `point` is from the edge of a square pad of `size` mm on
+    /// `center`, and whether it is inside.
+    private func padEdge(_ center: HorizontalPoint, size: Double = 1, _ point: HorizontalPoint) -> (distance: Double, inside: Bool) {
+        let half = mm(size) / 2
+        let corners = [(-1.0, -1.0), (1, -1), (1, 1), (-1, 1)].map { HorizontalPoint(x: center.x + $0.0 * half, y: center.y + $0.1 * half) }
+        let distance = corners.indices.map {
+            HorizontalRouteClearanceProbe.segmentDistance(point, point, corners[$0], corners[($0 + 1) % 4])
+        }.min() ?? .infinity
+        return (distance, abs(point.x - center.x) < half && abs(point.y - center.y) < half)
+    }
+
+    /// How far `point` is outside the ink of strokes `width` mm wide; less
+    /// than nothing inside it.
+    private func outsideInk(_ strokes: [(HorizontalPoint, HorizontalPoint)], width: Double, _ point: HorizontalPoint) -> Double {
+        (strokes.map { HorizontalRouteClearanceProbe.segmentDistance(point, point, $0.0, $0.1) }.min() ?? .infinity) - mm(width) / 2
+    }
+
+    /// A silkscreen finding says how far it runs, as a copper one does: a
+    /// line whose ink is 0.1 mm above a pad's top edge, from over the pad to
+    /// past its corner, gives the ink's lower edge as far as it is within
+    /// 0.15 mm of the pad, the lower half of the line's round start among
+    /// it, and the pad's edge as far as it is within 0.15 mm of the ink:
+    /// along its top and round the corner a little way down its side.
+    func testASilkscreenFindingGivesTheStretchesOfTheInkAndTheBareCopper() throws {
+        let line = (p(9.8, 10.65), p(12, 10.65))
+        let board = makeBoard(
+            pads: barePad("p1", at: p(10, 10), net: "net-a"),
+            lines: [HorizontalSegment(id: "silk", from: line.0, to: line.1, width: mm(0.1), layer: HorizontalBoardLayers.topSilkscreen)],
+            rules: silkscreenRules)
+        let finding = try XCTUnwrap(HorizontalBoardClearanceCheck.run(board: board).first { $0.check == .silkscreen })
+        XCTAssertEqual(finding.first.id, "silk")
+        XCTAssertEqual(finding.second.id, "pkg/pad/p1")
+        XCTAssertEqual(finding.distance, mm(0.1), accuracy: 2)
+        XCTAssertEqual(finding.clearance, mm(0.15))
+        let points = finding.violation.flatMap { $0 }
+
+        // The ink's lower edge, at y = 10.6 mm, from the line's start to
+        // 0.112 mm past the pad's corner, where it is 0.15 mm from it.
+        let ink = points.filter { abs($0.y - mm(10.6)) < 1 }
+        XCTAssertEqual(try XCTUnwrap(ink.map(\.x).min()), mm(9.8), accuracy: 100)
+        XCTAssertEqual(try XCTUnwrap(ink.map(\.x).max()), mm(10.5 + (0.15 * 0.15 - 0.1 * 0.1).squareRoot()), accuracy: 100)
+        // The round start's lower half, which is nearer the pad than its middle.
+        let start = points.filter { $0.x < mm(9.8) - 1 && $0.y > mm(10.55) }
+        XCTAssertFalse(start.isEmpty)
+        XCTAssertLessThan(try XCTUnwrap(start.map(\.y).max()), mm(10.65) + 1)
+        XCTAssertGreaterThan(try XCTUnwrap(start.map(\.x).min()), mm(9.75) - 1)
+
+        // The pad's top edge, at y = 10.5 mm, from 0.132 mm short of the
+        // line's start, where the ink's round start is 0.15 mm from it, to
+        // the corner; and its side, at x = 10.5 mm, down to 0.15 mm below the ink.
+        let padTop = points.filter { abs($0.y - mm(10.5)) < 1 }
+        XCTAssertEqual(try XCTUnwrap(padTop.map(\.x).min()), mm(9.8 - (0.2 * 0.2 - 0.15 * 0.15).squareRoot()), accuracy: 100)
+        XCTAssertEqual(try XCTUnwrap(padTop.map(\.x).max()), mm(10.5), accuracy: 1)
+        let padSide = points.filter { abs($0.x - mm(10.5)) < 1 }
+        XCTAssertEqual(try XCTUnwrap(padSide.map(\.y).min()), mm(10.45), accuracy: 100)
+
+        // Nothing of the ink's far side or the line's far end, nor of the
+        // pad's far sides; and every point is on the ink's edge within the
+        // clearance of the pad, or on the pad's edge within it of the ink.
+        XCTAssertLessThan(try XCTUnwrap(points.map(\.y).max()), mm(10.65) + 1)
+        XCTAssertGreaterThan(try XCTUnwrap(points.map(\.y).min()), mm(10.45) - 100)
+        XCTAssertLessThan(try XCTUnwrap(points.map(\.x).max()), mm(10.62))
+        for point in points {
+            let toPad = padEdge(p(10, 10), point).distance, toInk = outsideInk([line], width: 0.1, point)
+            XCTAssertLessThan(min(toPad, abs(toInk)), 2_000, "on the pad's edge or the ink's")
+            XCTAssertLessThan(max(toPad, toInk), mm(0.15) + 1, "within the clearance of the other")
+        }
+
+        // The rules check's finding carries it to the marker, and the canvas
+        // strokes it.
+        let results = try XCTUnwrap(HorizontalBoardRulesCheck.run(board: board))
+        let ruleFinding = try XCTUnwrap(results.all.first { $0.kind == .clearanceSilkscreenExposedCopper })
+        XCTAssertEqual(ruleFinding.clearance?.violation, finding.violation)
+        let marker = try XCTUnwrap(HorizontalCanvasWarning.markers(boardFindings: [ruleFinding]).first)
+        XCTAssertEqual(marker.highlights, finding.violation)
+        XCTAssertEqual(HorizontalCanvasWarningGeometry.lines(for: [marker]).count,
+                       finding.violation.reduce(0) { $0 + $1.count - 1 })
+    }
+
+    /// Silkscreen on bare copper runs as far as it is on it: a line from deep
+    /// inside a pad out past its top edge gives the ink's edge all the way
+    /// round its end inside the pad and up its sides to 0.15 mm above the
+    /// pad, though the middle of each side is outside it; and the pad's top
+    /// edge under the ink and 0.15 mm either side of it.
+    func testSilkscreenOnBareCopperIsHighlightedAsFarAsItIsOnIt() throws {
+        let line = (p(10, 10.2), p(10, 11))
+        let board = makeBoard(
+            pads: barePad("p1", at: p(10, 10), net: "net-a"),
+            lines: [HorizontalSegment(id: "silk", from: line.0, to: line.1, width: mm(0.1), layer: HorizontalBoardLayers.topSilkscreen)],
+            rules: silkscreenRules)
+        let finding = try XCTUnwrap(HorizontalBoardClearanceCheck.run(board: board).first { $0.check == .silkscreen })
+        XCTAssertEqual(finding.distance, 0)
+        let points = finding.violation.flatMap { $0 }
+
+        // The line's round end, 0.35 mm inside the pad's edge.
+        XCTAssertEqual(try XCTUnwrap(points.map(\.y).min()), mm(10.15), accuracy: 1)
+        // Its sides, at x = 9.95 and 10.05 mm, all the way from the round end
+        // to 0.15 mm above the pad: 0.45 mm of each.
+        for x in [9.95, 10.05] {
+            let side = finding.violation.flatMap { line in zip(line, line.dropFirst()) }
+                .filter { abs($0.0.x - mm(x)) < 1 && abs($0.1.x - mm(x)) < 1 }
+            XCTAssertEqual(try XCTUnwrap(side.flatMap { [$0.0.y, $0.1.y] }.min()), mm(10.2), accuracy: 1)
+            XCTAssertEqual(try XCTUnwrap(side.flatMap { [$0.0.y, $0.1.y] }.max()), mm(10.65), accuracy: 100)
+            XCTAssertEqual(side.reduce(0) { $0 + abs($1.1.y - $1.0.y) }, mm(0.45), accuracy: 100)
+        }
+        // The pad's top edge, as far as 0.15 mm either side of the ink.
+        let padTop = points.filter { abs($0.y - mm(10.5)) < 1 }
+        XCTAssertEqual(try XCTUnwrap(padTop.map(\.x).min()), mm(9.8), accuracy: 100)
+        XCTAssertEqual(try XCTUnwrap(padTop.map(\.x).max()), mm(10.2), accuracy: 100)
+        // Each point is on the ink's edge, on the pad or within the clearance
+        // of it, or on the pad's edge, under the ink or within it of the ink.
+        for point in points {
+            let pad = padEdge(p(10, 10), point), toInk = outsideInk([line], width: 0.1, point)
+            XCTAssertLessThan(min(pad.distance, abs(toInk)), 2_000, "on the pad's edge or the ink's")
+            XCTAssertTrue(pad.inside || pad.distance < mm(0.15) + 1, "the ink on the pad or near it")
+            XCTAssertLessThan(toInk, mm(0.15) + 1, "the pad under the ink or near it")
+        }
+    }
+
+    /// A text's highlight runs on its ink's edge, as a line's does, and not
+    /// where one stroke runs into another: an H whose bar lies along a pad's
+    /// top edge, its uprights down over the pad, gives the outline of the
+    /// ink over the pad and near it, without the ends of the bar inside the
+    /// uprights, and the pad's edge under the ink and near it.
+    func testATextsHighlightRunsOnTheEdgeOfItsInk() throws {
+        let text = HorizontalText(id: "label", text: "H", position: p(20, 10), size: mm(1),
+                                  layer: HorizontalBoardLayers.topSilkscreen, width: mm(0.15))
+        let strokes = HorizontalOutlineTextRenderer.outlineSegments(for: text)
+        XCTAssertEqual(strokes.count, 3, "two uprights and a bar")
+        let bar = try XCTUnwrap(strokes.first { abs($0.0.y - $0.1.y) < 1 })
+        let center = HorizontalPoint(x: (bar.0.x + bar.1.x) / 2, y: bar.0.y - mm(0.5))
+        let board = makeBoard(pads: barePad("p1", at: center, net: "net-a"), texts: [text], rules: silkscreenRules)
+        let finding = try XCTUnwrap(HorizontalBoardClearanceCheck.run(board: board).first { $0.check == .silkscreen })
+        XCTAssertEqual(finding.first.id, "label")
+        XCTAssertEqual(finding.distance, 0)
+        let points = finding.violation.flatMap { $0 }
+
+        // Every point is on the pad's edge, under the ink or near it, or on
+        // the ink's edge, never more than a chord's sag inside another
+        // stroke, on the pad or near it.
+        var onInk = 0, onPad = 0
+        for point in points {
+            let pad = padEdge(center, point), toInk = outsideInk(strokes, width: 0.15, point)
+            if pad.distance < 1 {
+                onPad += 1
+                XCTAssertLessThan(toInk, mm(0.15) + 1, "the pad under the ink or near it")
+            } else {
+                onInk += 1
+                XCTAssertGreaterThan(toInk, -2_001, "on the ink's edge, not inside a stroke")
+                XCTAssertLessThan(toInk, 1, "on the ink's edge")
+                XCTAssertTrue(pad.inside || pad.distance < mm(0.15) + 1, "the ink on the pad or near it")
+            }
+        }
+        XCTAssertGreaterThan(onInk, 0)
+        XCTAssertGreaterThan(onPad, 0)
+        // The uprights' ends over the pad are there; their tops, 0.4 mm
+        // above the bar's ink, are not.
+        XCTAssertLessThan(try XCTUnwrap(points.map(\.y).min()), bar.0.y - mm(0.4))
+        XCTAssertLessThan(try XCTUnwrap(points.map(\.y).max()), bar.0.y + mm(0.075 + 0.15) + 1)
+    }
+
+    /// A bottom silkscreen finding is highlighted on the bottom: a line on
+    /// the bottom silkscreen beside a pad on the bottom gives that pad's
+    /// edge, not the edge of the larger pad on the top above it, which the
+    /// line would be over.
+    func testABottomSilkscreenFindingIsHighlightedOnTheBottom() throws {
+        let line = (p(29.8, 10.65), p(32, 10.65))
+        let board = makeBoard(
+            pads: barePad("p1", at: p(30, 10), net: "net-a", bottom: true) + barePad("p2", at: p(30, 10), size: 2, net: "net-b"),
+            lines: [HorizontalSegment(id: "silk", from: line.0, to: line.1, width: mm(0.1),
+                                      layer: HorizontalBoardLayers.bottomSilkscreen)],
+            rules: silkscreenRules)
+        let findings = HorizontalBoardClearanceCheck.run(board: board).filter { $0.check == .silkscreen }
+        XCTAssertEqual(findings.map(\.second.id), ["pkg/pad/p1"])
+        let finding = try XCTUnwrap(findings.first)
+        XCTAssertEqual(finding.layer, HorizontalBoardLayers.bottomSilkscreen)
+        let points = finding.violation.flatMap { $0 }
+        XCTAssertTrue(points.contains { abs($0.y - mm(10.5)) < 1 }, "the bottom pad's top edge")
+        XCTAssertTrue(points.contains { abs($0.y - mm(10.6)) < 1 }, "the ink's lower edge")
+        for point in points {
+            XCTAssertGreaterThan(padEdge(p(30, 10), size: 2, point).distance, mm(0.3), "nowhere near the top pad's edge")
+            let toPad = padEdge(p(30, 10), point).distance, toInk = outsideInk([line], width: 0.1, point)
+            XCTAssertLessThan(min(toPad, abs(toInk)), 2_000, "on the bottom pad's edge or the ink's")
+        }
+    }
+
+    /// The same copper a little further apart: nothing, and copper at exactly
+    /// the clearance passes, as Horizon's overlap of offset polygons does.
     func testAClearBoardHasNoFindings() {
         let board = makeBoard(
             tracks: [

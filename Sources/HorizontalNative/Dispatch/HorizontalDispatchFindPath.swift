@@ -178,7 +178,9 @@ enum HorizontalDispatchFindPath {
     }
 
     /// The ops that draw a path: its segments in order, each layer change a
-    /// via placed before the tracks that leave it.
+    /// via placed before the tracks that leave it. The via holds no net of
+    /// its own (`net_pinned` false): its tracks give it theirs, as Horizon's
+    /// router leaves the vias it drops.
     static func ops(_ path: HorizontalPathSearch.Path, from: Probe.Anchor, to: Probe.Anchor, width: Double, net: String,
                     via: HorizontalViaShape?, board: HorizontalBoard) -> [JSONDictionary] {
         let name = board.netDetails[net]?.name ?? ""
@@ -188,7 +190,7 @@ enum HorizontalDispatchFindPath {
             if legIndex > 0, let via, legIndex - 1 < path.vias.count, !path.standing.contains(legIndex - 1) {
                 let at = path.vias[legIndex - 1]
                 var op: JSONDictionary = ["op": "place_via", "x_mm": HorizontalDispatchJSON.mm(at.x), "y_mm": HorizontalDispatchJSON.mm(at.y),
-                                          "net": netReference]
+                                          "net": netReference, "net_pinned": false]
                 if let definition = via.definition {
                     op["definition"] = definition
                 } else if via.source == "local" {

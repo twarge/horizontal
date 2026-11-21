@@ -741,6 +741,8 @@ struct BoardCanvasView: View {
     @State private var decalPickerIndex: HorizontalPoolLibraryIndex?
     /// The net chooser, while it is up, and what it chooses a net for.
     @State private var netPickerPurpose: BoardNetPickerPurpose?
+    /// What Let Vias Follow Their Tracks… found, while its alert asks.
+    @State private var pinnedViaReview: HorizontalPinnedVias.Review?
     /// Place Board Hole…'s chooser, while it is up: the hole and mechanical
     /// padstacks the pools hold.
     @State private var holePadstackChoices: [HorizontalPoolPadstackInfo]?
@@ -1485,9 +1487,9 @@ struct BoardCanvasView: View {
                     // They name the nets they edit, so the selection, two
                     // nets' to pair, stays as it is.
                     break
-                case .replacePart:
-                    // It names the components it replaces: a selection the
-                    // package is part of stays.
+                case .replacePart, .clearViaNets:
+                    // It names the components it replaces, or acts on every
+                    // selected via: a selection the object is part of stays.
                     if !selectedObjects.contains(ref) { setSelectedObject(ref) }
                 default:
                     setSelectedObject(ref)
@@ -1616,6 +1618,19 @@ struct BoardCanvasView: View {
                 onPick: { chooseNet($0) },
                 onCancel: { netPickerPurpose = nil }
             )
+        }
+        .alert(BoardViaNetCommands.title, isPresented: Binding(
+            get: { pinnedViaReview != nil },
+            set: { if !$0 { pinnedViaReview = nil } }
+        ), presenting: pinnedViaReview) { review in
+            if let confirm = BoardViaNetCommands.confirmTitle(review) {
+                Button(confirm) { confirmLetViasFollowTracks() }
+                Button("Cancel", role: .cancel) { pinnedViaReview = nil }
+            } else {
+                Button("OK", role: .cancel) { pinnedViaReview = nil }
+            }
+        } message: { review in
+            Text(BoardViaNetCommands.message(review, name: { netDisplayName($0) ?? $0 }))
         }
         .sheet(isPresented: Binding(
             get: { holePadstackChoices != nil },
@@ -1997,6 +2012,10 @@ struct BoardCanvasView: View {
         hasher.combine(holePadstackChoices != nil)
         // Lock, Unlock and Unlock All, as the copper is (an undo too).
         hasher.combine(BoardCopperLock.commandSignature(selectedObjects, in: board))
+        // Clear Net and Let Vias Follow Their Tracks…, as the vias' pins
+        // are, and its alert coming up or going.
+        hasher.combine(BoardViaNetCommands.commandSignature(selectedObjects, in: board))
+        hasher.combine(pinnedViaReview != nil)
         return hasher.finalize()
     }
 
@@ -2018,11 +2037,15 @@ struct BoardCanvasView: View {
         }
 
         if board.planes.contains(where: {
-            displayOptions.isLayerVisible($0.layer) && matches($0.netID) && !$0.renderFragments.isEmpty
+            displayOptions.isLayerVisible($0.layer) && BoardSpotlightNets.lights($0, spotlighting: highlightedNetIDs)
+                && !$0.renderFragments.isEmpty
         }) {
             return true
         }
-        if board.polygons.contains(where: { displayOptions.isLayerVisible($0.layer) && matches($0.netID) }) {
+        let spotlightNets = BoardSpotlightNets(board)
+        if board.polygons.contains(where: {
+            displayOptions.isLayerVisible($0.layer) && spotlightNets.lights($0, spotlighting: highlightedNetIDs)
+        }) {
             return true
         }
         if board.lines.contains(where: { displayOptions.isLayerVisible($0.layer) && matches($0.netID) }) {
@@ -2763,7 +2786,7 @@ struct BoardCanvasView: View {
         }
 
         let plane = board.planes.first { normalizedID($0.polygonID) == normalizedID(polygon.id) }
-        let netID = plane?.netID ?? polygon.netID
+        let netID = BoardSpotlightNets(board).netID(of: polygon)
         let keepout = plane == nil ? keepoutBackedByPolygon(polygon.id, in: board) : nil
         let net = plane.map { "Plane \(netDisplayName($0.netID) ?? "with no net")" }
             ?? keepout.map { _ in "Keepout" }
@@ -3459,10 +3482,11 @@ struct BoardCanvasView: View {
     /// stay editable in every mode; editing one takes local control of the via
     /// (see takeLocalViaControl).
     private func viaProperties(_ via: HorizontalMarker) -> [HorizontalSelectionProperty] {
-        var properties = [
-            (modeProfile.mode == .board && !isReadOnly
-                ? BoardCopperLockCommands.viaNetProperty(via, in: board, options: { sortedNetOptions() }) : nil)
-                ?? readOnlyProperty("name", "Net", netDisplayName(via.netID)),
+        // Its net, from its copper or "(set)" on it, and Clear Net on a set one.
+        var properties = BoardCopperLockCommands.viaNetProperties(
+            via, in: board, editable: modeProfile.mode == .board && !isReadOnly,
+            name: { netDisplayName($0) }, options: { sortedNetOptions() })
+        properties += [
             modeProfile.mode == .board
                 ? BoardCopperLockCommands.lockedProperty(HorizontalSelectableRef(id: via.id, type: .via), locked: via.locked) : nil,
             editableNetClassProperty(for: via.netID),
@@ -3719,6 +3743,8 @@ struct BoardCanvasView: View {
         actions.chooseNet = { chooseNet($0) }
         actions.holePadstackChoices = holePadstackChoices
         actions.chooseHolePadstack = { chooseHolePadstack($0) }
+        actions.pinnedViaReview = pinnedViaReview
+        actions.confirmLetViasFollowTracks = { confirmLetViasFollowTracks() }
         actions.pickUnplacedObject = { id in
             guard let object = currentUnplacedObjects.first(where: { $0.id == id }) else {
                 return
@@ -3983,6 +4009,7 @@ struct BoardCanvasView: View {
             // it floods the copper each selected track and via is part of.
             handlers.setNet = { requestSetNet() }
             installCopperLockHandlers(&handlers)
+            installViaNetHandlers(&handlers)
             handlers.tuneTrack = { beginTuneTrack() }
             handlers.dragCopper = { beginCopperDrag() }
             let alignable = BoardAlignment.alignableRefs(selectedObjects, in: editedBoard ?? sourceBoard)
@@ -4368,6 +4395,12 @@ struct BoardCanvasView: View {
             } else {
                 entries.append(.command(title: "Set Net…", .setNet))
             }
+        }
+        // Clear Net on the selected vias that hold a net (Horizon's Clear
+        // via net), so each takes its tracks' net again.
+        if writable, modeProfile.mode == .board,
+           let entry = BoardViaNetCommands.menuEntry(for: ref, selection: selectedObjects, in: board) {
+            entries.append(entry)
         }
 
         // The run of track (Horizon's Select More, + and =).
@@ -4844,8 +4877,14 @@ struct BoardCanvasView: View {
         guard !nets.isEmpty else {
             return
         }
+        // A polygon by its own net, not its plane's (`BoardSpotlightNets`):
+        // Select Net, and a Delete after it, take a net's copper but leave its
+        // planes' outlines, which Spotlight lights with the net.
         let matching = boardSelectableScene().refs().filter { ref in
-            guard let net = netID(for: ref).map(normalizedID) else { return false }
+            let net = [.polygonEdge, .polygonVertex, .polygonArcCenter].contains(ref.type)
+                ? boardPolygon(for: ref.id, in: board)?.netID
+                : netID(for: ref)
+            guard let net = net.map(normalizedID) else { return false }
             return nets.contains(net)
         }
         guard !matching.isEmpty else {
@@ -6231,10 +6270,10 @@ struct BoardCanvasView: View {
                     holeSize: via.drill,
                     layer: nil,
                     connectedLayers: BoardTrackRouting.throughViaLayers(copperLayerCount: draft.copperLayerCount),
-                    netID: via.netID,
-                    // Router vias are pinned (patchNewBoardVias writes net_set),
-                    // so the model pins them too.
-                    netSetID: via.netID
+                    // Its tracks give it its net, as Horizon's router leaves
+                    // the vias it adds (`PNS_HORIZON_IFACE::AddItem`): none
+                    // is pinned, so it follows them to another net.
+                    netID: via.netID
                 )
             )
         }
@@ -10555,7 +10594,8 @@ struct BoardCanvasView: View {
         case .plane:
             return board.planes.first { normalizedID($0.id) == normalizedID(ref.id) }?.netID
         case .polygonArcCenter, .polygonEdge, .polygonVertex:
-            return boardPolygon(for: ref.id, in: board)?.netID
+            // A plane's polygon is on the plane's net (`BoardSpotlightNets`).
+            return boardPolygon(for: ref.id, in: board).flatMap(BoardSpotlightNets(board).netID(of:))
         case .text:
             return (board.texts + board.packageTexts).first { normalizedID($0.id) == normalizedID(ref.id) }?.netID
         case .blockSymbolPort, .boardDecal, .boardPackage, .boardPanel, .busLabel, .busRipper, .dimension, .drawingArc, .drawingLine, .junction, .keepout, .lineNet, .netLabel, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .padstackShape, .symbolPin:
@@ -10589,6 +10629,8 @@ struct BoardCanvasView: View {
         let pads = index(.pad, board.packagePads, id: \.id, net: \.netID)
         let vias = index(.via, board.vias, id: \.id, net: \.netID)
         let texts = index(.text, board.texts + board.packageTexts, id: \.id, net: \.netID)
+        let polygons = types.isDisjoint(with: [.polygonEdge, .polygonVertex, .polygonArcCenter])
+            ? [:] : BoardSpotlightNets.polygonNetIDs(in: board)
         return { ref in
             let id = normalizedID(ref.id)
             switch ref.type {
@@ -10600,6 +10642,7 @@ struct BoardCanvasView: View {
             case .pad: return pads[id] ?? nil
             case .via: return vias[id] ?? nil
             case .text: return texts[id] ?? nil
+            case .polygonEdge, .polygonVertex, .polygonArcCenter: return polygons[id] ?? nil
             default: return netID(for: ref)
             }
         }
@@ -16778,12 +16821,16 @@ struct BoardCanvasView: View {
         }
 
         let color = theme.junction
+        // A plane lights its fill and its polygon, which is on its net
+        // (`BoardSpotlightNets`); the board outline is lit by no spotlight.
+        let spotlit = shownHighlightNetIDs
+        let spotlightNets = BoardSpotlightNets(board)
 
-        for plane in board.planes where displayOptions.isLayerVisible(plane.layer) && matchesHighlightedNet(plane.netID) {
+        for plane in board.planes where displayOptions.isLayerVisible(plane.layer) && BoardSpotlightNets.lights(plane, spotlighting: spotlit) {
             drawHighlightedPlane(plane, color: color, context: context, transform: transform)
         }
 
-        for polygon in board.polygons where displayOptions.isLayerVisible(polygon.layer) && !isBoardBodyLayer(polygon.layer) && matchesHighlightedNet(polygon.netID) {
+        for polygon in board.polygons where displayOptions.isLayerVisible(polygon.layer) && spotlightNets.lights(polygon, spotlighting: spotlit) {
             drawHighlightedPolygon(polygon, color: color, context: context, transform: transform)
         }
 
@@ -18576,8 +18623,44 @@ extension BoardCanvasView {
         }
     }
 
-    /// One undoable edit of the lock. It stays in the block instance it is
-    /// made in: a lock is the copper's own, not the layout's.
+    /// Clear Net on the selected vias that hold a net, and Let Vias Follow
+    /// Their Tracks…, which asks first (`BoardViaNetCommands`). The board
+    /// command is offered wherever a via holds a net; which of them can
+    /// follow their tracks is worked out when it is asked for.
+    private func installViaNetHandlers(_ handlers: inout HorizontalCanvasCommandHandlerSet) {
+        let refs = selectedObjects
+        if !BoardViaNetCommands.pinnedVias(among: refs, in: board).isEmpty {
+            handlers.clearViaNets = { editCopperLock("Clear Net") { BoardViaNetCommands.clearNets(on: refs, in: &$0) } }
+        }
+        if board.vias.contains(where: { $0.netSetID != nil }) {
+            handlers.letViasFollowTracks = { requestLetViasFollowTracks() }
+        }
+    }
+
+    private func requestLetViasFollowTracks() {
+        guard !isReadOnly, modeProfile.mode == .board, pinnedViaReview == nil else {
+            return
+        }
+        pinnedViaReview = HorizontalPinnedVias.review(board)
+    }
+
+    /// The alert's Unpin: one undoable edit, from the board as it is now.
+    private func confirmLetViasFollowTracks() {
+        guard pinnedViaReview != nil else {
+            return
+        }
+        pinnedViaReview = nil
+        let review = HorizontalPinnedVias.review(editedBoard ?? sourceBoard)
+        let count = review.count(.follows)
+        editCopperLock(BoardViaNetCommands.title) { BoardViaNetCommands.letViasFollow(review, in: &$0) }
+        if count > 0 {
+            showCanvasNote(count == 1 ? "1 via follows its tracks" : "\(count) vias follow their tracks")
+        }
+    }
+
+    /// One undoable edit of the lock, or of a via's pinned net. It stays in
+    /// the block instance it is made in: a lock and a pin are the copper's
+    /// own, not the layout's.
     private func editCopperLock(_ actionName: String, _ edit: (inout HorizontalBoard) -> Bool) {
         guard !isReadOnly else {
             return
@@ -18805,7 +18888,8 @@ extension BoardCanvasView {
             preview.decals.append(shifted(geometry, by: cursor))
         case .via(let template, let netID):
             let ghost = BoardTrackRouting.throughVia(
-                template, id: "place-preview-via", at: cursor, netID: netID, copperLayerCount: preview.copperLayerCount)
+                template, id: "place-preview-via", at: cursor, netID: netID, pinsNet: true,
+                copperLayerCount: preview.copperLayerCount)
             preview.vias.append(ghost.via)
             preview.viaHoles.append(ghost.hole)
         }
@@ -18955,8 +19039,10 @@ extension BoardCanvasView {
                 return
             }
             // It joins the copper ending where it goes, as a via the track
-            // tool drops does (`BoardTrackRouting.dropVia`).
-            BoardTrackRouting.dropVia(template, at: at, netID: netID, preferredJunctionID: nil, on: &draft)
+            // tool drops does (`BoardTrackRouting.dropVia`). It holds the net
+            // chosen for it, as Horizon's Place Via sets `net_set`, so it
+            // stands on it with no track to give it one.
+            BoardTrackRouting.dropVia(template, at: at, netID: netID, pinsNet: true, preferredJunctionID: nil, on: &draft)
             guard let via = draft.vias.last else {
                 return
             }

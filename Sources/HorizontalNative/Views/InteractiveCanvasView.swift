@@ -232,6 +232,12 @@ enum HorizontalCanvasCommand {
     case setCopperLocked(Bool)
     /// Board: Horizon's Unlock All, every track and via on the board.
     case unlockAllCopper
+    /// Board: Horizon's Clear via net on every selected via that holds a
+    /// net, which then takes its tracks' (`BoardViaNetCommands`).
+    case clearViaNets
+    /// Board: Let Vias Follow Their Tracks…, the pin taken off every via
+    /// pinned to the net its pads give it, once the user confirms.
+    case letViasFollowTracks
     /// Symbol editor: place the next unplaced unit pin (Horizon's map-pin).
     case placePin
     /// Symbol editor: place `$REFDES` and `$VALUE` texts together.

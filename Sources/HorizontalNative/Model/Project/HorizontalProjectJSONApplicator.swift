@@ -1579,8 +1579,13 @@ enum HorizontalProjectJSONApplicator {
                 "source": via.fromRules ? "rules" : (via.definitionID != nil ? "definition" : "local"),
                 "locked": via.locked
             ]
-            if let netID = via.netID {
-                item["net_set"] = netID
+            // The net it holds itself, as Via::serialize writes net_set only
+            // where one is set: Place Via's, or a copy of a via that held
+            // one. A via a route drops holds none and takes its tracks' net,
+            // which `netID` only caches; written as net_set, it stayed on
+            // that net when the schematic moved its tracks' pads to another.
+            if let netSetID = via.netSetID {
+                item["net_set"] = netSetID
             }
             // A via copied from one a definition shapes keeps taking its shape
             // from it, and one that isn't through keeps its span, which

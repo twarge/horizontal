@@ -42,6 +42,11 @@ struct HorizontalBoardRuleFinding: Identifiable, Equatable, Sendable {
     var ruleID: String? = nil
     /// One side is a plane, so its net is highlighted though it floods the view.
     var showsPlane = false
+    /// What the canvas strokes in orange beside the marker, as it does a
+    /// clearance finding's `violation`: lines of points on the board, each
+    /// the edge of what is wrong as far as it runs. A clearance finding's
+    /// own are its pair's.
+    var highlights: [[HorizontalPoint]] = []
     /// The pair, for a clearance finding.
     var clearance: HorizontalClearanceFinding? = nil
 
@@ -60,7 +65,7 @@ struct HorizontalBoardRuleFinding: Identifiable, Equatable, Sendable {
         kind: HorizontalBoardRuleKind?, level: Level, check: String, title: String, message: String,
         detail: String = "", location: HorizontalPoint? = nil, region: HorizontalRect? = nil, layers: [Int] = [],
         netIDs: [String] = [], netNames: [String] = [], componentIDs: [String] = [], refdes: String? = nil,
-        objectIDs: [String] = [], ruleID: String? = nil, showsPlane: Bool = false
+        objectIDs: [String] = [], ruleID: String? = nil, showsPlane: Bool = false, highlights: [[HorizontalPoint]] = []
     ) {
         self.kind = kind
         self.level = level
@@ -78,6 +83,7 @@ struct HorizontalBoardRuleFinding: Identifiable, Equatable, Sendable {
         self.objectIDs = objectIDs
         self.ruleID = ruleID
         self.showsPlane = showsPlane
+        self.highlights = highlights
     }
 
     /// A clearance finding as one of these: an error between two objects.
@@ -338,7 +344,8 @@ enum HorizontalBoardRulesCheck {
                 detail: "\(copper) join \(sides.joined(separator: " to ")).",
                 location: short.position ?? points.first, region: points.isEmpty ? nil : region(points),
                 netIDs: nets, netNames: nets.map { netName($0, in: board) },
-                objectIDs: short.trackIDs + short.viaIDs))
+                objectIDs: short.trackIDs + short.viaIDs,
+                highlights: highlights(of: short, tracks: tracksByID, vias: viasByID)))
         }
         for (plane, pads) in overPads {
             let planeNet = plane.netID?.lowercased()
@@ -356,7 +363,7 @@ enum HorizontalBoardRulesCheck {
                 layers: plane.layer.map { [$0] } ?? [],
                 netIDs: ([planeNet] + pads.map { $0.netID?.lowercased() }).compactMap { $0 },
                 netNames: [netName(planeNet, in: board)],
-                objectIDs: [plane.id], showsPlane: true))
+                objectIDs: [plane.id], showsPlane: true, highlights: highlights(of: plane, over: pads)))
         }
         return findings
     }
@@ -806,12 +813,12 @@ enum HorizontalBoardRulesCheck {
         }
         func add(_ level: HorizontalBoardRuleFinding.Level, _ check: String, _ title: String, _ message: String,
                  at location: HorizontalPoint?, region place: [HorizontalPoint], layers: [Int] = [],
-                 package: HorizontalPlacement? = nil, objects: [String] = []) {
+                 package: HorizontalPlacement? = nil, objects: [String] = [], overlap: [[[HorizontalPoint]]] = []) {
             findings.append(HorizontalBoardRuleFinding(
                 kind: .heightRestrictions, level: level, check: check, title: title, message: message,
                 location: location, region: place.isEmpty ? location.map { region([$0]) } : region(place), layers: layers,
                 componentIDs: package?.componentID.map { [$0.lowercased()] } ?? [],
-                refdes: package.map(refdes), objectIDs: objects))
+                refdes: package.map(refdes), objectIDs: objects, highlights: highlights(ofOverlap: overlap)))
         }
 
         let packages = packagesByID(board)
@@ -868,7 +875,8 @@ enum HorizontalBoardRulesCheck {
                 guard !overlap.isEmpty else { continue }
                 guard let model = package.model3D else {
                     add(.warning, "no_model", "Package has no 3D model", "package \(refdes(package)) has no 3D model",
-                        at: package.position, region: overlap.flatMap { $0[0] }, layers: [layer], package: package)
+                        at: package.position, region: overlap.flatMap { $0[0] }, layers: [layer], package: package,
+                        overlap: overlap)
                     continue
                 }
                 let height = layer == top
@@ -877,14 +885,14 @@ enum HorizontalBoardRulesCheck {
                 if height == 0 {
                     add(.warning, "no_height", "Package has no height on that side",
                         "package \(refdes(package)) has no \(side) height", at: package.position,
-                        region: overlap.flatMap { $0[0] }, layers: [layer], package: package)
+                        region: overlap.flatMap { $0[0] }, layers: [layer], package: package, overlap: overlap)
                     continue
                 }
                 if height > restriction.height {
                     add(.error, "too_tall", "Package taller than its height restriction",
                         "package \(refdes(package)) \(side) height (\(HorizontalMillimetres.short(height))) exceeds height restriction of \(HorizontalMillimetres.short(restriction.height))",
                         at: package.position, region: overlap.flatMap { $0[0] }, layers: [layer], package: package,
-                        objects: [restriction.id])
+                        objects: [restriction.id], overlap: overlap)
                 }
             }
         }

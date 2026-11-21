@@ -39,6 +39,7 @@ enum HorizontalCanvasMenu {
         if actions.canDrawTrack { connect.append(.command(title: "Draw Track", .drawTrack)) }
         if actions.canPlaceVia { connect.append(.command(title: "Place Via…", .placeVia)) }
         if actions.canPlaceBoardHole { connect.append(.command(title: "Place Board Hole…", .placeBoardHole)) }
+        if actions.canLetViasFollowTracks { connect.append(.command(title: "Let Vias Follow Their Tracks…", .letViasFollowTracks)) }
 
         // The pool editors' own. A symbol editor's P places a pin, and reaches
         // it as the board's Place Pad, so there the pad is the pin.

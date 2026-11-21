@@ -705,6 +705,34 @@ final class HorizontalPoolCacheImporterTests: XCTestCase {
         XCTAssertEqual(Set(row.changes.map(\.path)), ["packages/cache/pkg-1/padstacks/local.json", "3d_models/cache/stock-pool/3d_models/r0603.step"])
     }
 
+    /// Horizon caches a package's own padstack as `<uuid>.json`
+    /// (`ProjectPool::get_filename`), not under its source file's name, and
+    /// records no origin for it.
+    func testAPackagePadstackHorizonCachedUnderItsUUIDIsUpdatedWhereItIs() throws {
+        try importFixture()
+        var files = try cachedFiles()
+        let imported = "packages/cache/pkg-1/padstacks/local.json"
+        let horizons = "packages/cache/pkg-1/padstacks/ps-local.json"
+        files[horizons] = files.removeValue(forKey: imported)
+        files.removeValue(forKey: HorizontalPoolCacheProvenance.path)
+
+        let current = try XCTUnwrap(try cachedReview(files: files).parts.first)
+        XCTAssertEqual(current.status, .current)
+        XCTAssertEqual(current.changes.map(\.path), [], "the copy the project has is not a new library item")
+
+        try changeSource("packages/r0603/padstacks/local.json") { $0["name"] = "Changed local padstack" }
+        let review = try cachedReview(files: files)
+        XCTAssertEqual(review.parts.first?.changes.map(\.path), [horizons])
+        let updates = try review.updates(selecting: ["part-1"], allowProjectChanges: true)
+        XCTAssertNil(updates[imported], "Horizon's pool update rejects a second file with the padstack's uuid")
+        files.merge(updates) { _, new in new }
+        XCTAssertEqual(try JSONHelper.loadDictionary(from: XCTUnwrap(files[horizons])).string("name"), "Changed local padstack")
+        let metadata = try HorizontalPoolCacheProvenance.load(files[HorizontalPoolCacheProvenance.path])
+        XCTAssertEqual(metadata.files[horizons]?.sourcePath, "packages/r0603/padstacks/local.json")
+        XCTAssertNil(metadata.files[imported])
+        XCTAssertEqual(try cachedReview(files: files).parts.first?.status, .current)
+    }
+
     func testOriginWinsOverAnotherPoolWithSameUUIDs() throws {
         try importFixture()
         let other = temporaryRoot.appendingPathComponent("other")

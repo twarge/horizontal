@@ -1252,7 +1252,9 @@ class SetTrackWidth(TrackOp):
 
 class PlaceVia(Input):
     """A via on a net. Its shape comes from the via rule matching the net unless definition, or a size or
-    padstack of its own, is given."""
+    padstack of its own, is given. A via a track of the batch ends on takes its net from its tracks and
+    follows them to another net; one standing alone holds the net it is placed on, as a stitching via does.
+    net_pinned says which outright."""
     op: Literal["place_via"]
     x_mm: float
     y_mm: float
@@ -1261,6 +1263,7 @@ class PlaceVia(Input):
     definition: str | None = None
     diameter_mm: float | None = Field(default=None, gt=0)
     hole_mm: float | None = Field(default=None, gt=0)
+    net_pinned: StrictBool | None = None
 
     @model_validator(mode="after")
     def one_source(self):
@@ -1273,6 +1276,15 @@ class RemoveVia(Targeted):
     target: ClassVar[str] = "via"
     op: Literal["remove_via"]
     via: StrictStr | None = None
+
+
+class UnpinVias(Input):
+    """Let vias follow their tracks: net_set taken off every via whose copper, with no pin on it, reaches pads of
+    the one net it is pinned to, so no net changes. Stitching vias, vias whose tracks reach no pad, vias on a short
+    and vias pinned to another net than their pads' (conflicts, listed) keep their pins. Each via is judged by its own
+    copper, so it is made in no other block instance and goes in a batch of its own; dry_run lists what it would
+    unpin."""
+    op: Literal["unpin_vias"]
 
 
 class CopyLayout(Input):
@@ -1289,7 +1301,7 @@ EditOperation = Annotated[EnsureComponent | RemoveComponent | RemovePlacement | 
                           SetGroup | EnsureNet | RenameNet | SetNetClass | SetDiffpair | ClearDiffpair | RetireNet | Connect | Disconnect |
                           Place | PlaceSymbol | MoveSymbols | MoveToOtherSheet | RemoveSymbol | DrawNetLine | PlaceJunction | SetNetLineEndpoint | RemapPart | PlaceText | RemoveText |
                           RemoveNetLine | RemoveJunction | PruneSheet | TerminatePin | SetSymbolDisplay | SetCustomValue | Smash | SetNoConnect | SetPinAlternate |
-                          PlaceTrack | RemoveTrack | SetTrackWidth | PlaceVia | RemoveVia |
+                          PlaceTrack | RemoveTrack | SetTrackWidth | PlaceVia | RemoveVia | UnpinVias |
                           PlacePowerSymbol | PlaceNetLabel | RemoveSheetMark |
                           AddSheet | RenameSheet | SetSheetFrame | RemoveSheet |
                           PlacePolygon | RemovePolygon | PlacePlane | RemovePlane |

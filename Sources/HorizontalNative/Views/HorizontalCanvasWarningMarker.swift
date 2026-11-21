@@ -137,14 +137,16 @@ extension HorizontalCanvasWarning {
     }
 
     /// A marker where each board finding is, the clearance ones among them:
-    /// red for what Horizon fails, yellow for what it warns of.
+    /// red for what Horizon fails, yellow for what it warns of; with what
+    /// is wrong highlighted as far as it runs, a clearance finding's copper
+    /// and every other finding's `highlights` alike.
     static func markers(boardFindings findings: [HorizontalBoardRuleFinding]) -> [HorizontalCanvasWarning] {
         merging([], findings.compactMap { finding in
             guard let location = finding.location else { return nil }
             let message = finding.clearance.map { "\($0.title): \($0.detail)" } ?? finding.text
             return HorizontalCanvasWarning(position: location, messages: [message],
                                            errorMessages: finding.level == .error ? [message] : [],
-                                           highlights: finding.clearance?.violation ?? [])
+                                           highlights: finding.clearance?.violation ?? finding.highlights)
         })
     }
 

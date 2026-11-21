@@ -539,10 +539,21 @@ enum HorizontalPoolCacheUpdater {
                     throw HorizontalDispatchError.failed(
                         "The \(category.singularTitle.lowercased()) \(uuid) is in \(names.joined(separator: ", ")), and nothing records which one this part's copy came from. Choose its source library to continue.")
                 }
-                let plannedByPath = try Dictionary(uniqueKeysWithValues: planned.map {
+                var plannedByPath = try Dictionary(uniqueKeysWithValues: planned.map {
                     (try HorizontalPoolCacheProvenance.relativePath($0.url, in: poolURL), $0.data)
                 })
                 var nextMetadata = try HorizontalPoolCacheProvenance.load(plannedByPath[HorizontalPoolCacheProvenance.path])
+                // A package's own padstack is the one file the two apps name
+                // differently: a fresh import after its source file, Horizon
+                // after its uuid (`ProjectPool::get_filename`). The copy the
+                // project has is the one to update, whatever it is called. A
+                // second file with the same uuid is a duplicate to Horizon's
+                // pool update, which keeps the first it reads and warns of
+                // the other.
+                for (path, cached) in cachedPadstackPaths(forPlanned: plannedByPath, files: files, jsons: jsons) {
+                    plannedByPath[cached] = plannedByPath.removeValue(forKey: path)
+                    nextMetadata.files[cached] = nextMetadata.files.removeValue(forKey: path)
+                }
                 // A fresh import brings every symbol of the part's units, but a
                 // unit's symbols are alternatives a gate is placed with, and
                 // Horizon caches only the one it uses: its cache update never
@@ -694,6 +705,27 @@ enum HorizontalPoolCacheUpdater {
             visit(root.type, root.uuid)
         }
         return visited
+    }
+
+    /// Where the project keeps each package-local padstack a fresh import
+    /// plans, by the planned path, for those it holds under another file
+    /// name: the file with the padstack's uuid in the package's own
+    /// `padstacks` directory.
+    private static func cachedPadstackPaths(forPlanned planned: [String: Data], files: [String: Data],
+                                            jsons: [String: JSONDictionary]) -> [String: String] {
+        var result = [String: String]()
+        for (path, data) in planned where files[path] == nil {
+            let components = path.split(separator: "/")
+            guard components.count == 5, components[0] == "packages", components[1] == "cache", components[3] == "padstacks",
+                  let uuid = (try? JSONHelper.loadDictionary(from: data))?.string("uuid")?.lowercased() else { continue }
+            let directory = components.prefix(4).joined(separator: "/") + "/"
+            let cached = jsons.keys.filter {
+                $0.hasPrefix(directory) && !$0.dropFirst(directory.count).contains("/")
+                    && jsons[$0]?.string("uuid")?.lowercased() == uuid
+            }.min()
+            if let cached { result[path] = cached }
+        }
+        return result
     }
 
     private static func preferredPaths(_ jsons: [String: JSONDictionary]) -> [String] {

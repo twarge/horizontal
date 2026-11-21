@@ -83,6 +83,8 @@ final class HorizontalDispatchFindPathTests: XCTestCase {
         let firstVia = try XCTUnwrap(kinds.firstIndex(of: "place_via@99"))
         XCTAssertTrue(kinds[..<firstVia].allSatisfy { $0 == "place_track@0" })
         XCTAssertEqual(kinds[firstVia + 1], "place_track@-1")
+        XCTAssertEqual(ops[firstVia]["net_pinned"] as? Bool, false,
+                       "a path's via takes its tracks' net, as Horizon's router leaves one, and follows them to another")
         let dry = try XCTUnwrap(try client.result("apply", ["ops": ops, "dry_run": true, "check": "delta"]) as? JSONDictionary)
         XCTAssertEqual((dry.dictionary("check")?["introduced"] as? [JSONDictionary])?.count, 0, "\(dry)")
         XCTAssertEqual(dry.dictionary("check")?.dictionary("airwires")?["nets_routed"] as? [String], ["OUT1"])
