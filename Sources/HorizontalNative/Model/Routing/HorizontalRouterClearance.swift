@@ -153,12 +153,18 @@ struct HorizontalRouterClearances {
     /// refusing legal routes rather than allowing illegal ones, but refusing all
     /// the same.
     func broadPhaseClearance(forTrackOn net: Int, layer: Int) -> Double {
+        broadPhaseClearance(for: .track, on: net, layer: layer)
+    }
+
+    /// The same radius for something other than a track on `net`: the via a
+    /// route drops at its end, or that via's hole.
+    func broadPhaseClearance(for moving: ObjectClass, on net: Int, layer: Int) -> Double {
         var widest = 0.0
         for other in ObjectClass.allBroadPhaseCases {
             // Against every net, because a rule may single one out. Net −1 is
             // included: no-net copper still has to be cleared.
             for code in ([-1] + Array(netIDForCode.keys)) {
-                widest = max(widest, clearance(.track, net: net, other, net: code, on: layer))
+                widest = max(widest, clearance(moving, net: net, other, net: code, on: layer))
             }
         }
         return widest

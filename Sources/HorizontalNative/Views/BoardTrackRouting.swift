@@ -336,6 +336,25 @@ enum BoardTrackRouting {
         return nil
     }
 
+    /// Whether a via armed on a route of `routeNetID` drops in the pad
+    /// centred at `center` when clicked there, rather than the click ending
+    /// the route in the pad: in a surface pad of the route's net, or of none,
+    /// or of any before the route has a net, which it takes from the pad. Not
+    /// in another net's pad, and not in a pad with a hole, which reaches every
+    /// layer already.
+    static func viaDropsInPad(
+        center: HorizontalPoint,
+        padNetID: String?,
+        routeNetID: String?,
+        packageHoles: [HorizontalHole]
+    ) -> Bool {
+        if let padNetID, let routeNetID, normalizedID(padNetID) != normalizedID(routeNetID) {
+            return false
+        }
+        let centerKey = key(center)
+        return !packageHoles.contains { key($0.position) == centerKey }
+    }
+
     /// Whether the pad at `path` has copper on `layer`: a copper polygon of it
     /// there (or one with no layer), or a plated hole at its center, which
     /// reaches every layer. A pad with no copper polygons at all is taken to
@@ -565,6 +584,34 @@ enum BoardTrackRouting {
             }
         }
         return nil
+    }
+
+    /// The track a route starting at `point` continues
+    /// (`HorizontalRouteWidth.start`). Off a pad, the track touching the
+    /// point (`track(at:)`). On a pad, where `point` is the pad's center,
+    /// only a track that ends there: one that merely passes over the pad
+    /// leaves the route to the rules. Of several ending there the widest,
+    /// and of equally wide ones the first in the board's order.
+    static func startTrack(
+        at point: HorizontalPoint,
+        onPad: Bool,
+        layer: Int? = nil,
+        tracks: [HorizontalSegment]
+    ) -> HorizontalSegment? {
+        guard onPad else {
+            return track(at: point, layer: layer, tracks: tracks)
+        }
+        let pointKey = key(point)
+        var best: HorizontalSegment?
+        for track in tracks where track.width > 0 && isOn(track.layer, layer) {
+            guard key(track.from) == pointKey || key(track.to) == pointKey else {
+                continue
+            }
+            if best.map({ track.width > $0.width }) ?? true {
+                best = track
+            }
+        }
+        return best
     }
 
     /// Default width for a freshly drawn track where no track width rule
