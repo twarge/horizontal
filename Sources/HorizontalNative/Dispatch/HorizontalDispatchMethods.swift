@@ -549,7 +549,7 @@ enum HorizontalDispatchMethods {
                 "handle": "Project handle.",
                 "sections": "Array of section names.",
                 "target_directory": "Output directory; absolute, or relative to the project's parent. Defaults to the app's export folder next to the project.",
-                "options": "Optional overrides, e.g. {\"bom\": {\"include_no_populate\": false}, \"board_step\": {\"include_3d_models\": false}}."
+                "options": "Optional overrides, e.g. {\"bom\": {\"include_no_populate\": false}, \"board_step\": {\"include_3d_models\": false}, \"board_drawing\": {\"mirrored\": true, \"reverse_layers\": true, \"hole_diameter_mm\": 0.4}}."
             ],
             handler: export
         ),
@@ -1913,8 +1913,7 @@ enum HorizontalDispatchMethods {
     @Sendable private static func renderBoard(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
         let layers = params["layers"] as? [String]
-        var annotations = HorizontalRenderAnnotations(gridMM: params.double("grid_mm"), region: try regionParam(params),
-                                                      mirrored: params.bool("mirrored") ?? false)
+        var annotations = HorizontalRenderAnnotations(gridMM: params.double("grid_mm"), region: try regionParam(params))
         if let gridMM = annotations.gridMM, gridMM <= 0 { throw HorizontalDispatchError.invalidParams("grid_mm is more than 0.") }
         if let ids = params["highlight"] as? [String], !ids.isEmpty {
             let wanted = Set(ids.map { $0.lowercased() })
@@ -3858,6 +3857,12 @@ enum HorizontalDispatchMethods {
         }
         if let drawing = options.dictionary("board_drawing") {
             if let flag = drawing.bool("mirrored") { settings.boardDrawing.mirrored = flag }
+            if let flag = drawing.bool("reverse_layers") { settings.boardDrawing.reverseLayers = flag }
+            // A diameter draws every hole at it; none draws each at its own.
+            if let diameter = drawing.double("hole_diameter_mm") {
+                settings.boardDrawing.useSpecifiedHoleDiameter = true
+                settings.boardDrawing.holeDiameterMM = max(diameter, 0)
+            }
             if let name = drawing.string("filename") { settings.boardDrawing.filename = name }
         }
         if let pnp = options.dictionary("pick_and_place") {

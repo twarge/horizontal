@@ -403,6 +403,15 @@ struct HorizontalExportSidebarView: View {
                         .checkboxTogglesOnMac()
                     .disabled(!layer.enabled)
                     Spacer(minLength: 0)
+                    // The colour the layer is drawn in, as Horizon's PDF
+                    // export window has one beside each layer. Layers in
+                    // different colours are what shows which is painted over
+                    // which, so what Reverse layers changes.
+                    ColorPicker("\(layer.name) color", selection: $layer.color.pickedColor, supportsOpacity: false)
+                        .labelsHidden()
+                        .controlSize(.small)
+                        .disabled(!layer.enabled)
+                        .help("\(layer.name) color")
                 }
                 .padding(.vertical, 1)
             }
@@ -463,6 +472,18 @@ struct HorizontalExportSidebarView: View {
         case .success: .green
         case .warning: .orange
         case .error: .red
+        }
+    }
+}
+
+extension Binding where Value == HorizontalRGBColor {
+    /// The colour for a colour well to show and set: the red, green and blue
+    /// a layer is drawn in.
+    var pickedColor: Binding<Color> {
+        Binding<Color> {
+            Color(red: wrappedValue.red, green: wrappedValue.green, blue: wrappedValue.blue)
+        } set: { picked in
+            wrappedValue = rgbColor(from: picked)
         }
     }
 }

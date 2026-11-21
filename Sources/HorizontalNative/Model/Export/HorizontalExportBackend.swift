@@ -240,6 +240,14 @@ enum HorizontalExportBackend {
             let bounds = (board.physicalBounds.isEmpty ? board.bounds : board.physicalBounds).padded(0.08)
             let transform = PDFWorldTransform(bounds: bounds, pageSize: pageSize)
             context.beginPDFPage(nil)
+            if settings.mirrored {
+                // Horizon's `export_pdf` with `mirror` set: the board seen
+                // from below, the whole page with x running the other way
+                // (its matrix is -1 0 0 1). The board is centred on the page,
+                // so flipping the page about its middle keeps it where it is.
+                context.translateBy(x: pageSize.width, y: 0)
+                context.scaleBy(x: -1, y: 1)
+            }
             drawBoard(
                 board,
                 context: context,
@@ -247,6 +255,8 @@ enum HorizontalExportBackend {
                 palette: palette,
                 layerSettings: layerSettings,
                 minimumLineWidthMM: settings.minimumLineWidthMM,
+                reverseLayers: settings.reverseLayers,
+                holeDiameter: settings.useSpecifiedHoleDiameter ? settings.holeDiameterMM * 1_000_000 : nil,
                 silkscreenClipping: silkscreenClipping
             )
             context.endPDFPage()
@@ -1255,6 +1265,8 @@ enum HorizontalExportBackend {
         palette: HorizontalCanvasPalette,
         layerSettings: [Int: HorizontalExportLayerSetting],
         minimumLineWidthMM: Double,
+        reverseLayers: Bool = false,
+        holeDiameter: Double? = nil,
         silkscreenClipping: HorizontalSilkscreenClipping? = nil
     ) {
         context.setFillColor(rgbColor(from: palette.background).cgColor(alpha: 1))
@@ -1275,91 +1287,116 @@ enum HorizontalExportBackend {
             return true
         }
 
-        func setting(for layer: Int?) -> HorizontalExportLayerSetting? {
-            guard let layer, let setting = layerSettings[layer], setting.enabled else {
-                return nil
-            }
-            return setting
-        }
-
-        for plane in board.planes {
-            guard let setting = setting(for: plane.layer) else { continue }
-            for fragment in plane.renderFragments {
-                for path in fragment.paths {
-                    drawPolygonVertices(path, color: setting.color, context: context, transform: transform, fill: true, width: defaultWidth, alpha: 0.28)
+        // Horizon's `export_pdf` paints one layer at a time, the lowest in
+        // the stack first, so what is on top of the board is on top of the
+        // drawing; with the layers reversed the bottom of the board is.
+        let padFragments = horizonPadOutlineFragments(board.packagePads)
+        for setting in paintOrder(of: layerSettings, board: board, reversed: reverseLayers) {
+            let layer = setting.layer
+            for plane in board.planes where plane.layer == layer {
+                for fragment in plane.renderFragments {
+                    for path in fragment.paths {
+                        drawPolygonVertices(path, color: setting.color, context: context, transform: transform, fill: true, width: defaultWidth, alpha: 0.28)
+                    }
                 }
             }
-        }
-        for polygon in board.polygons + board.packagePolygons {
-            guard let setting = setting(for: polygon.layer) else { continue }
-            if drawClippedSilk(polygon.id, layer: polygon.layer, setting: setting) { continue }
-            drawPolygonVertices(polygon.renderVertices(arcPrecision: 32), color: setting.color, context: context, transform: transform, fill: setting.mode == .fill, width: defaultWidth)
-        }
-        for pad in horizonPadOutlineFragments(board.packagePads) {
-            guard let setting = setting(for: pad.layer) else { continue }
-            for path in pad.paths where path.count >= 3 {
-                drawPolygonVertices(path, color: setting.color, context: context, transform: transform, fill: setting.mode == .fill, width: defaultWidth)
-            }
-        }
-        for via in board.vias {
-            let ring = via.ringOutline()
-            if ring.count >= 3 {
-                for layer in via.copperLayers {
-                    guard let setting = setting(for: layer) else { continue }
-                    drawPolygonVertices(ring, color: setting.color, context: context, transform: transform, fill: setting.mode == .fill, width: defaultWidth)
-                }
-            }
-            for layer in via.maskLayers {
-                let opening = via.maskOutline(on: layer)
-                guard opening.count >= 3, let setting = setting(for: layer) else { continue }
-                drawPolygonVertices(opening, color: setting.color, context: context, transform: transform, fill: setting.mode == .fill, width: defaultWidth)
-            }
-        }
-        for keepout in board.keepouts {
-            guard let setting = setting(for: keepout.polygon.layer) else { continue }
-            drawPolygonVertices(keepout.polygon.renderVertices(arcPrecision: 32), color: setting.color, context: context, transform: transform, fill: false, width: defaultWidth, alpha: 0.7)
-        }
-        for segment in board.tracks + board.netTies + board.lines + board.packageLines {
-            guard let setting = setting(for: segment.layer) else { continue }
-            if drawClippedSilk(segment.id, layer: segment.layer, setting: setting) { continue }
-            drawSegment(segment, color: setting.color, width: max(segment.width, defaultWidth), context: context, transform: transform)
-        }
-        for arc in board.arcs + board.packageArcs {
-            guard let setting = setting(for: arc.layer) else { continue }
-            if drawClippedSilk(arc.id, layer: arc.layer, setting: setting) { continue }
-            drawArc(arc, color: setting.color, width: max(arc.width, defaultWidth), context: context, transform: transform)
-        }
-        for decal in board.decals {
-            for polygon in decal.polygons {
-                guard let setting = setting(for: polygon.layer) else { continue }
+            for polygon in board.polygons + board.packagePolygons where polygon.layer == layer {
                 if drawClippedSilk(polygon.id, layer: polygon.layer, setting: setting) { continue }
                 drawPolygonVertices(polygon.renderVertices(arcPrecision: 32), color: setting.color, context: context, transform: transform, fill: setting.mode == .fill, width: defaultWidth)
             }
-            for line in decal.lines {
-                guard let setting = setting(for: line.layer) else { continue }
-                if drawClippedSilk(line.id, layer: line.layer, setting: setting) { continue }
-                drawSegment(line, color: setting.color, width: max(line.width, defaultWidth), context: context, transform: transform)
+            for pad in padFragments where pad.layer == layer {
+                for path in pad.paths where path.count >= 3 {
+                    drawPolygonVertices(path, color: setting.color, context: context, transform: transform, fill: setting.mode == .fill, width: defaultWidth)
+                }
             }
-            for arc in decal.arcs {
-                guard let setting = setting(for: arc.layer) else { continue }
+            for via in board.vias {
+                if via.copperLayers.contains(layer) {
+                    let ring = via.ringOutline()
+                    if ring.count >= 3 {
+                        drawPolygonVertices(ring, color: setting.color, context: context, transform: transform, fill: setting.mode == .fill, width: defaultWidth)
+                    }
+                }
+                if via.maskLayers.contains(layer) {
+                    let opening = via.maskOutline(on: layer)
+                    if opening.count >= 3 {
+                        drawPolygonVertices(opening, color: setting.color, context: context, transform: transform, fill: setting.mode == .fill, width: defaultWidth)
+                    }
+                }
+            }
+            for keepout in board.keepouts where keepout.polygon.layer == layer {
+                drawPolygonVertices(keepout.polygon.renderVertices(arcPrecision: 32), color: setting.color, context: context, transform: transform, fill: false, width: defaultWidth, alpha: 0.7)
+            }
+            for segment in board.tracks + board.netTies + board.lines + board.packageLines where segment.layer == layer {
+                if drawClippedSilk(segment.id, layer: segment.layer, setting: setting) { continue }
+                drawSegment(segment, color: setting.color, width: max(segment.width, defaultWidth), context: context, transform: transform)
+            }
+            for arc in board.arcs + board.packageArcs where arc.layer == layer {
                 if drawClippedSilk(arc.id, layer: arc.layer, setting: setting) { continue }
                 drawArc(arc, color: setting.color, width: max(arc.width, defaultWidth), context: context, transform: transform)
             }
-            for text in decal.texts {
-                guard let setting = setting(for: text.layer) else { continue }
+            for decal in board.decals {
+                for polygon in decal.polygons where polygon.layer == layer {
+                    if drawClippedSilk(polygon.id, layer: polygon.layer, setting: setting) { continue }
+                    drawPolygonVertices(polygon.renderVertices(arcPrecision: 32), color: setting.color, context: context, transform: transform, fill: setting.mode == .fill, width: defaultWidth)
+                }
+                for line in decal.lines where line.layer == layer {
+                    if drawClippedSilk(line.id, layer: line.layer, setting: setting) { continue }
+                    drawSegment(line, color: setting.color, width: max(line.width, defaultWidth), context: context, transform: transform)
+                }
+                for arc in decal.arcs where arc.layer == layer {
+                    if drawClippedSilk(arc.id, layer: arc.layer, setting: setting) { continue }
+                    drawArc(arc, color: setting.color, width: max(arc.width, defaultWidth), context: context, transform: transform)
+                }
+                for text in decal.texts where text.layer == layer {
+                    if drawClippedSilk(text.id, layer: text.layer, setting: setting) { continue }
+                    drawText(text, color: setting.color, context: context, transform: transform, width: defaultWidth)
+                }
+            }
+            for text in board.texts + board.packageTexts where text.layer == layer {
                 if drawClippedSilk(text.id, layer: text.layer, setting: setting) { continue }
                 drawText(text, color: setting.color, context: context, transform: transform, width: defaultWidth)
             }
         }
-        for text in board.texts + board.packageTexts {
-            guard let setting = setting(for: text.layer) else { continue }
-            if drawClippedSilk(text.id, layer: text.layer, setting: setting) { continue }
-            drawText(text, color: setting.color, context: context, transform: transform, width: defaultWidth)
-        }
+        // Dimensions and holes go on top whichever way the layers run.
+        // (Horizon has them as two more layers above the board's, which its
+        // reversed order paints first, under the copper that then hides
+        // them.)
         drawDimensions(board.dimensions, color: rgbColor(from: palette.layerColor(for: HorizontalBoardLayers.dimensions)), context: context, transform: transform, width: defaultWidth)
+        let holeColor = HorizontalRGBColor(red: 0.95, green: 0.95, blue: 0.95)
         for hole in board.holes + board.viaHoles + board.packageHoles {
-            drawCircle(center: hole.position, radius: hole.diameter / 2, color: HorizontalRGBColor(red: 0.95, green: 0.95, blue: 0.95), context: context, transform: transform, width: defaultWidth)
+            // Horizon's "Holes size: Specified": every hole at the one
+            // diameter, a slot keeping its length (`CanvasPDF::img_hole`).
+            var drawn = hole
+            if let holeDiameter {
+                drawn.diameter = holeDiameter
+            }
+            if drawn.shape == .slot, drawn.effectiveLength > drawn.diameter {
+                drawPolygonVertices(drawn.outlinePoints(precision: 32), color: holeColor, context: context, transform: transform, fill: false, width: defaultWidth)
+            } else {
+                drawCircle(center: drawn.position, radius: drawn.diameter / 2, color: holeColor, context: context, transform: transform, width: defaultWidth)
+            }
         }
+    }
+
+    /// The enabled layers of a board drawing in the order they are painted,
+    /// as Horizon's `export_pdf` sorts them: by where each lies in the stack
+    /// (`LayerProvider::get_layer_position`: a user layer where the board
+    /// puts it, any other at its own number), the lowest first, or the
+    /// highest first when `reversed`.
+    static func paintOrder(
+        of layerSettings: [Int: HorizontalExportLayerSetting],
+        board: HorizontalBoard,
+        reversed: Bool
+    ) -> [HorizontalExportLayerSetting] {
+        let userPositions = board.userLayers.reduce(into: [Int: Double]()) { $0[$1.id] = $1.position ?? Double($1.id) }
+        func position(_ layer: Int) -> Double {
+            userPositions[layer] ?? Double(layer)
+        }
+        let ascending = layerSettings.values.filter(\.enabled).sorted {
+            let a = position($0.layer), b = position($1.layer)
+            return a == b ? $0.layer < $1.layer : a < b
+        }
+        return reversed ? ascending.reversed() : ascending
     }
 
     private static func writeCSV(_ rows: [[String]], to url: URL) throws {
@@ -3511,7 +3548,10 @@ private extension HorizontalRGBColor {
     }
 }
 
-private func rgbColor(from color: Color) -> HorizontalRGBColor {
+/// A SwiftUI colour as the red, green and blue the exporters draw with: what
+/// a palette colour is drawn in, and what a colour picked for a board
+/// drawing's layer is kept as.
+func rgbColor(from color: Color) -> HorizontalRGBColor {
     #if os(macOS)
     let nsColor = NSColor(color)
     let converted = nsColor.usingColorSpace(.deviceRGB) ?? nsColor

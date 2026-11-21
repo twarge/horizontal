@@ -12,7 +12,6 @@ struct HorizontalRenderAnnotations {
     var overlay: [HorizontalBoardItem.Shape] = []
     /// The part of the board the picture shows; nil for all of it.
     var region: HorizontalRect?
-    var mirrored = false
 
     var isEmpty: Bool { gridMM == nil && highlight.isEmpty && overlay.isEmpty }
 
@@ -23,10 +22,10 @@ struct HorizontalRenderAnnotations {
     func draw(in context: CGContext, mapping: HorizontalDispatchRender.PageMapping, pixelsPerPoint: CGFloat) {
         let pixel = 1 / max(pixelsPerPoint, 0.01)
         let content = mapping.content
-        // A mirrored drawing is the board turned over about its middle.
-        func place(_ point: HorizontalPoint) -> CGPoint {
-            mapping.point(mirrored ? HorizontalPoint(x: content.minX + content.maxX - point.x, y: point.y) : point)
-        }
+        // The mapping puts a point where the drawing has it, turned over
+        // about the board's middle when the drawing is mirrored.
+        let mirrored = mapping.mirrored
+        let place = mapping.point
         func color(_ components: [CGFloat]) -> CGColor {
             CGColor(colorSpace: CGColorSpaceCreateDeviceRGB(), components: components) ?? CGColor(gray: 0, alpha: 1)
         }

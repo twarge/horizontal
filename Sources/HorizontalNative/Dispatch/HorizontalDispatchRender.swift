@@ -103,7 +103,9 @@ enum HorizontalDispatchRender {
         // The exporter draws no airwires, and the PDF it writes is for
         // fabrication drawings, which shouldn't gain them; they go on the
         // raster instead, on the page the exporter laid out.
-        let mapping = { (pageSize: CGSize) in PageMapping(bounds: boardPageBounds(board), margin: 36, pageSize: pageSize) }
+        let mapping = { (pageSize: CGSize) in
+            PageMapping(bounds: boardPageBounds(board), margin: 36, pageSize: pageSize, mirrored: mirrored)
+        }
         let notes = annotations.flatMap { $0.isEmpty ? nil : $0 }
         let overlay: ((CGContext, CGSize, CGFloat) -> Void)? = airwires == nil && notes == nil ? nil : { context, pageSize, pixelsPerPoint in
             if let airwires {
@@ -126,8 +128,9 @@ enum HorizontalDispatchRender {
         }
         defer { try? FileManager.default.removeItem(at: pdfURL.deletingLastPathComponent()) }
         // The exporter pads the board's physical bounds by 8% and fits them
-        // onto the page inside a 36-point margin; mirror this to crop.
-        let crop = region.map { pageRect(for: $0, bounds: boardPageBounds(board), margin: 36) }
+        // onto the page inside a 36-point margin; follow it to crop, to the
+        // other side of the page when the drawing is mirrored.
+        let crop = region.map { pageRect(for: $0, bounds: boardPageBounds(board), margin: 36, mirrored: mirrored) }
         return try rasterize(pdfURL: pdfURL, page: 1, dpi: dpi, maxPixels: maxPixels, crop: crop, overlay: overlay)
     }
 
@@ -210,13 +213,17 @@ enum HorizontalDispatchRender {
 
     /// The exporter's world transform: content `bounds` fitted inside
     /// `margin` on a page of `pageSize`, centred. The page size is read from
-    /// the PDF at raster time.
+    /// the PDF at raster time. A mirrored board drawing is that page flipped
+    /// left to right, the board seen from below, so `mirrored` puts a point
+    /// as far from the content's right edge as it is from its left.
     struct PageMapping {
         var content: HorizontalRect
         var scale: CGFloat
         var origin: CGPoint
+        var mirrored: Bool
 
-        init(bounds: HorizontalRect, margin: CGFloat, pageSize: CGSize) {
+        init(bounds: HorizontalRect, margin: CGFloat, pageSize: CGSize, mirrored: Bool = false) {
+            self.mirrored = mirrored
             content = bounds.isEmpty ? HorizontalRect(center: .zero, size: 100_000_000) : bounds
             let availableWidth = max(pageSize.width - margin * 2, 1)
             let availableHeight = max(pageSize.height - margin * 2, 1)
@@ -228,17 +235,19 @@ enum HorizontalDispatchRender {
         }
 
         func point(_ point: HorizontalPoint) -> CGPoint {
-            CGPoint(x: origin.x + CGFloat(point.x - content.minX) * scale,
+            CGPoint(x: origin.x + CGFloat(mirrored ? content.maxX - point.x : point.x - content.minX) * scale,
                     y: origin.y + CGFloat(point.y - content.minY) * scale)
         }
     }
 
     /// Where a world rectangle lands on that page, as a function of the page
-    /// size.
-    static func pageRect(for region: HorizontalRect, bounds: HorizontalRect, margin: CGFloat) -> (CGSize) -> CGRect {
+    /// size: on a mirrored page, the same part of the board, whose right
+    /// edge is then the rectangle's left.
+    static func pageRect(for region: HorizontalRect, bounds: HorizontalRect, margin: CGFloat,
+                         mirrored: Bool = false) -> (CGSize) -> CGRect {
         { pageSize in
-            let mapping = PageMapping(bounds: bounds, margin: margin, pageSize: pageSize)
-            let corner = mapping.point(HorizontalPoint(x: region.minX, y: region.minY))
+            let mapping = PageMapping(bounds: bounds, margin: margin, pageSize: pageSize, mirrored: mirrored)
+            let corner = mapping.point(HorizontalPoint(x: mirrored ? region.maxX : region.minX, y: region.minY))
             return CGRect(
                 x: corner.x,
                 y: corner.y,
