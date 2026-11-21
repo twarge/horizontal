@@ -3025,6 +3025,11 @@ struct HorizontalIPadProjectView: View {
         }
 
         isLoading = false
+        // The view is up before its project is, so the checks it asked for
+        // as it appeared found no board to read, and loading bumps no
+        // revision that asks for all of them again. The Mac's workspace is
+        // made with its project and needs no such call.
+        rulesInputsChanged()
     }
 
     /// Restores the per-file view state (open panes, separator positions, the
