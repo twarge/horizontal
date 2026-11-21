@@ -1,3 +1,4 @@
+import HorizontalProjectIO
 import SwiftUI
 
 /// Horizon's annotation options (`Schematic::Annotation`), as the schematic
@@ -53,6 +54,37 @@ struct HorizontalAnnotationOptions: Equatable {
     var operation: JSONDictionary {
         ["op": "annotate", "mode": mode.rawValue, "order": order.rawValue,
          "fill_gaps": fillGaps, "keep": keep, "ignore_unknown": ignoreUnknown]
+    }
+}
+
+extension HorizontalAnnotationOptions {
+    /// The options `project`'s top schematic keeps, read from `archive`;
+    /// Horizon's defaults where it keeps none.
+    static func stored(in project: HorizontalProject, archive: HorizontalProjectArchive) -> HorizontalAnnotationOptions {
+        let top = project.blocks.first(where: \.isTop)
+        guard let filename = top?.schematicFilename ?? project.schematicFilename, !filename.isEmpty else {
+            return HorizontalAnnotationOptions()
+        }
+        let url = project.baseURL.appendingPathComponent(filename)
+        var path = archive.manifest?.relativePath(for: url)
+        if path == nil {
+            let base = project.baseURL.standardizedFileURL.path
+            let prefix = base.hasSuffix("/") ? base : base + "/"
+            let target = url.standardizedFileURL.path
+            if target.hasPrefix(prefix) {
+                path = String(target.dropFirst(prefix.count))
+            }
+        }
+        guard let path, let data = archive.regularFileData(relativePath: path),
+              let json = try? JSONHelper.loadDictionary(from: data) else {
+            return HorizontalAnnotationOptions()
+        }
+        return HorizontalAnnotationOptions(json: json.dictionary("annotation"))
+    }
+
+    /// What Annotate says it did, of the `annotated` count its op returns.
+    static func message(annotated count: Int) -> String {
+        count == 0 ? "Every part was annotated already." : "Annotated \(count) part\(count == 1 ? "" : "s")."
     }
 }
 

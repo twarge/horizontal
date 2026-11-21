@@ -57,6 +57,9 @@ struct HorizontalIPadProjectView: View {
     @State private var planeFillDelivery: HorizontalPlaneFillDelivery?
     @State private var planeFillRevision = 0
     @State private var powerNetsPopoverPresented = false
+    @State private var annotatePopoverPresented = false
+    /// What Annotate did, said under its own name: it is no failed edit.
+    @State private var annotateResultMessage: String?
     /// The first launch's offer of Horizon's default pool.
     @State private var isOfferingDefaultPool = false
     @State private var selectedNetIDs = Set<String>()
@@ -217,6 +220,15 @@ struct HorizontalIPadProjectView: View {
                     Button("OK", role: .cancel) {}
                 } message: {
                     Text(libraryPlacementError ?? "")
+                }
+                .focusedSceneValue(\.horizonAnnotateAction, annotateMenuAction)
+                .alert("Annotate", isPresented: Binding(
+                    get: { annotateResultMessage != nil },
+                    set: { if !$0 { annotateResultMessage = nil } }
+                )) {
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text(annotateResultMessage ?? "")
                 }
                 .alert("Can't Make That Edit", isPresented: Binding(
                     get: { schematicEditMessage != nil },
@@ -1858,6 +1870,18 @@ struct HorizontalIPadProjectView: View {
                         isReadOnly: isReadOnly,
                         onCommand: { schematicCanvasActions?.dispatch(.manageBus($0)) }
                     )
+                    AnnotateToolButton {
+                        annotatePopoverPresented.toggle()
+                    }
+                    .popover(isPresented: $annotatePopoverPresented) {
+                        HorizontalAnnotatePopover(
+                            options: HorizontalAnnotationOptions.stored(in: project, archive: document.settledArchive),
+                            isReadOnly: isReadOnly
+                        ) { options in
+                            annotatePopoverPresented = false
+                            annotate(options)
+                        }
+                    }
                     AddTextToolButton {
                         schematicCanvasActions?.dispatch(.addText)
                     }
@@ -2260,6 +2284,32 @@ struct HorizontalIPadProjectView: View {
         boardSyncRevision += 1
         schematicEditRevision += 1
         checkPlaneFills()
+    }
+
+    /// Design ▸ Annotate…, while a schematic that can be edited shows.
+    private var annotateMenuAction: (() -> Void)? {
+        guard !isReadOnly, project?.schematic != nil else {
+            return nil
+        }
+        return { annotatePopoverPresented = true }
+    }
+
+    /// Horizon's Annotate, over the whole design, as on macOS: one undoable
+    /// edit, and a word on how many parts it numbered.
+    private func annotate(_ options: HorizontalAnnotationOptions) {
+        guard !isReadOnly, let current = project else {
+            return
+        }
+        do {
+            let edited = try HorizontalCanvasProjectEdit.archive(
+                applying: [options.operation], to: document.archive, in: current)
+            try applyArchiveEdit(edited.archive, to: current, actionName: "Annotate")
+            if let count = edited.changes.first?["annotated"] as? Int {
+                annotateResultMessage = HorizontalAnnotationOptions.message(annotated: count)
+            }
+        } catch {
+            schematicEditMessage = "Couldn't annotate: \(HorizontalCanvasProjectEdit.message(for: error))"
+        }
     }
 
     /// Horizon's Move to other sheet, as on macOS: one undoable edit, then

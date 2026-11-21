@@ -767,6 +767,8 @@ struct ProjectWorkspaceView: View {
     /// The block symbol editor wrote the symbol since the sheets were baked.
     @State private var blockSymbolNeedsReload = false
     @State private var annotatePopoverPresented = false
+    /// What Annotate did, said under its own name: it is no failed edit.
+    @State private var annotateResultMessage: String?
     /// The project's parts against their pools, for the Parts pane, the
     /// updates sheet and the info bar that says when they fall behind.
     @StateObject private var partLibrary = HorizontalPartLibraryMonitor()
@@ -1073,6 +1075,7 @@ struct ProjectWorkspaceView: View {
             .focusedSceneValue(\.horizonToggleRightSidebarAction, { toggleRightSidebar(.selection) })
             .focusedSceneValue(\.horizonUpdateAllPlanesAction, updateAllBoardPlanes)
             .focusedSceneValue(\.horizonPowerNetsAction, showPowerNets)
+            .focusedSceneValue(\.horizonAnnotateAction, annotateMenuAction)
             .focusedSceneValue(\.horizonLeaveBlockAction, canLeaveBlock ? { leaveBlock() } : nil)
             .focusedSceneValue(\.horizonClearAllPlanesAction, clearAllBoardPlanes)
             .focusedSceneValue(\.horizonBoardRulesAction, showBoardRulesWindow)
@@ -1343,6 +1346,14 @@ struct ProjectWorkspaceView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(libraryReplacementError ?? "")
+            }
+            .alert("Annotate", isPresented: Binding(
+                get: { annotateResultMessage != nil },
+                set: { if !$0 { annotateResultMessage = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(annotateResultMessage ?? "")
             }
             .alert("Can't Make That Edit", isPresented: Binding(
                 get: { schematicEditMessage != nil },
@@ -4846,8 +4857,29 @@ struct ProjectWorkspaceView: View {
 
     /// The top schematic's annotation options, as Horizon keeps them.
     private var annotationOptions: HorizontalAnnotationOptions {
-        let top = project.blocks.first(where: \.isTop)
-        return HorizontalAnnotationOptions(json: documentJSON(top?.schematicFilename ?? project.schematicFilename)?.dictionary("annotation"))
+        HorizontalAnnotationOptions.stored(in: project, archive: document.settledArchive)
+    }
+
+    /// Design ▸ Annotate…, while a schematic that can be edited shows.
+    private var annotateMenuAction: (() -> Void)? {
+        guard !isReadOnly, selectedSchematic != nil else {
+            return nil
+        }
+        return { showAnnotate() }
+    }
+
+    /// Design ▸ Annotate…: the popover on the schematic rail, or, with the
+    /// rail hidden, Annotate with the options the schematic keeps.
+    private func showAnnotate() {
+        guard !isReadOnly, selectedSchematic != nil else {
+            return
+        }
+        visiblePanes.insert(.schematic)
+        if !isDistractionFree, !isWindowToolbarHidden {
+            annotatePopoverPresented = true
+        } else {
+            annotate(annotationOptions)
+        }
     }
 
     /// Horizon's Annotate, over the whole design, on one undo step.
@@ -4856,7 +4888,7 @@ struct ProjectWorkspaceView: View {
               let count = changes.first?["annotated"] as? Int else {
             return
         }
-        schematicEditMessage = count == 0 ? "Every part was annotated already." : "Annotated \(count) part\(count == 1 ? "" : "s")."
+        annotateResultMessage = HorizontalAnnotationOptions.message(annotated: count)
     }
 
     /// Horizon's Add Block. Returns the new block's id.

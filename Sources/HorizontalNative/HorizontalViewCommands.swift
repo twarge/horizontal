@@ -45,6 +45,10 @@ private struct HorizontalPowerNetsActionKey: FocusedValueKey {
     typealias Value = () -> Void
 }
 
+private struct HorizontalAnnotateActionKey: FocusedValueKey {
+    typealias Value = () -> Void
+}
+
 private struct HorizontalLeaveBlockActionKey: FocusedValueKey {
     typealias Value = () -> Void
 }
@@ -311,6 +315,12 @@ extension FocusedValues {
         set { self[HorizontalPowerNetsActionKey.self] = newValue }
     }
 
+    /// Horizon's Annotate, while a schematic that can be edited shows.
+    var horizonAnnotateAction: (() -> Void)? {
+        get { self[HorizontalAnnotateActionKey.self] }
+        set { self[HorizontalAnnotateActionKey.self] = newValue }
+    }
+
     /// Horizon's Pop to parent block, while a block opened from a block
     /// symbol shows.
     var horizonLeaveBlockAction: (() -> Void)? {
@@ -386,6 +396,7 @@ struct HorizontalViewCommands: Commands {
     @AppStorage(HorizontalRulesCheckDefaults.checksAutomaticallyKey) private var checksRulesAutomatically = true
     @FocusedValue(\.horizonCleanUpProjectPoolAction) private var cleanUpProjectPoolAction
     @FocusedValue(\.horizonPowerNetsAction) private var powerNetsAction
+    @FocusedValue(\.horizonAnnotateAction) private var annotateAction
     @FocusedValue(\.horizonLeaveBlockAction) private var leaveBlockAction
     @FocusedValue(\.horizonClearAllPlanesAction) private var clearAllPlanesAction
     @FocusedValue(\.horizonBoardRulesAction) private var boardRulesAction
@@ -645,6 +656,11 @@ struct HorizontalViewCommands: Commands {
                     canvasCommandActions?.dispatch(.tieNets)
                 }
                 .disabled(canvasCommandActions?.canTieNets != true)
+
+                Button("Annotate…") {
+                    annotateAction?()
+                }
+                .disabled(annotateAction == nil)
             }
 
             // Going into and out of blocks changes nothing, so it stays when
