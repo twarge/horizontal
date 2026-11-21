@@ -1746,6 +1746,7 @@ struct ProjectWorkspaceView: View {
         planePourScheduler.deliver = { applyPouredPlanes($0) }
         checkPlaneFills()
         if !isSecondaryWindow {
+            sharedProject?.planePourScheduler = planePourScheduler
             registerLiveDocument()
             startFileWatcher()
             // The project as this window loaded it, for windows already open
@@ -4279,18 +4280,30 @@ struct ProjectWorkspaceView: View {
     /// badge and the board's markers. An edit often comes with others, so
     /// the check waits for them to settle; a later one cancels it. The last
     /// findings stay up until the new ones are in.
+    ///
+    /// A pour that is pending or running is waited for too: a track just
+    /// laid across a plane touches the old fill until the pour clears it,
+    /// and checking in between showed violations that the pour then took
+    /// away. The check is of the board as it stands once the pour is done.
     private func scheduleClearanceCheck() {
         clearanceCheckTask?.cancel()
-        guard let board = project.board, rulesResultsState != nil else {
+        guard project.board != nil, rulesResultsState != nil else {
             clearanceCheckTask = nil
             return
         }
         rulesResultsState?.isCheckingClearance = true
-        let tiedNets = HorizontalBoardClearanceCheck.tiedNets(of: project)
         clearanceCheckTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(400))
-            guard !Task.isCancelled,
-                  let results = await HorizontalBoardRulesCheck.results(board: board, tiedNets: tiedNets),
+            // The project window pours for its other windows, so they wait
+            // on its pours; the fills reach them as a change to the project,
+            // which asks for this check again.
+            await ((isSecondaryWindow ? sharedProject?.planePourScheduler : nil) ?? planePourScheduler).settled()
+            // The board as it is now, with the fills a pour just gave it.
+            guard !Task.isCancelled, let board = project.board else {
+                return
+            }
+            let tiedNets = HorizontalBoardClearanceCheck.tiedNets(of: project)
+            guard let results = await HorizontalBoardRulesCheck.results(board: board, tiedNets: tiedNets),
                   !Task.isCancelled else {
                 return
             }

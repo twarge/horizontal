@@ -29,6 +29,10 @@ final class HorizontalSharedProject: ObservableObject {
     let projectChanges = PassthroughSubject<Void, Never>()
     /// A window's Spotlight, for the others to bring it into their views.
     let spotlights = PassthroughSubject<UUID, Never>()
+    /// The project window's pours, which are every window's: the others
+    /// wait on it before a rules check, as the project window does on its
+    /// own, so none of them checks a new track against the old fill.
+    weak var planePourScheduler: HorizontalPlanePourScheduler?
     private var isNotifying = false
     private var windowCount = 1
 

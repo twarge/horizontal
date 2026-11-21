@@ -2774,19 +2774,24 @@ struct HorizontalIPadProjectView: View {
 
     /// The board's rules checks, in the background, on the board as it
     /// stands, once edits settle; the last findings stay up until the new
-    /// ones are in.
+    /// ones are in. A pour that is pending or running is waited for, as on
+    /// macOS, so the check never sees a new track against the old fill.
     private func scheduleClearanceCheck() {
         clearanceCheckTask?.cancel()
-        guard let project, let board = project.board, rulesResultsState != nil else {
+        guard project?.board != nil, rulesResultsState != nil else {
             clearanceCheckTask = nil
             return
         }
         rulesResultsState?.isCheckingClearance = true
-        let tiedNets = HorizontalBoardClearanceCheck.tiedNets(of: project)
         clearanceCheckTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(400))
-            guard !Task.isCancelled,
-                  let results = await HorizontalBoardRulesCheck.results(board: board, tiedNets: tiedNets),
+            await planePourScheduler.settled()
+            // The board as it is now, with the fills a pour just gave it.
+            guard !Task.isCancelled, let project, let board = project.board else {
+                return
+            }
+            let tiedNets = HorizontalBoardClearanceCheck.tiedNets(of: project)
+            guard let results = await HorizontalBoardRulesCheck.results(board: board, tiedNets: tiedNets),
                   !Task.isCancelled else {
                 return
             }
