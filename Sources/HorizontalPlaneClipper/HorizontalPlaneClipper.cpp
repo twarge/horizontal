@@ -656,7 +656,13 @@ HorizontalClipperFragmentList HorizontalClipperBuildPlaneFillEx(const Horizontal
                 cl_outline.AddPaths(outlinePaths, ClipperLib::ptSubject, true);
                 cl_outline.Execute(ClipperLib::ctUnion, board_outline, ClipperLib::pftEvenOdd);
             }
-            auto contracted = offset_paths(board_outline, -std::max(0.0, params->boardOutlineContract), jt, 10000);
+            // The round at an inside corner of the board is chords, and
+            // Clipper rounds their count to the nearest, so the last may
+            // span half as much again and stray 2.25 times the tolerance
+            // inside the arc. The contract carries 10 um to spare: at
+            // Horizon's tolerance of 10 um that chord came up to 12 um
+            // nearer the corner than the rules allow; at 2 um it cannot.
+            auto contracted = offset_paths(board_outline, -std::max(0.0, params->boardOutlineContract), jt, 2000);
             ClipperLib::Paths temp;
             {
                 ClipperLib::Clipper isect;
