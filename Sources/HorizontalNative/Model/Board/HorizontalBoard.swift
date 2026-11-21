@@ -1571,12 +1571,17 @@ struct HorizontalBoard {
         panelID: String,
         placement: HorizontalPlacementTransform
     ) -> HorizontalText {
-        let childPlacement = HorizontalPlacementTransform(
-            shift: text.position,
-            angle: text.angle,
-            mirrored: text.mirrored
+        // `text` is as the included board draws it, so the panel carries it
+        // as it carries the rest of that board: moved by the placement and
+        // turned by its angle, whichever side the text is on and whether or
+        // not it is mirrored. (Horizon adds the panel's angle to the angle a
+        // text is drawn at.) A mirrored placement, which Horizon has no way
+        // to make, takes the text's mirror image first.
+        let textPlacement = HorizontalPlacementTransform(
+            shift: placement.applying(to: text.position),
+            angle: (placement.mirrored ? 32_768 - text.angle : text.angle) + placement.angle,
+            mirrored: placement.mirrored != text.mirrored
         )
-        let textPlacement = placement.accumulatedText(with: childPlacement)
         return HorizontalText(
             id: prefixed(text.id, panelID: panelID),
             text: text.text,
@@ -2530,9 +2535,14 @@ struct HorizontalBoard {
     ) -> HorizontalBoardDecal {
         let scale = boardDecal.double("scale") ?? 1
         let flipped = boardDecal.bool("flip") ?? placement.mirrored
+        // Horizon draws a flipped decal as it does a flipped package: with the
+        // placement's angle inverted, turned and then mirrored
+        // (`Canvas::render(const BoardDecal &)`). That is this placement's
+        // mirror-then-turn by the angle as the file has it, so the angle is
+        // not inverted again here.
         let renderPlacement = HorizontalPlacementTransform(
             shift: placement.shift,
-            angle: flipped ? -placement.angle : placement.angle,
+            angle: placement.angle,
             mirrored: flipped
         )
         let transform: (HorizontalPoint) -> HorizontalPoint = { point in
@@ -2677,7 +2687,7 @@ struct HorizontalBoard {
                 angle: textTransform.angle,
                 mirrored: textTransform.mirrored
             )
-            let transformed = placement.accumulatedText(with: scaledTextTransform)
+            let transformed = placement.accumulatedBoardText(with: scaledTextTransform)
             return HorizontalText(
                 id: "\(decalID)/text/\(id)",
                 text: text,
@@ -4679,7 +4689,7 @@ struct HorizontalBoard {
                 return nil
             }
 
-            let transformed = packageTransform.accumulatedText(with: textTransform)
+            let transformed = packageTransform.accumulatedBoardText(with: textTransform)
             return HorizontalText(
                 id: "\(boardPackageID)/text/\(id)",
                 text: substitutedText,

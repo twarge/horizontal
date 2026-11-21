@@ -96,23 +96,24 @@ struct HorizontalBoardMotion {
         return keepout
     }
 
-    /// A board text, drawn as it was and carried by the motion, as the canvas
-    /// mirrors and turns a text: a mirror keeps the angle it is drawn at and
-    /// flips the side it reads from, a turn adds to it the way the text
-    /// faces.
+    /// A board text carried by the motion, drawing what it drew moved with
+    /// it. A mirror takes it to the other side as Horizon's flip takes a
+    /// package's smashed text: the angle the file has is kept and the mirror
+    /// flag and the side change, which on a layer read from below draws the
+    /// mirror image. A turn adds to the angle it is drawn at on either side.
     func text(_ text: HorizontalText) -> HorizontalText {
         var text = text
         if mirrors {
-            let drawnAngle = Self.drawnAngle(of: text)
+            let fileAngle = Self.fileAngle(of: text)
             text.position = HorizontalPoint(x: -text.position.x, y: text.position.y)
             text.mirrored.toggle()
-            text.angle = Self.storedAngle(drawing: drawnAngle, mirrored: text.mirrored)
+            text.angle = Self.drawnAngle(fileAngle: fileAngle, mirrored: text.mirrored)
             text.layer = text.layer.map(layer)
         }
         let turn = transform.angle
         let turned = HorizontalPlacementTransform(shift: transform.shift, angle: turn, mirrored: false)
         text.position = turned.applying(to: text.position)
-        text.angle = Self.wrapped(text.angle + (text.mirrored ? -turn : turn))
+        text.angle = Self.wrapped(text.angle + turn)
         return text
     }
 
@@ -126,8 +127,8 @@ struct HorizontalBoardMotion {
         innerLayerCount: Int
     ) -> HorizontalText {
         let drawn = HorizontalPlacementTransform(shift: text.position, angle: text.angle, mirrored: text.mirrored)
-        let local = old.unaccumulatedText(drawn)
-        let placed = new.accumulatedText(with: local)
+        let local = old.unaccumulatedBoardText(drawn)
+        let placed = new.accumulatedBoardText(with: local)
         var text = text
         text.position = placed.shift
         text.angle = placed.angle
@@ -138,11 +139,14 @@ struct HorizontalBoardMotion {
         return text
     }
 
-    private static func drawnAngle(of text: HorizontalText) -> Int {
+    /// The angle the board file has for a text: 32768 less the angle a
+    /// mirrored one is drawn at.
+    private static func fileAngle(of text: HorizontalText) -> Int {
         text.mirrored ? wrapped(32_768 - text.angle) : wrapped(text.angle)
     }
 
-    private static func storedAngle(drawing angle: Int, mirrored: Bool) -> Int {
+    /// The angle a text is drawn at, from the angle its file has.
+    private static func drawnAngle(fileAngle angle: Int, mirrored: Bool) -> Int {
         mirrored ? wrapped(32_768 - angle) : wrapped(angle)
     }
 

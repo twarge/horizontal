@@ -259,7 +259,9 @@ final class BoardDecalInspectorTests: XCTestCase {
     }
 
     /// Horizon's set_flip: the other side of the board, the file's angle
-    /// kept, which a flipped decal turns the other way.
+    /// kept, which Horizon inverts before it draws a flipped decal
+    /// (`Canvas::render(const BoardDecal &)`): turned the other way, then
+    /// mirrored.
     func testFlippedPutsTheDecalOnTheOtherSideAndIsWritten() throws {
         var board = try boardWithTheDecalInItsFile()
         let origin = point(10, 20)
@@ -268,9 +270,10 @@ final class BoardDecalInspectorTests: XCTestCase {
         let decal = try XCTUnwrap(board.decals.first)
         XCTAssertTrue(decal.flip)
         XCTAssertEqual(decal.angle, quarterTurn, "the angle the file has")
-        // As it lay, mirrored across the vertical line through its origin.
-        XCTAssertEqual(try line("x", of: decal).to, origin + point(0, 2))
-        XCTAssertEqual(try line("y", of: decal).to, origin + point(1, 0))
+        // The quarter turn is now clockwise, so the line that ran up y runs
+        // down it; the mirror then leaves the one along -x where it is.
+        XCTAssertEqual(try line("x", of: decal).to, origin + point(0, -2))
+        XCTAssertEqual(try line("y", of: decal).to, origin + point(-1, 0))
         XCTAssertEqual(try line("x", of: decal).layer, HorizontalBoardLayers.bottomSilkscreen)
         XCTAssertEqual(decal.polygons.first?.layer, HorizontalBoardLayers.bottomSilkscreen)
 
@@ -450,7 +453,7 @@ final class BoardDecalInspectorTests: XCTestCase {
         board = try await send(state, item, "positionX", .length(30 * mm))
         let decal = try XCTUnwrap(board.decals.first)
         XCTAssertEqual(decal.position, point(30, 20))
-        XCTAssertEqual(try line("x", of: decal).to, point(30, 24))
+        XCTAssertEqual(try line("x", of: decal).to, point(30, 16), "flipped, its quarter turn is clockwise")
 
         try HorizontalProjectJSONApplicator.apply(board: board, in: project, to: &archive)
         assertSameGeometry(try XCTUnwrap(try reloaded().decals.first), decal)

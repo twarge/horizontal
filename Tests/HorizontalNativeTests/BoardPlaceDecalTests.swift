@@ -308,7 +308,9 @@ final class BoardPlaceDecalTests: XCTestCase {
         XCTAssertEqual(placement.angle, 16_384, "the flip inverts the angle, as Horizon's MIRROR does")
         let at = point(10, 20)
         let placed = try XCTUnwrap(placement.decal(id: "d1", at: at, nInnerLayers: 0, projectPoolURL: projectPoolURL))
-        XCTAssertEqual(try line("x", of: placed).to, at + point(0, 5), "2 mm at 2.5 times, turned and seen from below")
+        // R turned the line down y, and E mirrors it where it lies, as
+        // Horizon's tool does: its mirror image, not half a turn round.
+        XCTAssertEqual(try line("x", of: placed).to, at + point(0, -5), "2 mm at 2.5 times, turned clockwise and mirrored where it lay")
         XCTAssertEqual(try line("x", of: placed).width, 250_000, "its width scaled too")
         board.decals.append(placed)
 

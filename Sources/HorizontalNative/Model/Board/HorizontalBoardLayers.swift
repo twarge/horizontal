@@ -113,6 +113,20 @@ enum HorizontalBoardLayers {
         layer <= bottomCopper
     }
 
+    /// Whether Horizon marks the layer `reverse` (`Board::update_layers`,
+    /// `Package::get_layers`): what it holds is read from under the board,
+    /// so a text on it is drawn mirrored as seen from above. The bottom
+    /// copper, mask, silkscreen, assembly and notes are; the bottom paste,
+    /// package and courtyard are not, nor is any inner layer.
+    static func isReverse(_ layer: Int) -> Bool {
+        switch layer {
+        case bottomCopper, bottomMask, bottomSilkscreen, bottomAssembly, bottomNotes:
+            return true
+        default:
+            return false
+        }
+    }
+
     static func name(for layer: Int) -> String {
         switch layer {
         case topNotes:

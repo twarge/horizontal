@@ -167,6 +167,34 @@ struct HorizontalPlacementTransform: Hashable {
         )
     }
 
+    /// A text of a board package or decal placed with this (the file's
+    /// angle, mirrored for one on the bottom), as Horizon's canvas draws it.
+    /// A schematic symbol's text is `accumulatedText`'s; a board's differs
+    /// because the canvas inverts a flipped package's or decal's angle before
+    /// it draws what the package holds (`Canvas::render(const BoardPackage
+    /// &)`). So the anchor goes where the placement puts the rest of the
+    /// package (`applying`), and the placement's angle adds to the text's on
+    /// either side of the board.
+    func accumulatedBoardText(with child: HorizontalPlacementTransform) -> HorizontalPlacementTransform {
+        let accumulatedMirror = mirrored != child.mirrored
+        return HorizontalPlacementTransform(
+            shift: applying(to: child.shift),
+            angle: (accumulatedMirror ? 32_768 - child.angle : child.angle) + angle,
+            mirrored: accumulatedMirror
+        )
+    }
+
+    /// The child placement `accumulatedBoardText` makes `text` from in this
+    /// frame: its inverse.
+    func unaccumulatedBoardText(_ text: HorizontalPlacementTransform) -> HorizontalPlacementTransform {
+        let turned = text.angle - angle
+        return HorizontalPlacementTransform(
+            shift: inverse.applying(to: text.shift),
+            angle: text.mirrored ? 32_768 - turned : turned,
+            mirrored: text.mirrored != mirrored
+        )
+    }
+
     func rectangle(width: Double, height: Double) -> [HorizontalPoint] {
         let halfWidth = width / 2
         let halfHeight = height / 2
@@ -841,6 +869,15 @@ extension HorizontalText {
 }
 
 extension HorizontalText {
+    /// Whether the text is on a layer read from under the board (Horizon's
+    /// `Layer::reverse`): its glyphs are then drawn mirrored as seen from
+    /// above, so they read the right way round from below, where the flipped
+    /// view and the finished board show them. `angle` and `mirrored` say the
+    /// same on either side; only the drawing differs.
+    var readsFromBelow: Bool {
+        layer.map(HorizontalBoardLayers.isReverse) ?? false
+    }
+
     var renderBoundsPoints: [HorizontalPoint] {
         let segments = HorizontalOutlineTextRenderer.outlineSegments(for: self)
         let points = [position] + segments.flatMap { [$0.0, $0.1] }

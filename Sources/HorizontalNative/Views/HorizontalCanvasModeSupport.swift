@@ -1789,10 +1789,16 @@ enum HorizontalCanvasModeSupport {
         return hole
     }
 
+    /// A text turned about `origin`, drawing what it drew turned with it.
+    /// `angle` is the angle the text is drawn at, which a mirrored text's
+    /// file angle is 32768 less (`accumulatedText`), so the turn adds to it
+    /// whether or not the text is mirrored and whichever side of a board it
+    /// is on. (Horizon's Rotate turns the file angle of a mirrored text the
+    /// other way, which is this.)
     static func rotated(_ text: HorizontalText, around origin: HorizontalPoint, by angleDelta: Int) -> HorizontalText {
         var text = text
         text.position = rotated(text.position, around: origin, by: angleDelta)
-        text.angle = wrappedAngle(text.angle + (text.mirrored ? -angleDelta : angleDelta))
+        text.angle = wrappedAngle(text.angle + angleDelta)
         return text
     }
 

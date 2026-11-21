@@ -9,7 +9,7 @@ import Foundation
 enum HorizontalSmash {
     /// A text's placement as a sheet or board stores it, for one drawn with
     /// `drawn`: the loaders draw a mirrored text at 32768 less the angle it
-    /// stores (`accumulatedText`).
+    /// stores (`accumulatedText`, `accumulatedBoardText`).
     static func storedPlacement(drawing drawn: HorizontalPlacementTransform) -> JSONDictionary {
         let angle = drawn.mirrored ? ((32_768 - drawn.angle) % 65_536 + 65_536) % 65_536 : drawn.angle
         return [
@@ -54,7 +54,7 @@ enum HorizontalSmash {
                   let textPlacement = HorizontalPlacementTransform(json: item.dictionary("placement")) else {
                 return nil
             }
-            return text(from: item, placement: storedPlacement(drawing: placement.accumulatedText(with: textPlacement)), layer: layer)
+            return text(from: item, placement: storedPlacement(drawing: placement.accumulatedBoardText(with: textPlacement)), layer: layer)
         }
     }
 

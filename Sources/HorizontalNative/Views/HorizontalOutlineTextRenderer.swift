@@ -247,37 +247,10 @@ enum HorizontalOutlineTextRenderer {
             return []
         }
 
-        let lines = trimmedText.components(separatedBy: .newlines)
-        let lineCount = max(lines.count - 1, 0)
-        let wrappedAngle = wrap(text.angle)
-        let backwards = wrappedAngle > 16_384 && wrappedAngle <= 49_152 && !text.allowUpsideDown
-        let scale = text.size / 21
-        let lineSkip = (text.size * 1.35 + text.width) * (text.mirrored ? -1 : 1)
-        let yShift = yShift(for: text.origin)
         var outlineSegments = [(HorizontalPoint, HorizontalPoint)]()
-
-        for (lineIndex, line) in lines.enumerated() {
-            let fontLine = lineData(for: line, font: text.font)
-            let lineOffsetIndex = (backwards != text.mirrored) ? lineCount - lineIndex : lineIndex
-            let lineOrigin = linePosition(
-                for: text,
-                lineSkip: lineSkip,
-                lineOffsetIndex: lineOffsetIndex,
-                angle: wrappedAngle
-            )
-            let drawAngle = backwards ? wrappedAngle - 32_768 : wrappedAngle
-            var xShift = backwards ? -fontLine.xRight : 0
-            if text.centered {
-                xShift += backwards ? fontLine.xRight / 2 : -fontLine.xRight / 2
-            }
-
-            for segment in fontLine.segments {
-                let start = localPoint(segment.0, xShift: xShift, yShift: yShift, scale: scale)
-                let end = localPoint(segment.1, xShift: xShift, yShift: yShift, scale: scale)
-                outlineSegments.append((
-                    apply(start, origin: lineOrigin, angle: drawAngle),
-                    apply(end, origin: lineOrigin, angle: drawAngle)
-                ))
+        for line in lineLayouts(for: text, lines: trimmedText.components(separatedBy: .newlines)) {
+            for segment in line.fontLine.segments {
+                outlineSegments.append((line.point(segment.0), line.point(segment.1)))
             }
         }
 
@@ -290,30 +263,9 @@ enum HorizontalOutlineTextRenderer {
             return HorizontalRect(center: text.position, size: max(text.size, text.width))
         }
 
-        let lines = trimmedText.components(separatedBy: .newlines)
-        let lineCount = max(lines.count - 1, 0)
-        let wrappedAngle = wrap(text.angle)
-        let backwards = wrappedAngle > 16_384 && wrappedAngle <= 49_152 && !text.allowUpsideDown
-        let scale = text.size / 21
-        let lineSkip = (text.size * 1.35 + text.width) * (text.mirrored ? -1 : 1)
-        let yShift = yShift(for: text.origin)
-        let drawAngle = backwards ? wrappedAngle - 32_768 : wrappedAngle
         var points = [text.position]
-
-        for (lineIndex, line) in lines.enumerated() {
-            let fontLine = lineData(for: line, font: text.font)
-            let lineOffsetIndex = (backwards != text.mirrored) ? lineCount - lineIndex : lineIndex
-            let lineOrigin = linePosition(
-                for: text,
-                lineSkip: lineSkip,
-                lineOffsetIndex: lineOffsetIndex,
-                angle: wrappedAngle
-            )
-            var xShift = backwards ? -fontLine.xRight : 0
-            if text.centered {
-                xShift += backwards ? fontLine.xRight / 2 : -fontLine.xRight / 2
-            }
-
+        for line in lineLayouts(for: text, lines: trimmedText.components(separatedBy: .newlines)) {
+            let fontLine = line.fontLine
             let minX = min(fontLine.minX, 0)
             let maxX = max(fontLine.maxX, fontLine.xRight)
             let minY = fontLine.segments.isEmpty ? -10 : fontLine.minY
@@ -324,15 +276,71 @@ enum HorizontalOutlineTextRenderer {
                 CGPoint(x: maxX, y: minY),
                 CGPoint(x: maxX, y: maxY),
             ]
-
-            points.append(contentsOf: corners.map { point in
-                let local = localPoint(point, xShift: xShift, yShift: yShift, scale: scale)
-                return apply(local, origin: lineOrigin, angle: drawAngle)
-            })
+            points.append(contentsOf: corners.map(line.point))
         }
 
         let padding = max(text.size / 4, text.width / 2)
         return HorizontalRect(points: points).expanded(by: padding)
+    }
+
+    /// One line of a text where Horizon's `TextRenderer::draw` puts it: where
+    /// the line starts, the angle its glyphs are turned by, whether they are
+    /// then mirrored, and how far along the line they are shifted.
+    private struct LineLayout {
+        var fontLine: FontLine
+        var origin: HorizontalPoint
+        var angle: Int
+        var flipped: Bool
+        var xShift: Double
+        var yShift: Double
+        var scale: Double
+
+        /// A point of the line's glyphs on the canvas: turned, then mirrored
+        /// across the vertical through the line's start (Horizon's
+        /// `Placement::transform` with `mirror` set).
+        func point(_ glyphPoint: CGPoint) -> HorizontalPoint {
+            let local = HorizontalOutlineTextRenderer.localPoint(glyphPoint, xShift: xShift, yShift: yShift, scale: scale)
+            let turned = HorizontalOutlineTextRenderer.rotate(local, angle: angle)
+            return HorizontalPoint(x: origin.x + (flipped ? -turned.x : turned.x), y: origin.y + turned.y)
+        }
+    }
+
+    /// The lines of `text` laid out as Horizon's `TextRenderer::draw` lays
+    /// them out. Its `flip` option is the layer's `reverse`
+    /// (`readsFromBelow`) and its `mirror` option the placement's mirror.
+    /// The angle it draws a reverse layer's text at is 32768 less the angle
+    /// the text has here (`TextRenderer::render`), so one angle serves a
+    /// text on either side and the mirroring is all in the drawing.
+    private static func lineLayouts(for text: HorizontalText, lines: [String]) -> [LineLayout] {
+        let flip = text.readsFromBelow
+        let mirror = text.mirrored
+        let angle = wrap(flip ? 32_768 - text.angle : text.angle)
+        let backwards = angle > 16_384 && angle <= 49_152 && !text.allowUpsideDown
+        let lineCount = max(lines.count - 1, 0)
+        let lineSkip = (text.size * 1.35 + text.width) * (mirror ? -1 : 1)
+        let offsetAngle = flip ? 32_768 - angle : angle
+        let drawAngle = backwards ? angle - 32_768 : angle
+        let scale = text.size / 21
+        let yShift = yShift(for: text.origin)
+
+        return lines.enumerated().map { lineIndex, line in
+            let fontLine = lineData(for: line, font: text.font)
+            let lineOffsetIndex = ((backwards != mirror) != flip) ? lineCount - lineIndex : lineIndex
+            let offset = rotate(HorizontalPoint(x: 0, y: -lineSkip * Double(lineOffsetIndex)), angle: offsetAngle)
+            var xShift = backwards ? -fontLine.xRight : 0
+            if text.centered {
+                xShift += backwards ? fontLine.xRight / 2 : -fontLine.xRight / 2
+            }
+            return LineLayout(
+                fontLine: fontLine,
+                origin: HorizontalPoint(x: text.position.x + offset.x, y: text.position.y + offset.y),
+                angle: drawAngle,
+                flipped: flip,
+                xShift: xShift,
+                yShift: yShift,
+                scale: scale
+            )
+        }
     }
 
     private static func path(for text: HorizontalText, transform: HorizontalCanvasTransform) -> Path {
@@ -467,7 +475,7 @@ enum HorizontalOutlineTextRenderer {
         }
     }
 
-    private static func localPoint(
+    fileprivate static func localPoint(
         _ point: CGPoint,
         xShift: Double,
         yShift: Double,
@@ -479,29 +487,7 @@ enum HorizontalOutlineTextRenderer {
         )
     }
 
-    private static func linePosition(
-        for text: HorizontalText,
-        lineSkip: Double,
-        lineOffsetIndex: Int,
-        angle: Int
-    ) -> HorizontalPoint {
-        let offset = rotate(
-            HorizontalPoint(x: 0, y: -lineSkip * Double(lineOffsetIndex)),
-            angle: angle
-        )
-        return HorizontalPoint(x: text.position.x + offset.x, y: text.position.y + offset.y)
-    }
-
-    private static func apply(
-        _ point: HorizontalPoint,
-        origin: HorizontalPoint,
-        angle: Int
-    ) -> HorizontalPoint {
-        let rotated = rotate(point, angle: angle)
-        return HorizontalPoint(x: origin.x + rotated.x, y: origin.y + rotated.y)
-    }
-
-    private static func rotate(_ point: HorizontalPoint, angle: Int) -> HorizontalPoint {
+    fileprivate static func rotate(_ point: HorizontalPoint, angle: Int) -> HorizontalPoint {
         switch wrap(angle) {
         case 0:
             return point

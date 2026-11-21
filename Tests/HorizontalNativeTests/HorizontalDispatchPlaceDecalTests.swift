@@ -175,9 +175,10 @@ final class HorizontalDispatchPlaceDecalTests: XCTestCase {
     }
 
     /// A flip mirrors the decal onto the bottom and inverts its angle in the
-    /// file, so it still turns by angle_deg as the top view draws it, and a
-    /// scale grows it; a decal the project pool already caches is not
-    /// cached again, and one placed twice in a batch is cached once.
+    /// file, as Horizon's tool does, so it is the decal turned by angle_deg
+    /// and mirrored where it lies, and a scale grows it; a decal the project
+    /// pool already caches is not cached again, and one placed twice in a
+    /// batch is cached once.
     func testFlipScaleAndCachingOnce() throws {
         try openDisk()
         let both = try result(try apply(handle, ["ops": [
@@ -200,10 +201,10 @@ final class HorizontalDispatchPlaceDecalTests: XCTestCase {
         let decal = try XCTUnwrap(try HorizontalProject.load(from: packageURL).board?.decals.first { $0.id == flippedID })
         XCTAssertTrue(decal.flip)
         XCTAssertEqual(decal.scale, 2)
-        // Mirrored, the 4 mm line runs along -x, and the quarter turn takes
-        // it down y; it is on the bottom silkscreen.
-        let x = try XCTUnwrap(line(decal, from: HorizontalPoint(x: 30 * mm, y: 26 * mm)))
-        XCTAssertEqual(Set([x.from, x.to]), [HorizontalPoint(x: 30 * mm, y: 30 * mm), HorizontalPoint(x: 30 * mm, y: 26 * mm)])
+        // The quarter turn takes the 4 mm line up y, where the mirror onto
+        // the bottom leaves it; it is on the bottom silkscreen.
+        let x = try XCTUnwrap(line(decal, from: HorizontalPoint(x: 30 * mm, y: 34 * mm)))
+        XCTAssertEqual(Set([x.from, x.to]), [HorizontalPoint(x: 30 * mm, y: 30 * mm), HorizontalPoint(x: 30 * mm, y: 34 * mm)])
         XCTAssertEqual(x.layer, HorizontalBoardLayers.bottomSilkscreen)
 
         let again = try result(try apply(handle, ["ops": [["op": "place_decal", "decal": "test logo", "x_mm": 5, "y_mm": 5]]]))

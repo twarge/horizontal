@@ -47,6 +47,31 @@ final class HorizontalBoardMotionTests: XCTestCase {
         }
     }
 
+    /// The same for a board package's or decal's text, whose frame takes the
+    /// placement's angle as its geometry does (`accumulatedBoardText`).
+    func testUnaccumulatedBoardTextUndoesAccumulatedBoardText() {
+        for angle in Self.angles {
+            for mirrored in [false, true] {
+                let frame = HorizontalPlacementTransform(shift: HorizontalPoint(x: 3_000_000, y: 2_000_000), angle: angle, mirrored: mirrored)
+                for childAngle in [0, 4_096, 30_000] {
+                    for childMirrored in [false, true] {
+                        let child = HorizontalPlacementTransform(shift: HorizontalPoint(x: 300_000, y: 1_000_000), angle: childAngle, mirrored: childMirrored)
+                        let placed = frame.accumulatedBoardText(with: child)
+                        let back = frame.unaccumulatedBoardText(placed)
+                        let label = "\(angle) \(mirrored) \(childAngle) \(childMirrored)"
+                        XCTAssertEqual(back.angle, child.angle, label)
+                        XCTAssertEqual(back.mirrored, child.mirrored, label)
+                        XCTAssertEqual(back.shift.x, child.shift.x, accuracy: 1e-6, label)
+                        XCTAssertEqual(back.shift.y, child.shift.y, accuracy: 1e-6, label)
+                        // The anchor is where the placement puts the package's
+                        // own geometry.
+                        XCTAssertEqual(placed.shift, frame.applying(to: child.shift), label)
+                    }
+                }
+            }
+        }
+    }
+
     /// A package put somewhere else in memory draws what the board, written
     /// with it there and loaded again, draws: its pads and label frames, pad
     /// centres, holes and its refdes, on the layers of the side it is on.
