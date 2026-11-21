@@ -62,4 +62,26 @@ extension SchematicClipboardTests {
         XCTAssertEqual(pastedIn.bool("is_port"), false, "the top block has no ports")
         XCTAssertEqual(nets.filter { $0.string("name") == "GND" }.count, 1, "the block's GND is the top block's")
     }
+
+    func testWhatIsCopiedInTheTopSchematicPastesIntoABlock() throws {
+        let (fixture, channel) = try channelFixture()
+        let top = try XCTUnwrap(fixture.project.schematics.first { $0.block.isTop })
+        let source = fixture.sheet
+        let destination = try XCTUnwrap(channel.schematic.sheets.first)
+        let clipboard = try HorizontalSchematicClipboardEditor.copy(
+            allRefs(source), from: source, schematicURL: top.schematic.url,
+            anchor: .zero, archive: fixture.archive, project: fixture.project
+        )
+        let paste = try HorizontalSchematicClipboardEditor.prepare(
+            HorizontalSchematicClipboard(data: clipboard.data()), at: HorizontalPoint(x: 30_000_000, y: 0),
+            sheetID: destination.id, schematicURL: channel.schematic.url,
+            archive: fixture.archive, project: fixture.project
+        )
+        XCTAssertEqual(paste.sheet.symbols.count, destination.symbols.count + 2)
+        let placed = try paste.placedArchive(.init(shift: .zero, angle: 0, mirrored: false), in: fixture.archive)
+        let reloaded = try HorizontalProject.loadSnapshot(of: placed)
+        let channelAfter = try XCTUnwrap(reloaded.schematics.first { !$0.block.isTop })
+        XCTAssertEqual(channelAfter.schematic.sheets.first?.symbols.count, destination.symbols.count + 2)
+        XCTAssertEqual(reloaded.schematics.first { $0.block.isTop }?.schematic.sheets.first?.symbols.count, source.symbols.count)
+    }
 }

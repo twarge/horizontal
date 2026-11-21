@@ -3339,7 +3339,12 @@ struct ProjectWorkspaceView: View {
             }
         } else {
             canvasCommandActionsByPane.removeValue(forKey: pane)
-            if activeCanvasCommandPane == pane {
+            // A pane still showing keeps the keyboard: its canvas has only
+            // been taken down for another, as the schematic's is on turning
+            // to a block's sheets, which are another file's. Passing the
+            // keyboard on then left it with the board, and ⌘V on the block's
+            // sheet, of what was copied on the top one, pasted nothing.
+            if activeCanvasCommandPane == pane, !visiblePanes.contains(pane) {
                 activeCanvasCommandPane = canvasCommandActionsByPane.keys
                     .filter { visiblePanes.contains($0) }
                     .sorted { $0.rawValue < $1.rawValue }
