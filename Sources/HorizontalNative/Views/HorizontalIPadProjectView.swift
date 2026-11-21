@@ -221,7 +221,12 @@ struct HorizontalIPadProjectView: View {
                 } message: {
                     Text(libraryPlacementError ?? "")
                 }
-                .focusedSceneValue(\.horizonAnnotateAction, annotateMenuAction)
+                // Annotate is not published as a focused scene value, as the
+                // Mac publishes it for its Design menu: the iPad has no menu
+                // to read it, and a closure is a new value on every pass.
+                // With a sidebar's list on screen while a document opened
+                // from the browser, each pass set the focused values again,
+                // which asked for another pass, and the document never drew.
                 .alert("Annotate", isPresented: Binding(
                     get: { annotateResultMessage != nil },
                     set: { if !$0 { annotateResultMessage = nil } }
@@ -2284,14 +2289,6 @@ struct HorizontalIPadProjectView: View {
         boardSyncRevision += 1
         schematicEditRevision += 1
         checkPlaneFills()
-    }
-
-    /// Design ▸ Annotate…, while a schematic that can be edited shows.
-    private var annotateMenuAction: (() -> Void)? {
-        guard !isReadOnly, project?.schematic != nil else {
-            return nil
-        }
-        return { annotatePopoverPresented = true }
     }
 
     /// Horizon's Annotate, over the whole design, as on macOS: one undoable
