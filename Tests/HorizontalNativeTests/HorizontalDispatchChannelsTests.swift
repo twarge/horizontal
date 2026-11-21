@@ -2,8 +2,8 @@ import XCTest
 import HorizontalProjectIO
 @testable import HorizontalNative
 
-/// channel_capacity, escape_analysis, find_stubs and render_board's
-/// annotations through MCP. The board is one channel of
+/// channel_capacity, escape_analysis, find_stubs, check's warning of a stub
+/// and render_board's annotations through MCP. The board is one channel of
 /// `BlockLayoutFixture`: R1 at the origin, R2 5 mm right of it and R3 10 mm,
 /// pads 0.8 × 0.9 mm at ±0.75 mm; OUT1 is R2's pad 2 and R3's, each with a
 /// stub to a junction, the two not joined.
@@ -115,6 +115,23 @@ final class HorizontalDispatchChannelsTests: XCTestCase {
         let other = try XCTUnwrap(try client.result("find_stubs", ["net": "IN1"]) as? JSONDictionary)
         XCTAssertEqual(other.int("stub_count"), 1)
         XCTAssertEqual(other.int("via_count"), 0)
+    }
+
+    /// check warns of the run find_stubs calls a dead end and of no other:
+    /// not the track whose end lies in R1's pad, nor the run that ends on a
+    /// via.
+    func testCheckWarnsOfTheDeadEndFindStubsLists() throws {
+        let reply = try XCTUnwrap(try client.result("check", ["full": true]) as? JSONDictionary)
+        let stubs = (reply["messages"] as? [JSONDictionary] ?? []).filter { $0.string("check") == "track_stub" }
+        XCTAssertEqual(stubs.map { $0["objects"] as? [String] ?? [] }, [["44444444-4444-4444-8444-444444444441"]], "\(stubs)")
+        let stub = try XCTUnwrap(stubs.first)
+        XCTAssertEqual(stub.string("level"), "warning")
+        XCTAssertEqual(stub.string("category"), "copper")
+        XCTAssertEqual(stub.string("title"), "Track ends on nothing")
+        XCTAssertEqual(stub.string("net"), "OUT1")
+        XCTAssertTrue((stub.string("detail") ?? "").contains("from pad R2.2"), "\(stub)")
+        XCTAssertEqual(stub.double("x_mm") ?? 0, 5.75, accuracy: 1e-9)
+        XCTAssertEqual(stub.double("y_mm") ?? 0, 1, accuracy: 1e-9)
     }
 
     /// A render takes a grid, items to pick out and shapes to draw over it,

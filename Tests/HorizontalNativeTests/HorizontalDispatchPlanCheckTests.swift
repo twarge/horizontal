@@ -145,7 +145,9 @@ final class HorizontalDispatchPlanCheckTests: XCTestCase {
 
     /// A track drawn through another net's pour is copper against the fill
     /// only until the planes are poured again. On fills as last poured the
-    /// plan sets that finding aside and is ok; poured, there is none.
+    /// plan sets that finding aside and is ok; poured, there is none, and
+    /// what is left is the track's own end on nothing, which lay in the fill
+    /// till then.
     func testATrackThroughAStaleFillIsSetAsideAndNotIntroduced() throws {
         try open()
         // A pour of IN1 round the parts, reaching R1's pad 1 (a fill that
@@ -172,12 +174,43 @@ final class HorizontalDispatchPlanCheckTests: XCTestCase {
         XCTAssertEqual(stale["ok"] as? Bool, true, "\(stale)")
         XCTAssertTrue((stale.string("note") ?? "").contains("stale_fills"))
 
-        // Poured on both boards, the fill has given way: nothing to set aside.
+        // Poured on both boards, the fill has given way: nothing to set
+        // aside, and nothing against a plane. The track stops short of
+        // anything, which is all the plan brings.
         let poured = try dryRun([track], pour: true)
         XCTAssertEqual(poured.string("planes"), "repoured")
         XCTAssertNil(poured["set_aside"], "\(poured)")
-        XCTAssertEqual((poured["introduced"] as? [JSONDictionary])?.count, 0, "\(poured)")
-        XCTAssertEqual(poured["ok"] as? Bool, true, "\(poured)")
+        XCTAssertEqual((poured["introduced"] as? [JSONDictionary])?.map { $0.string("check") ?? "" }, ["track_stub"], "\(poured)")
+    }
+
+    /// A track a plan draws from a pad to a bare point is introduced as a
+    /// track that ends on nothing, a warning from the op that drew it;
+    /// check_ignore sets it aside for a pass that leaves the route to be
+    /// finished by the next.
+    func testATrackToNowhereIsIntroducedAsAStubUnlessIgnored() throws {
+        try open()
+        let track: JSONDictionary = ["op": "place_track", "from": ["component": component("R2"), "pad": "2"],
+                                     "to": ["x_mm": 5.75, "y_mm": 4.5], "layer": 0, "width_mm": 0.2]
+        let check = try dryRun([track])
+        let introduced = try XCTUnwrap(check["introduced"] as? [JSONDictionary])
+        XCTAssertEqual(introduced.map { $0.string("check") ?? "" }, ["track_stub"], "\(check)")
+        XCTAssertEqual(introduced.first?.string("level"), "warning")
+        XCTAssertEqual(introduced.first?.string("category"), "copper")
+        XCTAssertEqual(introduced.first?["from_ops"] as? [Int], [0])
+        XCTAssertEqual(check.dictionary("introduced_kinds")?.int("track_stub"), 1)
+        XCTAssertEqual(check["ok"] as? Bool, false)
+
+        let reply = try client.call("apply", ["ops": [track], "dry_run": true, "check": "delta", "check_ignore": ["track_stub"]])
+        let ignored = try XCTUnwrap((reply["result"] as? JSONDictionary)?.dictionary("check"), "\(reply)")
+        XCTAssertEqual(ignored.dictionary("set_aside")?.int("track_stub"), 1, "\(ignored)")
+        XCTAssertEqual((ignored["introduced"] as? [JSONDictionary])?.count, 0)
+        XCTAssertEqual(ignored["ok"] as? Bool, true)
+
+        // Run on to the other pad of its net, it is no stub.
+        let landed: JSONDictionary = ["op": "place_track", "from": ["x_mm": 5.75, "y_mm": 4.5],
+                                      "to": ["component": component("R3"), "pad": "2"], "layer": 0, "width_mm": 0.2]
+        let whole = try dryRun([track, landed])
+        XCTAssertFalse((whole["introduced"] as? [JSONDictionary] ?? []).contains { $0.string("check") == "track_stub" }, "\(whole)")
     }
 
     /// check_ignore leaves a kind of finding out of introduced and ok and

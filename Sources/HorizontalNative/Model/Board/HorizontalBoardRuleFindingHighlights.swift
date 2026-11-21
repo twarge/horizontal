@@ -2,8 +2,9 @@ import Foundation
 
 /// What the canvas strokes in orange for the board findings that aren't a
 /// clearance pair's (`HorizontalBoardRuleFinding.highlights`): copper that
-/// joins two nets, a plane over another net's pad and a package standing
-/// in a height restriction, each the edge of what is wrong as far as it runs.
+/// joins two nets, a track stub, a plane over another net's pad and a
+/// package standing in a height restriction, each the edge of what is wrong
+/// as far as it runs.
 extension HorizontalBoardRulesCheck {
     /// A short's tracks and vias, outlined together on each layer as a
     /// clearance finding's copper is, so the path the two nets meet along
@@ -12,6 +13,13 @@ extension HorizontalBoardRulesCheck {
                            tracks: [String: HorizontalSegment], vias: [String: HorizontalMarker]) -> [[HorizontalPoint]] {
         HorizontalBoardClearanceCheck.outline(tracks: short.trackIDs.compactMap { tracks[$0] },
                                               vias: short.viaIDs.compactMap { vias[$0] })
+    }
+
+    /// A stub's tracks, outlined together as a short's are: the whole run
+    /// back from the dead end the marker stands at, which is what there is
+    /// to finish or take up.
+    static func highlights(of stub: HorizontalTrackStub) -> [[HorizontalPoint]] {
+        HorizontalBoardClearanceCheck.outline(tracks: stub.tracks, vias: [])
     }
 
     /// Where `plane` covers `pads`, outlined: what of each pad the fill runs

@@ -63,7 +63,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `find_path` | one connection searched on a fine grid against exact shapes, on one layer or several joined by vias, and not committed: the path with the ops that draw it, or `blocked_by`, the items bounding what it could reach from each end. It places no via in a pad of the net unless `via_in_pad` |
 | `channel_capacity` | along a line across a corridor, the stretches a track's centre may lie on and how many tracks fit in each, layer by layer |
 | `escape_analysis` | for a part's pad field or a region: the gates in its perimeter and what each holds, the gates each net reaches, whether all can get out at once, and which pairs of nets cannot share a layer |
-| `find_stubs` | dead-end runs of track with what each end touches, vias joined on fewer than two layers, tracks inside one pad |
+| `find_stubs` | dead-end runs of track with what each end touches, vias joined on fewer than two layers, tracks inside one pad. `check` warns of each run with `dead_end` true, as the app's rules check does, but one that ends where a connection line starts |
 | `list_net_labels`, `list_power_symbols` | what names a net on a page, with the ids their remove ops take |
 | `list_block_instances` | the blocks this block uses, their wired ports, and where each is drawn; for the top block's instances, `board`: how many of its parts are placed, the instances laid out like it (`in_sync_with`) and the parts that differ from each (`differs_from`) |
 | `autoroute` | best-effort automatic routing of one net's airwires |
@@ -532,9 +532,9 @@ checks on the staged board and on the board as it is and gives:
   and no airwire added.
 - `introduced_kinds`: how many of `introduced` come under each rule
   (`clearance_copper`, `clearance_silkscreen_exposed_copper`,
-  `board_connectivity`, …; `short` and `plane_over_pad` for the two copper
-  checks that are Horizontal's own), so a list cut at 200 still says what it
-  holds.
+  `board_connectivity`, …; `short`, `plane_over_pad` and `track_stub` for the
+  copper checks that are Horizontal's own), so a list cut at 200 still says
+  what it holds.
 - `set_aside`: findings the plan brings that are counted here and not listed,
   and do not make `ok` false. `stale_fills` is those against a plane's fill
   while `planes` is `"stale"`: new copper through a plane of another net
@@ -544,10 +544,11 @@ checks on the staged board and on the board as it is and gives:
 
 `check_ignore` is a list of kinds to leave out of `introduced`: `"silkscreen"`
 (short for `clearance_silkscreen_exposed_copper`), a rule kind as `board_rules`
-lists them, or `short` and `plane_over_pad`. It is for a routing pass on a
-board whose silkscreen has not been tidied, where every track that passes
-under a reference designator is a finding of its own. `"full"`'s `findings`
-sets nothing aside.
+lists them, or `short`, `plane_over_pad` and `track_stub`. It is for a routing
+pass on a board whose silkscreen has not been tidied, where every track that
+passes under a reference designator is a finding of its own, or for one that
+stops a route short for the next pass to finish, which is a track that ends on
+nothing until then. `"full"`'s `findings` sets nothing aside.
 
 A finding is matched between the two boards by its kind, its check and the
 ids of what it is about, not by where it is. Both boards are checked whole;

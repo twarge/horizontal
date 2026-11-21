@@ -417,7 +417,7 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "find_stubs",
-            summary: "Copper that goes nowhere: dead-end runs of track with their length and what each end touches (by junction, and by the copper the end lies in, since a run on no shared junction can still be carrying its net), vias that copper of their net meets on fewer than two layers, and tracks lying wholly inside one pad.",
+            summary: "Copper that goes nowhere: dead-end runs of track with their length and what each end touches (by junction, and by the copper the end lies in, since a run on no shared junction can still be carrying its net), vias that copper of their net meets on fewer than two layers, and tracks lying wholly inside one pad. check warns of the runs with dead_end true as Track ends on nothing, but one that ends where a connection line starts.",
             params: ["handle": "Project handle.", "net": "Only this net's, by name or id (optional).",
                      "region": "Only what reaches into {min_x_mm, min_y_mm, max_x_mm, max_y_mm} (optional).",
                      "limit": "Maximum of each list to return; default 200, maximum 5000."],
@@ -481,7 +481,7 @@ enum HorizontalDispatchMethods {
                 "dry_run": "Validate and report without writing (default false).",
                 "check": "With dry_run, also run the board checks on the board the batch would leave and say what it changes: \"delta\" for the findings it introduces and resolves, \"full\" for every finding of that board as well. The reply's check also counts airwires before and after and lists the tracks a moved part stretched.",
                 "pour": "With check, pour the planes again first, on the board as it is and as the batch would leave it, so clearance to fills and the silkscreen rule are measured against copper that is there (default false: the fills stay as last poured, the reply says planes are stale, and a finding against a fill is counted in set_aside.stale_fills rather than listed, since a pour takes the fill out of the way).",
-                "check_ignore": "With check, kinds of finding to leave out of introduced and ok, counted in set_aside instead: \"silkscreen\", or a rule kind as board_rules lists them (clearance_copper_keepout, track_width, …), or short and plane_over_pad. For a routing pass on a board whose silkscreen is not done.",
+                "check_ignore": "With check, kinds of finding to leave out of introduced and ok, counted in set_aside instead: \"silkscreen\", or a rule kind as board_rules lists them (clearance_copper_keepout, track_width, …), or short, plane_over_pad and track_stub. For a routing pass on a board whose silkscreen is not done, or one that leaves a route to be finished by the next.",
                 "sync": "Make the batch's edits of a block instance's parts and copper in the instances laid out like it too (default true); the reply's synced says what that did."
             ],
             handler: applyOperations

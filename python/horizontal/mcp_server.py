@@ -1455,7 +1455,8 @@ def find_stubs(path: str | None = None, net: str | None = None, region: Region |
     """Copper that goes nowhere. stubs: runs of track with an end on nothing, each with its tracks, net, length_mm
     and ends — what each end touches (pad, via, junction with how many tracks, or nothing). An end on no junction with
     anything else can still lie in a pad or across a track of the board: lies_in names that copper and dead_end is
-    then false, because the run may be carrying its net there — check before removing it. vias_on_one_layer: vias
+    then false, because the run may be carrying its net there — check before removing it; check warns of the runs
+    with dead_end true, but one that ends where a connection line starts. vias_on_one_layer: vias
     that copper of their net meets on fewer than two of their layers (joined_on), fills as last poured included.
     tracks_in_a_pad: tracks with both ends inside one pad."""
     return _resolve(path).find_stubs(net=net, region=region.model_dump() if region else None, limit=limit)
@@ -1502,7 +1503,8 @@ def board_info(path: str | None = None) -> dict[str, Any]:
 def check(path: str | None = None, full: bool = False) -> dict[str, Any]:
     """Run the checks Horizontal has: load diagnostics, rules validation, annotation, single-pin nets, components with
     no symbol on any sheet, unplaced packages, unrouted connections, copper that joins two nets (tracks and vias
-    reaching pads of both, a poured plane over a pad of another), Horizon's copper clearance checks — copper of two
+    reaching pads of both, a poured plane over a pad of another), tracks that end on nothing (a warning in category
+    copper for each dead-end run find_stubs lists, its tracks in objects), Horizon's copper clearance checks — copper of two
     nets, or copper and an unplated hole or the board edge, closer than the clearance rules allow, each an error in
     category clearance naming first and second (type, id, label, net), the layer and layers, distance_mm,
     clearance_mm, the rule (kind, id, brief) and x_mm and y_mm, with the pairs that are the same problem a little way
@@ -1670,7 +1672,7 @@ def apply_ops(ops: list[EditOperation] = [], path: str | None = None, dry_run: b
               pool_items: list[dict[str, Any]] | None = None, block: str | None = None, sync: bool = True,
               check: Annotated[Literal["delta", "full"] | None, Field(description="With dry_run, run the board checks on the board the batch would leave. \"delta\": what it introduces and resolves. \"full\": every finding of that board as well.")] = None,
               pour: Annotated[bool, Field(description="With check, pour the planes again first, on the board as it is and as planned. Without it the fills are as last poured and the reply says planes: stale.")] = False,
-              check_ignore: Annotated[list[str] | None, Field(description="With check, kinds of finding to leave out of introduced and ok, counted in set_aside instead: \"silkscreen\", or a rule kind as board_rules lists them (clearance_copper_keepout, track_width, board_connectivity, …), or short and plane_over_pad.")] = None) -> dict[str, Any]:
+              check_ignore: Annotated[list[str] | None, Field(description="With check, kinds of finding to leave out of introduced and ok, counted in set_aside instead: \"silkscreen\", or a rule kind as board_rules lists them (clearance_copper_keepout, track_width, board_connectivity, …), or short, plane_over_pad and track_stub.")] = None) -> dict[str, Any]:
     """Apply edit operations. Each op is {"op": name, ...params}; see list_ops. Components and nets may be named by
     refdes or net name, or by id; an unnamed net has only that. Every op that acts on one thing names it by its own
     field (line, track, junction, …) or by id. Wherever an op takes an id — a component, net, wire, junction, symbol
@@ -1704,7 +1706,8 @@ def apply_ops(ops: list[EditOperation] = [], path: str | None = None, dry_run: b
     pour: true pours both boards first (planes: repoured), which costs what pour_planes costs, and measures what
     is left. check_ignore leaves kinds of finding out the same way, counted in set_aside by kind: ["silkscreen"]
     for a routing pass on a board whose labels have not been tidied, where every track that passes under a
-    reference designator is otherwise a finding. check: "full" adds findings, everything check would say of the
+    reference designator is otherwise a finding, ["track_stub"] for a pass that stops a route short for the next to
+    finish, which is a track that ends on nothing until then. check: "full" adds findings, everything check would say of the
     planned board, nothing set aside. The workflow for copper and placement is: probe, dry run with check, commit
     by plan_digest, pour_planes.
 

@@ -13,8 +13,9 @@ struct HorizontalBoardRuleFinding: Identifiable, Equatable, Sendable {
     }
 
     /// The kind of rule the check belongs to; nil for Horizontal's own checks
-    /// of copper (two nets' pads joined, a plane over another net's pad),
-    /// which Horizon leaves to its copper clearance check.
+    /// of copper: two nets' pads joined and a plane over another net's pad,
+    /// which Horizon leaves to its copper clearance check, and a track that
+    /// ends on nothing, which Horizon has no check for.
     var kind: HorizontalBoardRuleKind?
     var level: Level
     /// Which of the kind's checks, as a short key: "airwire", "not_placed".
@@ -157,7 +158,8 @@ struct HorizontalBoardCheckResults: Sendable {
 /// the connectivity check in `HorizontalBoardClearanceCheck`, and here track
 /// width, hole size, preflight, plane fill order, net ties and height
 /// restrictions; with Horizontal's own copper checks of copper joining two
-/// nets and a plane poured over another net's pad.
+/// nets, a plane poured over another net's pad and tracks that end on nothing
+/// (`trackStubFindings`).
 enum HorizontalBoardRulesCheck {
     /// Every check on `board`, as `rules` (the board's own by default) stand;
     /// nil once `isCancelled` says so.
@@ -174,6 +176,7 @@ enum HorizontalBoardRulesCheck {
         }
         var findings = measured.connectivity
         findings += copperFindings(board: board)
+        findings += trackStubFindings(board: board)
         findings += trackWidthFindings(board: board, rules: rules)
         findings += holeSizeFindings(board: board, rules: rules)
         if isCancelled() { return nil }
@@ -224,8 +227,18 @@ enum HorizontalBoardRulesCheck {
         return name.isEmpty ? "unnamed net" : name
     }
 
+    /// What to frame to show `points`: their box and `margin` round it. A
+    /// track along one axis has a box with no area, which is as much to
+    /// frame as one at an angle; a single point is left as it is, for the
+    /// canvas to frame what it does round a point.
     static func region(_ points: [HorizontalPoint], margin: Double = 1_500_000) -> HorizontalRect {
-        HorizontalRect(points: points).expanded(by: margin)
+        var box = HorizontalRect(points: points)
+        guard box.width > 0 || box.height > 0 else { return box }
+        box.minX -= margin
+        box.minY -= margin
+        box.maxX += margin
+        box.maxY += margin
+        return box
     }
 
     static func packagesByID(_ board: HorizontalBoard) -> [String: HorizontalPlacement] {

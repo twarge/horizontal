@@ -210,7 +210,7 @@ enum HorizontalDispatchChecks {
             "ok": (counts["error"] ?? 0) == 0,
             "counts": ["error": counts["error"] ?? 0, "warning": counts["warning"] ?? 0, "info": counts["info"] ?? 0],
             "messages": full ? messages.map(\.json) : grouped(messages),
-            "note": "These are load diagnostics, rules validation, and connectivity facts, plus the components and board packages nothing has placed, packages whose component is gone, the warnings the schematic canvas draws on each sheet, copper that joins two nets — tracks and vias reaching pads of both, or a poured plane over a pad of another — and Horizon's board rules checks. The clearance ones, measured on the copper itself without the routing offset, which only the router keeps: copper of two nets closer than the clearance_copper rules allow; copper closer to an unplated hole or the board edge than clearance_copper_other allows; copper closer to a keepout than clearance_copper_keepout allows; pads, vias and unplated holes of one net closer than clearance_same_net names; silkscreen closer to copper the solder mask leaves bare than clearance_silkscreen_exposed_copper allows. And the rest, each in the category of its rule: track_width, hole_size, preflight_checks (its airwires, unplaced and partless components being the routing, board and part messages), plane fill order (plane), net_ties, board_connectivity (a net's copper in unconnected groups) and height_restrictions. Poured planes count as copper for the rats' nest and the checks."
+            "note": "These are load diagnostics, rules validation, and connectivity facts, plus the components and board packages nothing has placed, packages whose component is gone, the warnings the schematic canvas draws on each sheet, copper that joins two nets — tracks and vias reaching pads of both, or a poured plane over a pad of another — tracks that end on nothing (a warning each, with the run's tracks in objects; find_stubs says what each end touches), and Horizon's board rules checks. The clearance ones, measured on the copper itself without the routing offset, which only the router keeps: copper of two nets closer than the clearance_copper rules allow; copper closer to an unplated hole or the board edge than clearance_copper_other allows; copper closer to a keepout than clearance_copper_keepout allows; pads, vias and unplated holes of one net closer than clearance_same_net names; silkscreen closer to copper the solder mask leaves bare than clearance_silkscreen_exposed_copper allows. And the rest, each in the category of its rule: track_width, hole_size, preflight_checks (its airwires, unplaced and partless components being the routing, board and part messages), plane fill order (plane), net_ties, board_connectivity (a net's copper in unconnected groups) and height_restrictions. Poured planes count as copper for the rats' nest and the checks."
         ]
     }
 
@@ -376,14 +376,16 @@ enum HorizontalDispatchChecks {
     /// Three of the preflight check's findings are messages of their own
     /// above — airwires (Unrouted connections, Not reached by the plane),
     /// components with no package (Not placed on the board) and components
-    /// with no part (No part assigned) — as are Horizontal's copper checks
-    /// (Copper joins two nets, Plane runs over a pad on another net), so
-    /// those aren't given twice.
+    /// with no part (No part assigned) — as are two of Horizontal's copper
+    /// checks (Copper joins two nets, Plane runs over a pad on another net),
+    /// so those aren't given twice. Its third, a track that ends on nothing,
+    /// is a message here, in the copper category the other two are in.
     static func ruleMessages(_ findings: [HorizontalBoardRuleFinding]) -> [Message] {
         findings.compactMap { finding in
-            guard let kind = finding.kind,
-                  !(kind == .preflightChecks && ["airwire", "not_placed", "no_part"].contains(finding.check)) else {
-                return nil
+            if let kind = finding.kind {
+                guard !(kind == .preflightChecks && ["airwire", "not_placed", "no_part"].contains(finding.check)) else { return nil }
+            } else {
+                guard finding.check == HorizontalBoardRulesCheck.trackStubCheck else { return nil }
             }
             var detail = finding.message + "."
             if !finding.detail.isEmpty { detail += " " + finding.detail }
@@ -397,8 +399,8 @@ enum HorizontalDispatchChecks {
             }
             if !finding.layers.isEmpty { json["layers"] = finding.layers.map(HorizontalBoardLayers.name(for:)) }
             if !finding.objectIDs.isEmpty { json["objects"] = finding.objectIDs }
-            if let rule = finding.ruleID { json["rule"] = ["kind": kind.rawValue, "id": rule] as JSONDictionary }
-            return Message(level: finding.level.rawValue, category: kind.rawValue, title: finding.title, detail: detail,
+            if let kind = finding.kind, let rule = finding.ruleID { json["rule"] = ["kind": kind.rawValue, "id": rule] as JSONDictionary }
+            return Message(level: finding.level.rawValue, category: finding.kind?.rawValue ?? "copper", title: finding.title, detail: detail,
                            refdes: finding.refdes,
                            net: finding.netNames.isEmpty ? nil : finding.netNames.joined(separator: " / "),
                            clearance: json)

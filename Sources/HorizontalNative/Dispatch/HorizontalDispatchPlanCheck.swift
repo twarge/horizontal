@@ -18,8 +18,9 @@ enum HorizontalDispatchPlanCheck {
             var objects: [String]
             var clearance: HorizontalClearanceFinding?
             /// The rule it comes under, as board_rules names it
-            /// (clearance_copper, track_width, …); "short" and
-            /// "plane_over_pad" for Horizontal's own two copper checks.
+            /// (clearance_copper, track_width, …); "short",
+            /// "plane_over_pad" and "track_stub" for Horizontal's own copper
+            /// checks.
             var kind: String
             /// One side of it is a plane's fill.
             var againstFill = false
@@ -47,7 +48,8 @@ enum HorizontalDispatchPlanCheck {
     }
 
     /// The kinds of finding `check_ignore` may name.
-    static let kinds = HorizontalBoardRuleKind.allCases.map(\.rawValue) + ["short", "plane_over_pad"]
+    static let kinds = HorizontalBoardRuleKind.allCases.map(\.rawValue)
+        + ["short", "plane_over_pad", HorizontalBoardRulesCheck.trackStubCheck]
 
     /// The kinds a dry run asks to have left out of `introduced`: a
     /// routing pass on a board whose silkscreen is not done yet has no use
@@ -111,7 +113,7 @@ enum HorizontalDispatchPlanCheck {
             if let message = HorizontalDispatchChecks.ruleMessages([finding]).first {
                 json = message.json
             } else if finding.kind == nil {
-                // Horizontal's own copper checks, which `check` words itself.
+                // Horizontal's copper checks that `check` words itself.
                 var own: JSONDictionary = ["level": finding.level.rawValue, "category": "copper", "title": finding.title,
                                            "detail": finding.text, "check": finding.check]
                 if let at = finding.location {

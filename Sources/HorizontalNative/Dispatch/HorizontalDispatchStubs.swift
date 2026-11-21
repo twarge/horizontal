@@ -1,13 +1,9 @@
 import Foundation
 
 /// find_stubs: copper that goes nowhere. Dead-end runs of track with what
-/// each end touches, vias joined on fewer than two layers, and tracks lying
-/// wholly inside one pad.
-///
-/// What an end touches is said twice over, by the netlist of junctions and by
-/// the copper: a run whose free end is on no junction with anything else can
-/// still lie in a pad or across a track of its net, and is then carrying
-/// current. Removing one of those for a stub breaks a connection.
+/// each end touches (`HorizontalBoardTrackStubs`, whose dead ends the rules
+/// check lists as findings), vias joined on fewer than two layers, and tracks
+/// lying wholly inside one pad.
 enum HorizontalDispatchStubs {
     typealias Geometry = HorizontalDispatchBoardGeometry
 
@@ -18,102 +14,43 @@ enum HorizontalDispatchStubs {
         let wanted = try params.string("net").flatMap { $0.isEmpty ? nil : $0 }.map { try Geometry.netID($0, entry: entry) }
         let region = try Geometry.region(params)
         let names = HorizontalBoardRulesCheck.padNames(board)
-        func key(_ point: HorizontalPoint) -> String { "\(Int64(point.x.rounded())):\(Int64(point.y.rounded()))" }
 
-        var padAt = [String: String]()
-        for (path, point) in board.packagePadPositions { padAt[key(point)] = path.lowercased() }
-        var viaAt = [String: HorizontalMarker]()
-        for via in board.vias { viaAt[key(via.position)] = via }
-
-        /// What a track's end is on: its junction, or the pad it is bound to.
-        struct Node: Hashable { var id: String }
-        func node(_ track: HorizontalSegment, _ first: Bool) -> Node {
-            if let junction = first ? track.fromJunctionID : track.toJunctionID { return Node(id: "j:" + junction.lowercased()) }
-            let point = first ? track.from : track.to
-            if let pad = padAt[key(point)] { return Node(id: "p:" + pad) }
-            return Node(id: "x:" + key(point) + ":\(track.layer ?? 0)")
-        }
-        var ends = [Node: [(track: Int, first: Bool)]]()
-        var position = [Node: HorizontalPoint]()
-        for (index, track) in board.tracks.enumerated() {
-            for first in [true, false] {
-                let at = node(track, first)
-                ends[at, default: []].append((index, first))
-                position[at] = first ? track.from : track.to
-            }
-        }
-        func describe(_ at: Node, layer: Int?, excluding chain: Set<String>) -> JSONDictionary {
-            let point = position[at] ?? .zero
-            var json: JSONDictionary = HorizontalDispatchJSON.point(point)
-            let count = ends[at]?.count ?? 0
-            if at.id.hasPrefix("p:") {
-                let path = String(at.id.dropFirst(2))
+        func describe(_ end: HorizontalTrackStub.End) -> JSONDictionary {
+            var json: JSONDictionary = HorizontalDispatchJSON.point(end.position)
+            switch end.touch {
+            case .pad(let path):
                 json["touches"] = "pad"
                 json["pad"] = names[path] ?? path
-            } else if let via = viaAt[key(point)] {
+            case .via(let id):
                 json["touches"] = "via"
-                json["via"] = via.id
-            } else if count > 1 {
+                json["via"] = id
+            case .junction(let tracks):
                 json["touches"] = "junction"
-                json["tracks"] = count
-            } else {
+                json["tracks"] = tracks
+            case .nothing where end.liesIn.isEmpty:
                 json["touches"] = "nothing"
-            }
-            // The copper the end lies in, whatever the junctions say.
-            if json.string("touches") == "nothing", let layer {
-                let here = HorizontalBoardItem.Shape.disc(point, radius: 0)
-                var lying = [String]()
-                for index in items.indices(overlapping: HorizontalRouteClearanceProbe.bounds([point], growth: 1)) {
-                    let item = items.items[index]
-                    guard item.isOn(layer), item.kind.isCopper, !chain.contains(item.id.lowercased()),
-                          HorizontalShapeGap.between(here, item.shape, limit: 0) != nil else { continue }
-                    lying.append(item.kind == .track ? "Track \(item.id)" : item.label)
-                }
-                if !lying.isEmpty {
-                    json["lies_in"] = Array(Set(lying)).sorted()
-                    json["touches"] = "copper it shares no junction with"
-                }
+            case .nothing:
+                json["lies_in"] = end.liesIn
+                json["touches"] = "copper it shares no junction with"
             }
             return json
         }
 
-        // Dead ends: an end alone on a plain junction. The run is walked on
-        // through junctions of two tracks to where it branches, lands or ends.
         var chains = [JSONDictionary]()
-        var walked = Set<Int>()
-        for (start, list) in ends.sorted(by: { $0.key.id < $1.key.id }) {
-            guard list.count == 1, !start.id.hasPrefix("p:"), viaAt[key(position[start] ?? .zero)] == nil else { continue }
-            var tracks = [Int]()
-            var at = start
-            var next = list[0]
-            while true {
-                guard walked.insert(next.track).inserted else { break }
-                tracks.append(next.track)
-                at = node(board.tracks[next.track], !next.first)
-                let others = (ends[at] ?? []).filter { $0.track != next.track }
-                guard others.count == 1, !at.id.hasPrefix("p:"), viaAt[key(position[at] ?? .zero)] == nil else { break }
-                next = others[0]
-            }
-            guard !tracks.isEmpty else { continue }
-            let segments = tracks.map { board.tracks[$0] }
-            let net = segments.first?.netID?.lowercased()
+        for stub in HorizontalBoardTrackStubs.stubs(of: board, items: items) {
+            let net = stub.netID
             if let wanted, net != wanted { continue }
-            if let region, !segments.contains(where: { Geometry.reaches(.path($0.pathPoints, halfWidth: $0.width / 2), into: region) }) { continue }
-            let ids = Set(segments.map { $0.id.lowercased() })
-            let layer = segments.first?.layer
-            let free = describe(start, layer: layer, excluding: ids)
-            let far = describe(at, layer: segments.last?.layer, excluding: ids)
-            let live = free["lies_in"] != nil
+            if let region, !stub.tracks.contains(where: { Geometry.reaches(.path($0.pathPoints, halfWidth: $0.width / 2), into: region) }) { continue }
             chains.append([
-                "tracks": segments.map(\.id), "net": net as Any? as Any,
+                "tracks": stub.tracks.map(\.id), "net": net as Any? as Any,
                 "net_name": net.flatMap { board.netDetails[$0]?.name } as Any? as Any,
-                "layers": Array(Set(segments.compactMap(\.layer))).sorted(by: >),
-                "length_mm": HorizontalDispatchJSON.mm(segments.reduce(0) { $0 + HorizontalRoute45.length(of: $1.pathPoints) }),
-                "ends": [free, far],
-                "dead_end": !live,
-                "note": live
+                "layers": Array(Set(stub.tracks.compactMap(\.layer))).sorted(by: >),
+                "length_mm": HorizontalDispatchJSON.mm(stub.length),
+                "ends": [describe(stub.free), describe(stub.far)],
+                "dead_end": stub.isDeadEnd,
+                "note": !stub.isDeadEnd
                     ? "Its free end shares no junction with anything but lies in copper of the board: it may be carrying its net there. Check before removing it."
-                    : (far.string("touches") == "nothing" ? "Both ends are free: it joins nothing." : "One end is free: a stub."),
+                    : (stub.joinsNothing ? "Both ends are free: it joins nothing." : "One end is free: a stub."),
             ])
         }
 
