@@ -6160,9 +6160,20 @@ struct BoardCanvasView: View {
         netID: String?
     ) -> [BoardTrackSegmentSpec] {
         if toolSettings.routerMode, let session = trackRouterSession {
-            let approach = session.approach(
+            // With a via armed the route ends where the via may stand on
+            // every layer, unless the click ends the route and drops none
+            // (`BoardTrackRouterVia`).
+            let approach = BoardTrackRouterVia.approach(
+                session: session,
                 from: from, to: to, layer: state.layer, netID: netID,
-                width: state.width, diagonalFirst: state.bendMode == .xy)
+                width: state.width, diagonalFirst: state.bendMode == .xy,
+                via: state.placesVia ? routeVia(netID: netID) : nil,
+                endsRoute: {
+                    BoardTrackLoops.endsRoute(
+                        at: to, layer: state.layer,
+                        endsOnPad: routeEndPad(at: to, state: state) != nil,
+                        loopStart: state.loopStart, sparing: state.routeTrackIDs, in: board)
+                })
             return BoardTrackRouting.specs(alongPath: approach.points)
         }
         return BoardTrackRouting.route(
@@ -6575,12 +6586,14 @@ struct BoardCanvasView: View {
             if let net = boardNetID(at: point, layer: state.layer) ?? boardNetID(at: anchorPoint, layer: state.layer) {
                 state.netID = net
             }
-            // On a pad the rules' width; on a track the track's (or the
-            // rules', where the track's is theirs); on either the rules' via;
-            // anywhere else a custom width (W) and via when they are set. A
-            // route that starts on a pad or a track clears the custom width
-            // and via, as Horizon's router keeps them for its route.
-            let startTrack = BoardTrackRouting.track(at: anchorPoint, layer: state.layer, tracks: board.tracks)
+            // On a track the track's width (or the rules', where the track's
+            // is theirs); on a pad the same from a track already leaving it,
+            // else the rules'; on either the rules' via; anywhere else a
+            // custom width (W) and via when they are set. A route that starts
+            // on a pad or a track clears the custom width and via, as
+            // Horizon's router keeps them for its route.
+            let startTrack = BoardTrackRouting.startTrack(
+                at: anchorPoint, onPad: state.anchorOnPad, layer: state.layer, tracks: board.tracks)
             let width = HorizontalRouteWidth.start(
                 explicit: toolSettings.explicitTrackWidth,
                 onPad: state.anchorOnPad,
@@ -6607,7 +6620,7 @@ struct BoardCanvasView: View {
         // Ending on a pad snaps to the pad center, connects directly and
         // finishes the route (mirrors ToolDrawTrack, where clicking a
         // pad completes the track).
-        let endPad = boardPadReference(at: point, layer: state.layer)
+        let endPad = routeEndPad(at: point, state: state)
         let target = endPad?.center ?? point
 
         guard let anchor = state.anchor,
@@ -6806,8 +6819,9 @@ struct BoardCanvasView: View {
         cursor: HorizontalPoint
     ) -> BoardRouteLoopPreview? {
         let current = board
-        // A click in a pad ends the route at its centre.
-        let endPad = boardPadReference(at: cursor, layer: state.layer)
+        // A click in a pad ends the route at its centre, unless it drops a
+        // via in the pad (`routeEndPad`).
+        let endPad = routeEndPad(at: cursor, state: state)
         let target = endPad?.center ?? cursor
         // On the route's own end a click only drops the armed via, and not
         // in a pad (`addDrawTrackPoint`).
@@ -6893,6 +6907,26 @@ struct BoardCanvasView: View {
         )
     }
 
+    /// The pad a click at `point` ends the route in, at its centre. None with
+    /// a via armed over a pad the via may drop in
+    /// (`BoardTrackRouting.viaDropsInPad`): the click lays the route to the
+    /// point itself and drops the via there, as it would on bare board, so an
+    /// exposed pad takes as many as are clicked into it.
+    private func routeEndPad(at point: HorizontalPoint, state: DrawTrackState) -> (path: String, center: HorizontalPoint)? {
+        guard let pad = boardPadReference(at: point, layer: state.layer) else {
+            return nil
+        }
+        if state.placesVia,
+           BoardTrackRouting.viaDropsInPad(
+               center: pad.center,
+               padNetID: boardNetID(at: point, layer: state.layer) ?? boardNetID(at: pad.center, layer: state.layer),
+               routeNetID: state.netID,
+               packageHoles: board.packageHoles) {
+            return nil
+        }
+        return pad
+    }
+
     /// Ends the route: what its clicks laid goes to the document as one
     /// undoable step, and the tool waits for the click that starts the next
     /// route (`armDrawTrack`). A route that laid nothing just ends.
@@ -6915,6 +6949,11 @@ struct BoardCanvasView: View {
         trackRouteHistory = []
         clearRouteLoopPreview()
         if state.hasDrawn {
+            // Clicks along one line leave one track (`mergeCollinearTracks`).
+            if var merged = editedBoard, !merged.mergeCollinearTracks(laidSince: state.originalBoard).isEmpty {
+                editedBoard = merged
+                invalidateSelectableCache()
+            }
             registerUndoSnapshot(state.originalBoard, actionName: "Draw Track")
             publishConnectivityResolvedEdit(board, sync: BoardLayoutSyncIntent(baseline: state.originalBoard, kind: .drawTrack))
         }
@@ -7313,7 +7352,7 @@ struct BoardCanvasView: View {
            pointKey(anchor) == pointKey(cursor) {
             head = anchor
         }
-        guard let head, boardPadReference(at: head, layer: state.layer) == nil else {
+        guard let head, routeEndPad(at: head, state: state) == nil else {
             return nil
         }
         return (head, via)
@@ -8002,6 +8041,11 @@ struct BoardCanvasView: View {
         guard deleteSelectedObjects(from: &draft) else {
             return
         }
+        // A via gone from the middle of a straight run leaves one track
+        // (`mergeCollinearTracks`).
+        let viasLeft = Set(draft.vias.map { normalizedID($0.id) })
+        let mergedTracks = draft.mergeCollinearTracks(
+            at: previousBoard.vias.filter { !viasLeft.contains(normalizedID($0.id)) }.map(\.position))
         // A polygon edge's next is the edge across the gap it left, so the
         // next Delete goes on along the outline.
         let polygonNext = unique.count == 1
@@ -8015,7 +8059,14 @@ struct BoardCanvasView: View {
         invalidateSelectableCache()
         // The neighbour (if any) wasn't deleted, so its ref stays valid through
         // the connectivity recompute below; selecting it renders it highlighted.
-        selectedObjects = (chainNext ?? polygonNext).map { [$0] } ?? []
+        // A neighbouring track the merge took off is selected as the track
+        // that now covers it.
+        let next = (chainNext ?? polygonNext).map { ref in
+            ref.type == .track
+                ? mergedTracks[ref.id].map { HorizontalSelectableRef(id: $0, type: .track, layer: ref.layer) } ?? ref
+                : ref
+        }
+        selectedObjects = next.map { [$0] } ?? []
         hoveredObject = nil
         publishConnectivityResolvedEdit(draft, sync: BoardLayoutSyncIntent(baseline: previousBoard, kind: .delete))
         publishSelectionContext()

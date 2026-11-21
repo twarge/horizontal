@@ -11,7 +11,6 @@ final class PreviewViewController: NSViewController, @preconcurrency QLPreviewin
     private let pdfView = PDFView()
     private let progress = NSProgressIndicator()
     private let errorLabel = NSTextField(labelWithString: "")
-    private var generatedPDFURL: URL?
 
     override func loadView() {
         preferredContentSize = CGSize(width: 960, height: 720)
@@ -35,10 +34,12 @@ final class PreviewViewController: NSViewController, @preconcurrency QLPreviewin
         showLoading()
         Task { @MainActor in
             do {
-                let pdfURL = try await Task.detached(priority: .userInitiated) {
-                    try HorizontalSchematicPreviewRenderer.pdfURL(forProjectAt: url)
+                let preview = try await Task.detached(priority: .userInitiated) {
+                    try PreviewProject.load(at: url)
                 }.value
-                try displayPDF(at: pdfURL)
+                // The board in 3D from the top and the bottom, the
+                // schematic's pages, then the board drawing.
+                display(try await HorizontalProjectPreviewPDF.document(for: preview.project))
                 logger.notice("Preview ready for \(url.path, privacy: .public) in \(Date().timeIntervalSince(startedAt), privacy: .public)s")
                 completion(nil)
             } catch {
@@ -49,15 +50,7 @@ final class PreviewViewController: NSViewController, @preconcurrency QLPreviewin
         }
     }
 
-    private func displayPDF(at url: URL) throws {
-        guard let document = PDFDocument(url: url) else {
-            throw NSError(
-                domain: "com.twarge.horizontal.QuickLook",
-                code: 2,
-                userInfo: [NSLocalizedDescriptionKey: "Could not open generated schematic preview."]
-            )
-        }
-        generatedPDFURL = url
+    private func display(_ document: PDFDocument) {
         pdfView.document = document
         pdfView.autoScales = true
         pdfView.goToFirstPage(nil)

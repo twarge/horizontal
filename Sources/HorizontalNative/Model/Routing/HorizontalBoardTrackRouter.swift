@@ -23,6 +23,9 @@ final class HorizontalBoardTrackRouterSession {
         self.clearances = HorizontalRouterClearances(world: world, rules: board.rules, includesRoutingOffset: true)
     }
 
+    /// How many copper layers the board has: what a through via spans.
+    var copperLayerCount: Int { world.copperLayerCount }
+
     /// The router's dense code for a board net id, or −1 for no net.
     func netCode(for netID: String?) -> Int {
         world.netCode(for: netID)
@@ -60,6 +63,10 @@ final class HorizontalBoardTrackRouterSession {
     /// inspector, the click — and a route that cannot get through costs a
     /// whole search to say so; the board does not change while a session
     /// lasts, so the answer does not either.
+    ///
+    /// `endVia` is the via the click drops at the route's end, when one is
+    /// armed and the click drops it: the end is then where the via may stand
+    /// on every layer it spans.
     func approach(
         from: HorizontalPoint,
         to: HorizontalPoint,
@@ -67,13 +74,14 @@ final class HorizontalBoardTrackRouterSession {
         netID: String?,
         width: Double,
         diagonalFirst: Bool,
-        budget: HorizontalRouteFinder.Budget = .interactive
+        budget: HorizontalRouteFinder.Budget = .interactive,
+        endVia: HorizontalRouteEndVia? = nil
     ) -> HorizontalRouteFinder.Approach {
         let net = netCode(for: netID)
         let key = ApproachKey(
             fromX: from.x, fromY: from.y, toX: to.x.rounded(), toY: to.y.rounded(),
             layer: layer, net: net, width: width, diagonalFirst: diagonalFirst,
-            maxExpansions: budget.maxExpansions)
+            maxExpansions: budget.maxExpansions, endVia: endVia)
         if let known = recentApproaches.first(where: { $0.key == key }) {
             return known.approach
         }
@@ -81,7 +89,7 @@ final class HorizontalBoardTrackRouterSession {
             from: from, to: to, layer: layer,
             net: net, width: width,
             index: index, clearances: clearances,
-            diagonalFirst: diagonalFirst, budget: budget
+            diagonalFirst: diagonalFirst, budget: budget, endVia: endVia
         )
         recentApproaches.insert((key, approach), at: 0)
         if recentApproaches.count > Self.recentApproachLimit {
@@ -97,6 +105,7 @@ final class HorizontalBoardTrackRouterSession {
         var width: Double
         var diagonalFirst: Bool
         var maxExpansions: Int
+        var endVia: HorizontalRouteEndVia?
     }
 
     private static let recentApproachLimit = 8

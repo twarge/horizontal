@@ -442,6 +442,14 @@ enum HorizontalRouteFinder {
     /// the target is only where the cursor is, and it gets no exemption: that
     /// exemption is what used to draw a route straight through whatever the
     /// cursor rested on.
+    ///
+    /// With a via to drop at the end (`endVia`), the end is also somewhere
+    /// the via may stand: clear, on every layer the via spans, of what the
+    /// via and its hole must keep away from (`HorizontalRouteViaCollider`).
+    /// The track is still held only to its own layer, so the route crosses
+    /// copper on the others and stops, or is pushed aside, where its via
+    /// would come too close to it. The via gets no exemption at either end,
+    /// and copper of its own net is none of its obstacles.
     static func approach(
         from: HorizontalPoint,
         to target: HorizontalPoint,
@@ -451,7 +459,8 @@ enum HorizontalRouteFinder {
         index: HorizontalRouterIndex,
         clearances: HorizontalRouterClearances,
         diagonalFirst: Bool = true,
-        budget: Budget = .interactive
+        budget: Budget = .interactive,
+        endVia: HorizontalRouteEndVia? = nil
     ) -> Approach {
         // Whole nanometres: what the route ends on is laid, and the file
         // holds integer coordinates.
@@ -470,11 +479,15 @@ enum HorizontalRouteFinder {
             index: index, clearances: clearances, layer: layer, net: net, width: width,
             exempt: exempt)
 
+        let viaCollider = endVia.map {
+            HorizontalRouteViaCollider(index: index, clearances: clearances, via: $0, net: net, joining: to)
+        }
+
         var goal = to
         var blocker = -1
-        if let inside = collider.blocker(to, to) {
+        if let inside = collider.blocker(to, to) ?? viaCollider?.blocker(at: to) {
             blocker = inside
-            guard let clear = nearestClearPoint(to: to, collider: collider) else {
+            guard let clear = nearestClearPoint(to: to, collider: collider, via: viaCollider) else {
                 return Approach(points: [from], reachesTarget: false, blocker: blocker)
             }
             goal = clear
@@ -493,6 +506,12 @@ enum HorizontalRouteFinder {
             points = pulled(points, collider: collider, diagonalFirst: diagonalFirst)
             points = tightened(points, collider: collider, diagonalFirst: diagonalFirst)
             points = extended(points, toward: goal, collider: collider, diagonalFirst: diagonalFirst)
+            // Where the track could get to is not always where the via may
+            // stand: back along the route to the last point it may.
+            if let viaCollider {
+                if blocker < 0, let end = points.last, let hit = viaCollider.blocker(at: end) { blocker = hit }
+                points = viaCollider.trimmed(points)
+            }
             return Approach(points: points, reachesTarget: false, blocker: blocker)
         }
     }
@@ -586,18 +605,25 @@ enum HorizontalRouteFinder {
     /// tests its candidates against that short list — and the first clear
     /// candidate inside the radius is the nearest there is, since any nearer
     /// one would be inside it too.
+    ///
+    /// With `via`, the point is also one the via dropped at the route's end
+    /// may stand on: its hulls, on every layer it spans, join the track's.
     static func nearestClearPoint(
         to point: HorizontalPoint,
-        collider: HorizontalRouteCollider
+        collider: HorizontalRouteCollider,
+        via: HorizontalRouteViaCollider? = nil
     ) -> HorizontalPoint? {
-        let depth = collider.depth(of: point)
+        let depth = max(collider.depth(of: point), via?.depth(of: point) ?? 0)
         guard depth > 0 else { return point }
         var radius = max(depth, minimumClearPointRadius) + 1
         while radius <= maximumClearPointRadius {
             // A little beyond the radius, for the roundings of a candidate on
             // its edge.
-            let hulls = collider.hulls(within: radius + roundingReach * 2, of: point)
+            var hulls = collider.hulls(within: radius + roundingReach * 2, of: point)
                 .compactMap { collider.hull($0) }
+            if let via {
+                hulls.append(contentsOf: via.hulls(within: radius + roundingReach * 2, of: point))
+            }
             if let found = nearestClearCandidate(to: point, among: hulls, within: radius) {
                 return found
             }

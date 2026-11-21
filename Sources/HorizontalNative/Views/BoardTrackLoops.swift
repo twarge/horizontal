@@ -461,6 +461,31 @@ enum BoardTrackLoops {
 
     // MARK: - Helpers
 
+    /// Whether a click that lays a route on `layer` to `target` ends it there
+    /// and so drops no armed via, as `lay` decides it, asked of the board
+    /// before the click: in a pad (`endsOnPad`), on copper the route joins
+    /// there, the middle of a track included, which `lay` cuts, or where it
+    /// closes a loop on its layer. What the router asks before it holds the
+    /// route's end to where a via may stand (`BoardTrackRouterVia`).
+    static func endsRoute(
+        at target: HorizontalPoint,
+        layer: Int,
+        endsOnPad: Bool,
+        loopStart: BoardTrackLoopEnd?,
+        sparing routeTrackIDs: Set<String>,
+        in board: HorizontalBoard
+    ) -> Bool {
+        if endsOnPad
+            || joins(target, layer: layer, sparing: routeTrackIDs, in: board)
+            || splittableTrackIndex(at: target, layer: layer, sparing: routeTrackIDs, in: board) != nil {
+            return true
+        }
+        guard let loopStart, touchesCopper(target, layer: layer, sparing: routeTrackIDs, in: board) else {
+            return false
+        }
+        return joined(loopStart, BoardTrackLoopEnd(point: target, layer: layer), sparing: routeTrackIDs, in: board)
+    }
+
     /// Whether the route, on `layer`, joins copper at `point` that is not its
     /// own: a via or plated hole that reaches the layer, or a track ending
     /// there on it, which a track the click cut there now does. A pad is the

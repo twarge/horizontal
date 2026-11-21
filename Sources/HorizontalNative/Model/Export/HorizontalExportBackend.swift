@@ -3014,11 +3014,30 @@ extension HorizontalExportBackend {
         }
     }
 
-    fileprivate static func writeSchematicPreviewPDF(project: HorizontalProject, to url: URL) throws {
+    static func writeSchematicPreviewPDF(project: HorizontalProject, to url: URL) throws {
         try exportSchematicPDF(
             project: project,
             settings: HorizontalSchematicPDFExportSettings(filename: url.lastPathComponent),
             palette: HorizontalCanvasPalette.defaultPalette(kind: .schematic, mode: .light),
+            to: url
+        )
+    }
+
+    /// The board as the board drawing export draws it, with the layers that
+    /// export has on by default. Package bodies, assembly drawings and
+    /// courtyards are outlines, as a render has them, so the copper under a
+    /// part can be read.
+    static func writeBoardPreviewPDF(project: HorizontalProject, to url: URL) throws {
+        var settings = HorizontalExportSettings(project: project).boardDrawing
+        settings.filename = url.lastPathComponent
+        for index in settings.layers.indices
+        where HorizontalDispatchRender.outlinedLayers.contains(settings.layers[index].layer) {
+            settings.layers[index].mode = .outline
+        }
+        try exportBoardDrawingPDF(
+            project: project,
+            settings: settings,
+            palette: HorizontalCanvasPalette.defaultPalette(kind: .board, mode: .light),
             to: url
         )
     }

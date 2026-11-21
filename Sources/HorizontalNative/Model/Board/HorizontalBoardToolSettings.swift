@@ -177,7 +177,8 @@ final class HorizontalBoardToolSettings: ObservableObject {
     }
 
     /// A route started on a pad or a track drops the custom width and via:
-    /// its width is the rules' on a pad and continues the track's on a track
+    /// its width continues the track's on a track or on a pad a track
+    /// already leaves, and is the rules' on a bare pad
     /// (`HorizontalRouteWidth.start`), and its via is the rules' on either.
     /// Started anywhere else, a custom width and via hold.
     func startRoute(onPadOrTrack: Bool) {

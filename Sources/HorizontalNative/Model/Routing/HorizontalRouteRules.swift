@@ -65,10 +65,12 @@ enum HorizontalRouteWidth {
         return Resolution(width: BoardTrackRouting.defaultTrackWidth, source: .fallback)
     }
 
-    /// A route's width as it starts. On a pad, the rules' (`fromRules`); on a
-    /// track, the track's, or the rules' for a track whose width is theirs,
-    /// as Horizon's router inherits a track's width and whether it is
-    /// explicit; anywhere else a custom width when one is set, else the rules'.
+    /// A route's width as it starts. On a track, the track's, or the rules'
+    /// for a track whose width is theirs, as Horizon's router inherits a
+    /// track's width and whether it is explicit. On a pad, the same from a
+    /// track that already leaves the pad (`BoardTrackRouting.startTrack`),
+    /// and the rules' (`fromRules`) on a pad with none. Anywhere else a
+    /// custom width when one is set, else the rules'.
     static func start(
         explicit: Double?,
         onPad: Bool = false,
@@ -78,14 +80,14 @@ enum HorizontalRouteWidth {
         rules: HorizontalBoardRules,
         tracks: [HorizontalSegment]
     ) -> Resolution {
-        if onPad {
-            return fromRules(net: net, layer: layer, rules: rules, tracks: tracks)
-        }
         if let startTrack, startTrack.width > 0 {
             if startTrack.widthFromRules, rules.trackWidth(net: net, layer: layer) != nil {
                 return fromRules(net: net, layer: layer, rules: rules, tracks: tracks)
             }
             return Resolution(width: startTrack.width, source: .track(id: startTrack.id))
+        }
+        if onPad {
+            return fromRules(net: net, layer: layer, rules: rules, tracks: tracks)
         }
         if let explicit, explicit > 0 {
             return Resolution(width: explicit, source: .custom)
