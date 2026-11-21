@@ -45,7 +45,7 @@ struct HorizontalBoardRuleFinding: Identifiable, Equatable, Sendable {
     /// What the canvas strokes in orange beside the marker, as it does a
     /// clearance finding's `violation`: lines of points on the board, each
     /// the edge of what is wrong as far as it runs. A clearance finding's
-    /// own are its pair's.
+    /// own are its pairs' (`HorizontalClearanceFinding.highlights`).
     var highlights: [[HorizontalPoint]] = []
     /// The pair, for a clearance finding.
     var clearance: HorizontalClearanceFinding? = nil
@@ -86,18 +86,24 @@ struct HorizontalBoardRuleFinding: Identifiable, Equatable, Sendable {
         self.highlights = highlights
     }
 
-    /// A clearance finding as one of these: an error between two objects.
+    /// A clearance finding as one of these: an error between two objects,
+    /// about those of every pair it stands for as well.
     init(_ finding: HorizontalClearanceFinding) {
+        let objects = finding.pairs.flatMap { [$0.first, $0.second] }
+        func each(_ values: [String]) -> [String] {
+            var seen = Set<String>()
+            return values.filter { seen.insert($0).inserted }
+        }
         self.init(
             kind: finding.ruleKind, level: .error, check: finding.check.rawValue, title: finding.title,
             message: finding.title, detail: finding.detail, location: finding.location, region: finding.region,
             layers: finding.layers,
-            netIDs: [finding.first.netID, finding.second.netID].compactMap { $0 },
-            netNames: [finding.first.netName, finding.second.netName].compactMap { $0 },
-            componentIDs: [finding.first.componentID, finding.second.componentID].compactMap { $0 },
-            objectIDs: [finding.first.id, finding.second.id].filter { !$0.isEmpty },
+            netIDs: each(objects.compactMap(\.netID)),
+            netNames: each(objects.compactMap(\.netName)),
+            componentIDs: each(objects.compactMap(\.componentID)),
+            objectIDs: each(objects.map(\.id).filter { !$0.isEmpty }),
             ruleID: finding.ruleID,
-            showsPlane: finding.first.type == .plane || finding.second.type == .plane)
+            showsPlane: objects.contains { $0.type == .plane })
         clearance = finding
     }
 }
@@ -135,6 +141,8 @@ struct HorizontalHeightRestriction: Hashable, Sendable {
 
 /// Everything the board checks found.
 struct HorizontalBoardCheckResults: Sendable {
+    /// The clearance check's pairs, those that are one problem as one
+    /// finding (`HorizontalBoardClearanceCheck.merged`).
     var clearance: [HorizontalClearanceFinding]
     var findings: [HorizontalBoardRuleFinding]
 
@@ -174,7 +182,8 @@ enum HorizontalBoardRulesCheck {
         if isCancelled() { return nil }
         findings += netTieFindings(board: board, rules: rules)
         findings += heightRestrictionFindings(board: board, rules: rules)
-        return HorizontalBoardCheckResults(clearance: measured.clearance, findings: sorted(findings))
+        return HorizontalBoardCheckResults(clearance: HorizontalBoardClearanceCheck.merged(measured.clearance),
+                                           findings: sorted(findings))
     }
 
     /// `run`, off the main thread; nil once the calling task is cancelled.

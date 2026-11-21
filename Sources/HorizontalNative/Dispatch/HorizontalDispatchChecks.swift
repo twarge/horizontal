@@ -304,7 +304,9 @@ enum HorizontalDispatchChecks {
 
     /// Horizon's clearance checks (`HorizontalBoardClearanceCheck`): one
     /// error per pair of objects too close, naming both, with the layers,
-    /// the distance, the clearance, the rule and where.
+    /// the distance, the clearance, the rule and where; and in `also` the
+    /// pairs that are the same problem a little way along, which are no
+    /// errors of their own.
     static func clearanceMessages(_ findings: [HorizontalClearanceFinding]) -> [Message] {
         findings.map { finding in
             let title: String
@@ -349,6 +351,22 @@ enum HorizontalDispatchChecks {
         ]
         if finding.outsideBoard {
             json["outside_board"] = true
+        }
+        if !finding.also.isEmpty {
+            json["also"] = finding.also.map { pair -> JSONDictionary in
+                var also: JSONDictionary = [
+                    "first": object(pair.first),
+                    "second": object(pair.second),
+                    "distance_mm": HorizontalDispatchJSON.mm(pair.distance),
+                    "clearance_mm": HorizontalDispatchJSON.mm(pair.clearance),
+                    "x_mm": HorizontalDispatchJSON.mm(pair.location.x),
+                    "y_mm": HorizontalDispatchJSON.mm(pair.location.y),
+                ]
+                if pair.outsideBoard {
+                    also["outside_board"] = true
+                }
+                return also
+            }
         }
         return json
     }

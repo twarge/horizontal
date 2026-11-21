@@ -147,6 +147,17 @@ not checked. Each finding is one `clearance` error per pair of objects:
 Horizon's 0.1 mm, and `brief`), and `x_mm`/`y_mm` between the nearest points.
 Copper text and lines on copper layers aren't checked against copper yet.
 
+Pairs that are one problem are one finding, as the results sidebar lists
+them: a text beside a track where it runs into its net's plane is too close
+to both, and so is a track to a pad and to the track that ends on it. Pairs
+are one problem when they are the same check under the same rule on the same
+layers, each side of one is the other's — the same net's copper, or, for what
+has no net, a thing of the same kind and label — and the stretches of them
+that are too close run within a quarter of a millimetre of each other (or the
+clearance, where that is more). The finding is the worst pair's, and lists the
+others in `also`, worst first, each with `first`, `second`, `distance_mm`,
+`clearance_mm`, `x_mm` and `y_mm`; its detail names the first few.
+
 The other clearance rules come out the same way, with `check` saying which:
 `keepout`, copper of a kind a keepout lists, on a layer it keeps out, inside
 it or closer than the first `clearance_copper_keepout` rule taking the net and
@@ -507,7 +518,10 @@ checks on the staged board and on the board as it is and gives:
 - `introduced`, each finding as `check` words it (`first`, `second`,
   `distance_mm`, `clearance_mm`, `x_mm`, `y_mm`) with `from_ops`, the ops whose
   items it names; `resolved`, with `now_distance_mm` where the pair is still
-  there, or `now: "gone"`; `unchanged` and `counts`.
+  there, or `now: "gone"`; `unchanged` and `counts`. These are a pair at a
+  time, where `check` folds the pairs of one problem into one finding with
+  an `also`: a plan that brings a pair to a problem already there has still
+  introduced it, so the counts here can be more than `check`'s.
 - `airwires`: `before`, `after`, the `nets` that gained one and `nets_routed`
   that lost one.
 - `stretched`: each track end a moved part carried with it — `track`, `end`,

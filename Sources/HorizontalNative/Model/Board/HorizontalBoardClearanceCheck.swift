@@ -81,6 +81,11 @@ struct HorizontalClearanceFinding: Identifiable, Hashable, Sendable {
     /// silkscreen finding gives the edge of the silkscreen's ink and of the
     /// copper the mask leaves bare, where the mask's opening may cut it.
     var violation: [[HorizontalPoint]] = []
+    /// The other pairs this finding stands for, worst first: the same problem
+    /// a little way along, which `HorizontalBoardClearanceCheck.merged` folds
+    /// into the worst of them. Each is as the check measured it, with none of
+    /// its own. Empty for a pair on its own.
+    var also: [HorizontalClearanceFinding] = []
 
     var id: String { "\(check.rawValue)|\(first.type.jsonString)|\(first.id)|\(second.type.jsonString)|\(second.id)" }
 
@@ -115,28 +120,30 @@ struct HorizontalClearanceFinding: Identifiable, Hashable, Sendable {
         return check == .keepout ? "no rule, none asked" : "no rule, Horizon's"
     }
 
-    /// "0.080 mm apart on Top Copper, where the rules ask 0.100 mm".
+    /// "0.080 mm apart", "Touching", "Outside the board".
+    var apart: String {
+        if outsideBoard {
+            return "Outside the board"
+        }
+        return distance <= 0 ? "Touching" : "\(Self.millimetres(distance)) apart"
+    }
+
+    /// "0.080 mm apart on Top Copper, where the rules ask 0.100 mm", and the
+    /// pairs it stands for (`alsoDetail`).
     var detail: String {
         let place = layers.count == 1
             ? "on \(HorizontalBoardLayers.name(for: layers[0]))"
             : "on \(layers.map(HorizontalBoardLayers.name(for:)).joined(separator: ", "))"
-        let apart: String
-        if outsideBoard {
-            apart = "Outside the board \(place)"
-        } else if distance <= 0 {
-            apart = "Touching \(place)"
-        } else {
-            apart = "\(Self.millimetres(distance)) apart \(place)"
-        }
-        return "\(apart), where the rules ask \(Self.millimetres(clearance)) (\(ruleDescription))."
+        let own = "\(apart) \(place), where the rules ask \(Self.millimetres(clearance)) (\(ruleDescription))."
+        return also.isEmpty ? own : "\(own) \(alsoDetail)"
     }
 
-    /// A region to frame to show the finding: its nearest points, with room
-    /// round them.
+    /// A region to frame to show the finding: its nearest points, and those
+    /// of the pairs it stands for, with room round them.
     var region: HorizontalRect {
         let span: Double = hypot(firstPoint.x - secondPoint.x, firstPoint.y - secondPoint.y)
         let margin: Double = max(clearance * 10, 1_500_000, span)
-        return HorizontalRouteClearanceProbe.bounds([firstPoint, secondPoint], growth: margin)
+        return HorizontalRouteClearanceProbe.bounds(pairs.flatMap { [$0.firstPoint, $0.secondPoint] }, growth: margin)
     }
 
     static func millimetres(_ nanometres: Double) -> String {
@@ -168,8 +175,10 @@ struct HorizontalClearanceFinding: Identifiable, Hashable, Sendable {
 /// for Horizon's board connectivity check.
 ///
 /// One finding is one pair of objects, with every layer the pair is too close
-/// on and the numbers for the layer that asks the most. A pad is its shapes on
-/// a layer together; a plane is all its fragments. The geometry is the
+/// on and the numbers for the layer that asks the most; `merged` folds the
+/// pairs that are one problem into one finding, which is what the rules check
+/// (`HorizontalBoardRulesCheck`) hands on. A pad is its shapes on a layer
+/// together; a plane is all its fragments. The geometry is the
 /// probe's (`HorizontalRouteClearanceProbe`): a track's centreline and width,
 /// a via's or hole's disc, a pad's polygon, a fill's paths. A coarse grid per
 /// copper layer finds the pairs within the largest clearance the rules give;

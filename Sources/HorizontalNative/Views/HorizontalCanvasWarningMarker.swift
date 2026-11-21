@@ -132,7 +132,7 @@ extension HorizontalCanvasWarning {
         merging([], findings.map { finding in
             let message = "\(finding.title): \(finding.detail)"
             return HorizontalCanvasWarning(position: finding.location, messages: [message], errorMessages: [message],
-                                           highlights: finding.violation)
+                                           highlights: finding.highlights)
         })
     }
 
@@ -146,7 +146,7 @@ extension HorizontalCanvasWarning {
             let message = finding.clearance.map { "\($0.title): \($0.detail)" } ?? finding.text
             return HorizontalCanvasWarning(position: location, messages: [message],
                                            errorMessages: finding.level == .error ? [message] : [],
-                                           highlights: finding.clearance?.violation ?? finding.highlights)
+                                           highlights: finding.clearance?.highlights ?? finding.highlights)
         })
     }
 

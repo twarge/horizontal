@@ -1505,8 +1505,9 @@ def check(path: str | None = None, full: bool = False) -> dict[str, Any]:
     reaching pads of both, a poured plane over a pad of another), Horizon's copper clearance checks — copper of two
     nets, or copper and an unplated hole or the board edge, closer than the clearance rules allow, each an error in
     category clearance naming first and second (type, id, label, net), the layer and layers, distance_mm,
-    clearance_mm, the rule (kind, id, brief) and x_mm and y_mm; the routing offset is the router's margin and isn't
-    checked — and the warnings the schematic canvas draws on
+    clearance_mm, the rule (kind, id, brief) and x_mm and y_mm, with the pairs that are the same problem a little way
+    along (the same nets' copper, too close within a quarter of a millimetre) in its also and not errors of their
+    own; the routing offset is the router's margin and isn't checked — and the warnings the schematic canvas draws on
     every sheet of every block — Label missing, Pin connected to net, Power sym missing and the rest — each with its
     sheet and sheet_name, x_mm and y_mm, the canvas's message, and the net, refdes and pin it is about; one about a
     stretch of wiring names its wires in net_lines. More than three findings with one title come back as one message
@@ -1689,7 +1690,8 @@ def apply_ops(ops: list[EditOperation] = [], path: str | None = None, dry_run: b
 
     check, with dry_run, says what the batch does to the board before it is committed: the reply's check gives
     introduced (findings the planned board has and this one doesn't, each as the check tool words it — first,
-    second, distance_mm, clearance_mm, x_mm, y_mm — plus from_ops, the ops whose items it names), resolved (findings
+    second, distance_mm, clearance_mm, x_mm, y_mm, a pair of objects at a time where the check tool gives the pairs
+    of one problem as one finding — plus from_ops, the ops whose items it names), resolved (findings
     the plan removes; a clearance one says now_distance_mm, how far apart the two then are, or now: gone), unchanged
     and counts, airwires (before, after, nets that gained one and nets_routed that lost one), stretched (each track
     end a moved part carried with it: track, end, pad, was_mm, now_mm) and ok, true when nothing is introduced and

@@ -3384,10 +3384,11 @@ struct HorizontalClearanceFindingRow: View {
                 Text(finding.title)
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
+                // Room for the pairs it stands for, after its own numbers.
                 Text(finding.detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(4)
+                    .lineLimit(finding.also.isEmpty ? 4 : 8)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)

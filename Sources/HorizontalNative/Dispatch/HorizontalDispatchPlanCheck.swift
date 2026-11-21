@@ -92,7 +92,11 @@ enum HorizontalDispatchPlanCheck {
         guard let results = HorizontalBoardRulesCheck.run(board: board, tiedNets: HorizontalBoardClearanceCheck.tiedNets(of: project)) else {
             return state
         }
-        for finding in results.clearance {
+        // A pair at a time, not a problem at a time: a plan that brings a
+        // pair to a problem already there has still brought it, and one
+        // that takes the worst pair of a problem away has not brought the
+        // next worst.
+        for finding in results.clearance.flatMap(\.pairs) {
             guard let json = HorizontalDispatchChecks.clearanceMessages([finding]).first?.json else { continue }
             state.findings.append(.init(key: finding.id, json: json, level: "error",
                                         objects: [finding.first.id, finding.second.id].filter { !$0.isEmpty }, clearance: finding,
