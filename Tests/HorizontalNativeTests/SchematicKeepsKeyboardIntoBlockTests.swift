@@ -41,6 +41,15 @@ extension SchematicClipboardTests {
         let top = try XCTUnwrap(fixture.project.schematics.first { $0.block.isTop })
         let root = fixture.project.url
 
+        // The workspace opens a project with the panes it was left with, and
+        // one never opened with the schematic and the board both: whichever
+        // canvas is up first then has the keyboard, and on a slow machine
+        // that is the board's. Left with the schematic alone, it opens so.
+        var left = HorizontalFileViewState.default
+        left.visiblePanes = [.schematic]
+        HorizontalFileViewStateStore.shared.save(left, for: root, projectID: fixture.project.uuid)
+        defer { UserDefaults.standard.removeObject(forKey: "fileViewState.v1.project.\(fixture.project.uuid.lowercased())") }
+
         let spot = Spot(fixture.archive)
         let defaults = UserDefaults(suiteName: "keyboard-into-block-\(UUID().uuidString)")!
         defaults.set(false, forKey: HorizontalOperationDefaults.readOnlyOperationKey)
@@ -65,7 +74,16 @@ extension SchematicClipboardTests {
         }
         func width(_ pane: HorizontalPane) -> Double { live()?.visibleBounds(pane)?.width ?? 0 }
         /// The pane a zoom with no pane named zooms: the one with the keyboard.
+        /// Asked once both panes hold still, so a canvas still being laid
+        /// out and fitted is not taken for the one that zoomed.
         func paneWithTheKeyboard() async -> HorizontalPane? {
+            var last = (schematic: -1.0, board: -1.0), still = 0
+            _ = await settle {
+                let now = (schematic: width(.schematic), board: width(.board))
+                still = now == last ? still + 1 : 0
+                last = now
+                return still >= 5
+            }
             let before = (schematic: width(.schematic), board: width(.board))
             live()?.zoomBy(nil, 2)
             let zoomed = await settle(timeout: 2) {
@@ -79,6 +97,7 @@ extension SchematicClipboardTests {
         // then the board beside it.
         let schematicUp = await settle(timeout: 15) { width(.schematic) > 0 }
         XCTAssertTrue(schematicUp, "the schematic shows")
+        XCTAssertEqual(spot.panes, [.schematic], "alone, as the project was left")
         spot.panes = [.schematic, .board]
         let boardUp = await settle(timeout: 15) { width(.schematic) > 0 && width(.board) > 0 }
         XCTAssertTrue(boardUp, "and the board beside it")
