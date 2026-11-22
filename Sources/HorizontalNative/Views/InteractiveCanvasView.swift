@@ -235,6 +235,9 @@ enum HorizontalCanvasCommand {
     /// Board: Horizon's Clear via net on every selected via that holds a
     /// net, which then takes its tracks' (`BoardViaNetCommands`).
     case clearViaNets
+    /// Board: Pin Net on every selected via its copper gives a net, which
+    /// then holds that net itself (`BoardViaNetCommands`).
+    case pinViaNets
     /// Board: Let Vias Follow Their Tracks…, the pin taken off every via
     /// pinned to the net its pads give it, once the user confirms.
     case letViasFollowTracks

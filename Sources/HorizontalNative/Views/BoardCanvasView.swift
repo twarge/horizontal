@@ -1487,7 +1487,7 @@ struct BoardCanvasView: View {
                     // They name the nets they edit, so the selection, two
                     // nets' to pair, stays as it is.
                     break
-                case .replacePart, .clearViaNets:
+                case .replacePart, .clearViaNets, .pinViaNets:
                     // It names the components it replaces, or acts on every
                     // selected via: a selection the object is part of stays.
                     if !selectedObjects.contains(ref) { setSelectedObject(ref) }
@@ -2012,8 +2012,8 @@ struct BoardCanvasView: View {
         hasher.combine(holePadstackChoices != nil)
         // Lock, Unlock and Unlock All, as the copper is (an undo too).
         hasher.combine(BoardCopperLock.commandSignature(selectedObjects, in: board))
-        // Clear Net and Let Vias Follow Their Tracks…, as the vias' pins
-        // are, and its alert coming up or going.
+        // Clear Net, Pin Net and Let Vias Follow Their Tracks…, as the
+        // vias' pins are, and its alert coming up or going.
         hasher.combine(BoardViaNetCommands.commandSignature(selectedObjects, in: board))
         hasher.combine(pinnedViaReview != nil)
         return hasher.finalize()
@@ -4424,6 +4424,12 @@ struct BoardCanvasView: View {
             } else {
                 entries.append(.command(title: "Set Net…", .setNet))
             }
+        }
+        // Pin Net on a via its copper gives a net, which then holds it
+        // itself as a stitching via does.
+        if writable, modeProfile.mode == .board,
+           let entry = BoardViaNetCommands.pinMenuEntry(for: ref, selection: selectedObjects, in: board) {
+            entries.append(entry)
         }
         // Clear Net on the selected vias that hold a net (Horizon's Clear
         // via net), so each takes its tracks' net again.
@@ -18652,14 +18658,28 @@ extension BoardCanvasView {
         }
     }
 
-    /// Clear Net on the selected vias that hold a net, and Let Vias Follow
-    /// Their Tracks…, which asks first (`BoardViaNetCommands`). The board
+    /// Clear Net on the selected vias that hold a net, Pin Net on those
+    /// their copper gives one, and Let Vias Follow Their Tracks…, which
+    /// asks first (`BoardViaNetCommands`). The board
     /// command is offered wherever a via holds a net; which of them can
     /// follow their tracks is worked out when it is asked for.
     private func installViaNetHandlers(_ handlers: inout HorizontalCanvasCommandHandlerSet) {
         let refs = selectedObjects
         if !BoardViaNetCommands.pinnedVias(among: refs, in: board).isEmpty {
             handlers.clearViaNets = { editCopperLock("Clear Net") { BoardViaNetCommands.clearNets(on: refs, in: &$0) } }
+        }
+        let pinnable = BoardViaNetCommands.pinnableVias(among: refs, in: board)
+        if !pinnable.isEmpty {
+            handlers.pinViaNets = {
+                var pinned = false
+                editCopperLock("Pin Net") {
+                    pinned = BoardViaNetCommands.pinNets(on: pinnable, in: &$0)
+                    return pinned
+                }
+                // Nothing on the canvas changes with it: the vias keep
+                // their net and their colour.
+                if pinned { showCanvasNote(BoardViaNetCommands.pinnedNote(pinnable.count)) }
+            }
         }
         if board.vias.contains(where: { $0.netSetID != nil }) {
             handlers.letViasFollowTracks = { requestLetViasFollowTracks() }

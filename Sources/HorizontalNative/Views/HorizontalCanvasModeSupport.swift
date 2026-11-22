@@ -471,9 +471,11 @@ struct HorizontalCanvasCommandHandlerSet {
     var lockSelection: (() -> Void)? = nil
     var unlockSelection: (() -> Void)? = nil
     var unlockAllCopper: (() -> Void)? = nil
-    /// Clear Net on the selected vias that hold a net, and Let Vias Follow
-    /// Their Tracks…; each nil when there is nothing for it.
+    /// Clear Net on the selected vias that hold a net, Pin Net on those
+    /// their copper gives one, and Let Vias Follow Their Tracks…; each nil
+    /// when there is nothing for it.
     var clearViaNets: (() -> Void)? = nil
+    var pinViaNets: (() -> Void)? = nil
     var letViasFollowTracks: (() -> Void)? = nil
     var placePin: (() -> Void)? = nil
     var placeRefdesAndValue: (() -> Void)? = nil
@@ -765,6 +767,9 @@ struct HorizontalCanvasCommandHandlerSet {
         case .clearViaNets:
             guard !isReadOnly, !hasInteraction else { return }
             clearViaNets?()
+        case .pinViaNets:
+            guard !isReadOnly, !hasInteraction else { return }
+            pinViaNets?()
         case .letViasFollowTracks:
             guard !isReadOnly, !hasInteraction else { return }
             letViasFollowTracks?()
@@ -871,6 +876,7 @@ struct HorizontalCanvasCommandHandlerSet {
         actions.alignableSelectionCount = writable && !hasInteraction && alignSelection != nil ? alignableSelectionCount : 0
         actions.canMeasureDistance = measureDistance != nil
         actions.canClearViaNets = writable && clearViaNets != nil
+        actions.canPinViaNets = writable && pinViaNets != nil
         actions.canLetViasFollowTracks = writable && letViasFollowTracks != nil
         return actions
     }

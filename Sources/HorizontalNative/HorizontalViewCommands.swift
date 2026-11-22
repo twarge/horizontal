@@ -134,6 +134,8 @@ struct HorizontalCanvasCommandActions {
     /// Clear Via Net on the selected vias that hold a net, and Let Vias
     /// Follow Their Tracks… (`BoardViaNetCommands`).
     var canClearViaNets: Bool = false
+    /// Pin Via Net on the selected vias their copper gives a net.
+    var canPinViaNets: Bool = false
     var canLetViasFollowTracks: Bool = false
     var canShowInPoolManager: Bool = false
     var canShowInProjectPoolManager: Bool = false
@@ -781,9 +783,15 @@ struct HorizontalViewCommands: Commands {
                 }
                 .disabled(canvasCommandActions?.canUnlockAllCopper != true)
 
-                // A via's pinned net (net_set) taken off, so it follows its
-                // tracks: on the selected vias, or on every via the pads
-                // already give the net it is pinned to.
+                // A via's net pinned on it (net_set): the selected vias given
+                // the net their copper has, to hold themselves.
+                Button("Pin Via Net") {
+                    canvasCommandActions?.dispatch(.pinViaNets)
+                }
+                .disabled(canvasCommandActions?.canPinViaNets != true)
+                // And taken off, so the via follows its tracks: on the
+                // selected vias, or on every via the pads already give the
+                // net it is pinned to.
                 Button("Clear Via Net") {
                     canvasCommandActions?.dispatch(.clearViaNets)
                 }
