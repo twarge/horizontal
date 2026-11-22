@@ -115,7 +115,15 @@ final class HorizontalBlockLayoutMatch {
     private lazy var graph = CopperGraph(board: board)
     private var ownedCache = [String: OwnedCopper]()
     private var copperCache = [String: CopperMap]()
+    /// Each track's and via's instance once it has been looked for, by
+    /// `t:` or `v:` and its id; nil is kept too.
+    private var copperInstances = [String: Instance?]()
     private lazy var junctionLayers = board.junctionLayers()
+    /// Each board package's component, both lowercased.
+    private lazy var componentIDs = board.packages.reduce(into: [String: String]()) { ids, package in
+        guard let componentID = package.componentID?.lowercased(), ids[package.id.lowercased()] == nil else { return }
+        ids[package.id.lowercased()] = componentID
+    }
 
     init(board: HorizontalBoard, instances: HorizontalBoardBlockInstances) {
         self.board = board
@@ -248,9 +256,44 @@ final class HorizontalBlockLayoutMatch {
     /// The instances (innermost first) of blocks used more than once that a
     /// board package's component is a member of.
     func instances(ofPackage packageID: String) -> [Instance] {
-        let id = packageID.lowercased()
-        guard let componentID = board.packages.first(where: { $0.id.lowercased() == id })?.componentID else { return [] }
+        guard let componentID = componentIDs[packageID.lowercased()] else { return [] }
         return instances.syncedInstances(of: componentID)
+    }
+
+    /// The instance a track is copper of: the innermost one that holds every
+    /// part of a block used more than once whose pad the track's copper
+    /// joins, its copper being what a flood from it reaches with every pad
+    /// stopping it. A part of no such block, a connector the instance is
+    /// wired to, has no say in it. nil where the copper joins no instance's
+    /// pad, and where the instances it joins have none around them all: a
+    /// bus two instances share. Wider than `owned`, which leaves out copper
+    /// that goes on to a pad outside the instance.
+    func instance(ofTrack id: String) -> Instance? {
+        let id = id.lowercased()
+        return instance(ofCopper: "t:" + id, from: graph.ends(ofTrack: id))
+    }
+
+    /// The instance a via is copper of, as a track's is (`instance(ofTrack:)`).
+    func instance(ofVia id: String) -> Instance? {
+        let id = id.lowercased()
+        return instance(ofCopper: "v:" + id, from: graph.nodes(ofVia: id))
+    }
+
+    private func instance(ofCopper key: String, from starts: [String]) -> Instance? {
+        if let known = copperInstances[key] {
+            return known
+        }
+        guard !starts.isEmpty else { return nil }
+        let island = graph.reach(from: starts) { _ in true }
+        let chains = graph.packages(ofPads: island.blockers).map { instances(ofPackage: $0) }.filter { !$0.isEmpty }
+        let instance = chains.first?.first { candidate in
+            chains.allSatisfy { $0.contains { $0.path == candidate.path } }
+        }
+        // The rest of the island joins the same pads, so it is answered too.
+        copperInstances.updateValue(instance, forKey: key)
+        for track in island.tracks { copperInstances.updateValue(instance, forKey: "t:" + track) }
+        for via in island.vias { copperInstances.updateValue(instance, forKey: "v:" + via) }
+        return instance
     }
 
     /// The copper `path`'s own pads join and nothing outside it does: what
@@ -557,6 +600,9 @@ private struct CopperGraph {
     /// Each pad node's package, lowercased.
     private var padPackages = [String: String]()
     private var padNodesByPackage = [String: [String]]()
+    /// Each track's two end nodes, and the vias that are nodes.
+    private var trackEnds = [String: [String]]()
+    private var viaIDs = Set<String>()
 
     init(board: HorizontalBoard) {
         var padsAtPoint = [String: [String]]()
@@ -588,10 +634,12 @@ private struct CopperGraph {
             let id = track.id.lowercased()
             edges[from, default: []].append(Edge(track: id, other: to))
             edges[to, default: []].append(Edge(track: id, other: from))
+            trackEnds[id] = [from, to]
         }
         let junctionsAtPoint = board.junctionIDsByPoint()
         for via in board.vias where !via.id.contains("/") {
             let viaNode = "v:" + via.id.lowercased()
+            viaIDs.insert(via.id.lowercased())
             let key = HorizontalBoard.junctionPointKey(via.position)
             var joined = (junctionsAtPoint[key] ?? []).map { "j:" + $0.lowercased() }
             joined += padsAtPoint[key] ?? []
@@ -605,6 +653,22 @@ private struct CopperGraph {
 
     func padNodes(of packages: Set<String>) -> [String] {
         packages.sorted().flatMap { padNodesByPackage[$0] ?? [] }
+    }
+
+    /// The nodes a track (by lowercased id) ends on; none for a track that
+    /// isn't in the graph, a panel copy.
+    func ends(ofTrack id: String) -> [String] {
+        trackEnds[id] ?? []
+    }
+
+    /// A via's node, where it is in the graph.
+    func nodes(ofVia id: String) -> [String] {
+        viaIDs.contains(id) ? ["v:" + id] : []
+    }
+
+    /// The packages, lowercased, that pad nodes are pads of.
+    func packages(ofPads nodes: Set<String>) -> Set<String> {
+        Set(nodes.compactMap { padPackages[$0] })
     }
 
     /// What `starts` reach, stopping at a pad whose package `blocks`.

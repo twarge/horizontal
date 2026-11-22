@@ -32,7 +32,8 @@ final class BoardBlockLayoutCache {
 /// What the board inspector says of the block instances a package selection
 /// is in: which instance of which block, the instances laid out like it and
 /// what differs from them, with Select Instance, which selects its parts and
-/// its own copper so it moves as one.
+/// its own copper so it moves as one. A track or a via is in the instance
+/// whose pads its copper joins, and says which, with the same buttons.
 enum HorizontalBlockInstanceSummary {
     typealias Instance = HorizontalBoardBlockInstances.Instance
 
@@ -53,6 +54,32 @@ enum HorizontalBlockInstanceSummary {
         return packageIDs.compactMap { match.instances(ofPackage: $0).first }
             .filter { seen.insert($0.path).inserted }
             .sorted(by: HorizontalBoardBlockInstances.inOrder)
+    }
+
+    /// The innermost instances of blocks used more than once that a
+    /// selection is in, in name order: the ones its packages are parts of,
+    /// and the ones its tracks and vias are copper of
+    /// (`HorizontalBlockLayoutMatch.instance(ofTrack:)`). Nothing else
+    /// selected is in an instance.
+    static func instances(of refs: [HorizontalSelectableRef], in match: HorizontalBlockLayoutMatch) -> [Instance] {
+        var seen = Set<String>()
+        return refs.compactMap { ref -> Instance? in
+            switch ref.type {
+            case .boardPackage: match.instances(ofPackage: ref.id).first
+            case .track: match.instance(ofTrack: ref.id)
+            case .via: match.instance(ofVia: ref.id)
+            default: nil
+            }
+        }
+        .filter { seen.insert($0.path).inserted }
+        .sorted(by: HorizontalBoardBlockInstances.inOrder)
+    }
+
+    /// The inspector's row for the instances a selection of tracks or of
+    /// vias is copper of: which, and of which block. A part's group says
+    /// the rest (`details`).
+    static func copperDetails(for instances: [Instance], in match: HorizontalBlockLayoutMatch) -> [HorizontalSelectionHUDDetail] {
+        Array(details(for: instances, in: match).prefix(1))
     }
 
     /// The inspector's rows for `instances`.
@@ -119,6 +146,21 @@ enum HorizontalBlockInstanceSummary {
             actions.append(HorizontalSelectionPropertyOption(id: copyLayoutActionID, title: "Copy Layout to Other Instances…"))
         }
         return actions
+    }
+
+    /// The right-click's entries for `ref`, a separator first: Select
+    /// Instance, and on a board that isn't locked Copy Layout to Other
+    /// Instances, on a part of an instance and on a track or via whose
+    /// copper joins one's pads. None for anything else.
+    static func menuEntries(for ref: HorizontalSelectableRef, in match: HorizontalBlockLayoutMatch, writable: Bool) -> [HorizontalTargetItemMenuEntry] {
+        guard !instances(of: [ref], in: match).isEmpty else {
+            return []
+        }
+        var entries: [HorizontalTargetItemMenuEntry] = [.separator, .command(title: "Select Instance", .selectBlockInstance)]
+        if writable {
+            entries.append(.command(title: "Copy Layout to Other Instances", .copyBlockLayout))
+        }
+        return entries
     }
 
     /// The selectable parts of `instances`: their packages and their own

@@ -895,9 +895,10 @@ struct HorizontalSelectionPopoverView: View {
     }
 
     /// The group's own buttons, which act on every selected object of its
-    /// type rather than the one shown.
+    /// type rather than the one shown. More than fit the width go on to a
+    /// second row: a track in a block instance has four.
     private func groupActions(_ group: HorizontalSelectionDetailGroup, item: HorizontalSelectionDetailItem) -> some View {
-        HStack(spacing: 6) {
+        HorizontalFlowLayout(spacing: 6) {
             ForEach(group.actions) { action in
                 Button(action.title) {
                     onChange(HorizontalSelectionPropertyChange(

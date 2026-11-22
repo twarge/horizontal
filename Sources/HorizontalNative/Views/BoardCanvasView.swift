@@ -2252,6 +2252,9 @@ struct BoardCanvasView: View {
                 if type == .boardPackage {
                     addBlockInstanceSummary(to: &group)
                 }
+                if type == .track || type == .via {
+                    addCopperBlockInstance(to: &group)
+                }
                 return group
             }
             .sorted { $0.title < $1.title }
@@ -2294,6 +2297,21 @@ struct BoardCanvasView: View {
         group.actions = HorizontalBlockInstanceSummary.actions(canCopyLayout: !isReadOnly && instances.count == 1)
     }
 
+    /// The block instance the selected tracks, or vias, are copper of, the
+    /// one whose pads they join: which, after the group's own rows, with
+    /// Select Instance and Copy Layout to Other Instances after its buttons.
+    private func addCopperBlockInstance(to group: inout HorizontalSelectionDetailGroup) {
+        guard let match = blockLayoutMatch else {
+            return
+        }
+        let instances = HorizontalBlockInstanceSummary.instances(of: group.items.map(\.ref), in: match)
+        guard !instances.isEmpty else {
+            return
+        }
+        group.summary += HorizontalBlockInstanceSummary.copperDetails(for: instances, in: match)
+        group.actions += HorizontalBlockInstanceSummary.actions(canCopyLayout: !isReadOnly && instances.count == 1)
+    }
+
     /// Which instances of the design's blocks are laid out alike on the
     /// board as it is, made again only when it changes.
     private var blockLayoutMatch: HorizontalBlockLayoutMatch? {
@@ -2319,25 +2337,34 @@ struct BoardCanvasView: View {
         guard change.propertyID == HorizontalBlockInstanceSummary.selectActionID else {
             return false
         }
-        selectBlockInstances()
+        selectBlockInstances(of: change.type)
         return true
     }
 
-    /// The block instances the selected packages are parts of, innermost.
-    private var selectedBlockInstances: [HorizontalBoardBlockInstances.Instance] {
+    /// The block instances the selection is in, innermost: the ones its
+    /// packages are parts of and its tracks and vias are copper of, the
+    /// instance whose pads they join. With `type`, the selected objects of
+    /// that type's alone, which are the ones the inspector's group of them
+    /// names.
+    private func selectedBlockInstances(of type: HorizontalObjectType? = nil) -> [HorizontalBoardBlockInstances.Instance] {
         guard let match = blockLayoutMatch else {
             return []
         }
-        let packages = selectedObjects.filter { $0.type == .boardPackage }.map(\.id)
-        return packages.isEmpty ? [] : HorizontalBlockInstanceSummary.instances(ofPackages: packages, in: match)
+        let refs = selectedObjects.filter { ref in
+            type.map { ref.type == $0 } ?? (ref.type == .boardPackage || ref.type == .track || ref.type == .via)
+        }
+        return refs.isEmpty ? [] : HorizontalBlockInstanceSummary.instances(of: refs, in: match)
     }
 
-    /// Copy Layout to Other Instances: the selected part's instance laid out
-    /// in every other instance of its block, as one undo step. Their own
-    /// copper gives way to its copper; what isn't theirs stays.
-    private func copyBlockLayoutToOtherInstances() {
+    /// Copy Layout to Other Instances: the instance the selection is in, a
+    /// part of it or a track or via on its pads, laid out in every other
+    /// instance of its block, as one undo step. Their own copper gives way
+    /// to its copper; what isn't theirs stays. From the inspector, the
+    /// instance its group of `type` names.
+    private func copyBlockLayoutToOtherInstances(of type: HorizontalObjectType? = nil) {
+        let selected = selectedBlockInstances(of: type)
         guard !isReadOnly, moveState == nil, pastePlacementState == nil, drawTrackState == nil,
-              let blockInstances, let source = selectedBlockInstances.first, selectedBlockInstances.count == 1 else {
+              let blockInstances, let source = selected.first, selected.count == 1 else {
             return
         }
         let previous = editedBoard ?? sourceBoard
@@ -2362,8 +2389,10 @@ struct BoardCanvasView: View {
     /// the instance is no edit for the others to follow
     /// (`HorizontalBlockLayoutSync`). The selection stays as it was.
     private func placeBlockInstance(_ change: HorizontalSelectionPropertyChange) {
+        // The fields are the package group's, so the instance is its parts'.
+        let selected = selectedBlockInstances(of: .boardPackage)
         guard !isReadOnly, moveState == nil, pastePlacementState == nil, drawTrackState == nil,
-              let match = blockLayoutMatch, selectedBlockInstances.count == 1, let instance = selectedBlockInstances.first,
+              let match = blockLayoutMatch, selected.count == 1, let instance = selected.first,
               let anchor = match.anchor(of: instance.path),
               match.layouts[instance.path]?.packages.values.contains(where: { $0.fixed }) == false else {
             return
@@ -2446,12 +2475,11 @@ struct BoardCanvasView: View {
         return (rects, hasher.finalize())
     }
 
-    private func selectBlockInstances() {
+    private func selectBlockInstances(of type: HorizontalObjectType? = nil) {
         guard moveState == nil, pastePlacementState == nil, let match = blockLayoutMatch else {
             return
         }
-        let packages = selectedObjects.filter { $0.type == .boardPackage }.map(\.id)
-        let instances = HorizontalBlockInstanceSummary.instances(ofPackages: packages, in: match)
+        let instances = selectedBlockInstances(of: type)
         let refs = HorizontalBlockInstanceSummary.selection(of: instances, in: match, from: boardSelectableScene().refs())
         guard !refs.isEmpty else {
             return
@@ -4031,9 +4059,10 @@ struct BoardCanvasView: View {
             }
             handlers.filterAirwires = onFilterAirwires
             handlers.toggleInstanceOnly = { toggleInstanceOnlyEdit() }
-            if !selectedBlockInstances.isEmpty {
+            let instanceCount = selectedBlockInstances().count
+            if instanceCount > 0 {
                 handlers.selectBlockInstance = { selectBlockInstances() }
-                if selectedBlockInstances.count == 1 {
+                if instanceCount == 1 {
                     handlers.copyBlockLayout = { copyBlockLayoutToOtherInstances() }
                 }
             }
@@ -4410,13 +4439,10 @@ struct BoardCanvasView: View {
             entries.append(.command(title: "Select More (Stop at Vias)", .selectMore(stopsAtVias: true)))
         }
 
-        // Block instances (packages)
-        if isPackage, let match = blockLayoutMatch, !match.instances(ofPackage: ref.id).isEmpty {
-            entries.append(.separator)
-            entries.append(.command(title: "Select Instance", .selectBlockInstance))
-            if writable {
-                entries.append(.command(title: "Copy Layout to Other Instances", .copyBlockLayout))
-            }
+        // Block instances: a part of one, and a track or via whose copper
+        // joins one's pads.
+        if isPackage || ref.type == .track || ref.type == .via, let match = blockLayoutMatch {
+            entries.append(contentsOf: HorizontalBlockInstanceSummary.menuEntries(for: ref, in: match, writable: writable))
         }
 
         // Pool / datasheet (packages)
@@ -9514,7 +9540,7 @@ struct BoardCanvasView: View {
             return
         }
         if change.propertyID == HorizontalBlockInstanceSummary.copyLayoutActionID {
-            copyBlockLayoutToOtherInstances()
+            copyBlockLayoutToOtherInstances(of: change.type)
             return
         }
         if HorizontalBlockInstanceSummary.placementPropertyIDs.contains(change.propertyID) {
