@@ -528,8 +528,14 @@ enum HorizontalProjectJSONApplicator {
             throw HorizontalProjectJSONApplyError.invalidJSON(path)
         }
 
-        let componentKey = matchingKey(componentID, in: components) ?? componentID
-        var componentJSON = components[componentKey] as? JSONDictionary ?? [:]
+        // A component the block does not have is left alone: a refdes written
+        // for it would add a component with no part to the block. The board
+        // names a block instance's part by its flat uuid, which is no block's
+        // own, and a sheet put back by Undo can name one that is gone.
+        guard let componentKey = matchingKey(componentID, in: components),
+              var componentJSON = components[componentKey] as? JSONDictionary else {
+            return
+        }
         componentJSON["refdes"] = refdes
         components[componentKey] = componentJSON
         json["components"] = components

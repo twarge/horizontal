@@ -2875,13 +2875,7 @@ struct ProjectWorkspaceView: View {
                                 blockInstances: project.flattenedBlock?.boardInstances,
                                 tuningReferenceLength: lengthTuning.referenceLength,
                                 onComponentRefdesChange: { componentID, refdes in
-                                    if let selectedSchematic {
-                                        applyEditedComponentRefdes(
-                                            componentID: componentID,
-                                            refdes: refdes,
-                                            selectedSchematic: selectedSchematic
-                                        )
-                                    }
+                                    applyBoardComponentRefdes(componentID: componentID, refdes: refdes)
                                 },
                                 onSelectionDetailsChange: { details in
                                     setSelectionDetails(details, for: .board)
@@ -5789,7 +5783,38 @@ struct ProjectWorkspaceView: View {
                              actionName: "Set Reference Designator", schematicURL: selectedSchematic.url)
             return
         }
+        applyOwnComponentRefdes(componentID: normalizedComponentID, refdes: refdes,
+                                schematicURL: selectedSchematic.url, blockURL: selectedSchematic.blockURL)
+    }
 
+    /// A refdes set on the board. The board's component is the flattened
+    /// design's, so the refdes is a top block component's own or, for a part
+    /// of a block instance, that instance's, in the top block's mapping,
+    /// whichever sheet the schematic pane shows. Taking the sheet showing
+    /// for the component's block gave that block a component with no part,
+    /// under the flat uuid.
+    private func applyBoardComponentRefdes(componentID: String, refdes: String) {
+        guard !isReadOnly, let target = project.boardRefdesTarget(forComponent: normalizedID(componentID)) else {
+            return
+        }
+        if let edit = target.instanceOperation(settingRefdes: refdes) {
+            applyBlockEdit([edit.operation], block: edit.block, actionName: "Set Reference Designator")
+            return
+        }
+        let top = project.schematics.first(where: \.block.isTop) ?? project.schematics.first
+        guard case .topBlock(let component) = target,
+              let schematicURL = top?.schematic.url ?? project.schematic?.url else {
+            return
+        }
+        applyOwnComponentRefdes(componentID: component, refdes: refdes, schematicURL: schematicURL,
+                                blockURL: top?.block.blockFilename.map { project.baseURL.appendingPathComponent($0) })
+    }
+
+    /// A block's component given its own refdes: on the block's sheets, on
+    /// the board where the component is one of the board's, and in the
+    /// block's file.
+    private func applyOwnComponentRefdes(componentID normalizedComponentID: String, refdes: String,
+                                         schematicURL: URL, blockURL: URL?) {
         func update(_ sheet: inout HorizontalSchematicSheet) {
             for index in sheet.symbols.indices
                 where sheet.symbols[index].componentID.map(normalizedID) == normalizedComponentID {
@@ -5799,7 +5824,7 @@ struct ProjectWorkspaceView: View {
             }
         }
 
-        let standardizedURL = selectedSchematic.url.standardizedFileURL
+        let standardizedURL = schematicURL.standardizedFileURL
         for schematicIndex in project.schematics.indices
             where project.schematics[schematicIndex].schematic.url.standardizedFileURL == standardizedURL {
             for sheetIndex in project.schematics[schematicIndex].schematic.sheets.indices {
@@ -5826,7 +5851,7 @@ struct ProjectWorkspaceView: View {
             boardEditRevision += 1
         }
 
-        guard let blockURL = selectedSchematic.blockURL else {
+        guard let blockURL else {
             return
         }
 
