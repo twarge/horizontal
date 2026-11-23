@@ -47,10 +47,11 @@ struct HorizontalPartQuery: Hashable, Sendable {
 
 /// A distributor whose page for a part the part's context menu opens — on
 /// the schematic, on the board, and in the Parts and Pools panes — while
-/// Settings has it turned on: DigiKey and Mouser.
+/// Settings has it turned on: DigiKey, Mouser and Arrow.
 enum HorizontalDistributor: String, CaseIterable, Identifiable, Sendable {
     case digiKey
     case mouser
+    case arrow
 
     var id: String { rawValue }
 
@@ -58,6 +59,7 @@ enum HorizontalDistributor: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .digiKey: "DigiKey"
         case .mouser: "Mouser"
+        case .arrow: "Arrow"
         }
     }
 
@@ -69,6 +71,8 @@ enum HorizontalDistributor: String, CaseIterable, Identifiable, Sendable {
             Self.url("https://www.digikey.com/en/products/result", query: ["keywords": mpn])
         case .mouser:
             Self.url("https://www.mouser.com/c/", query: ["q": mpn])
+        case .arrow:
+            Self.url("https://www.arrow.com/en/products/search", query: ["q": mpn])
         }
     }
 
@@ -96,15 +100,17 @@ struct HorizontalPartPageLink: Identifiable, Equatable, Sendable {
 
     /// One link per distributor turned on, for a part with an MPN: the
     /// product page the distributor's API answered with, which follows the
-    /// part's manufacturer, when it has answered (Mouser's only while its
-    /// answer is held, which is never long); otherwise the distributor's
+    /// part's manufacturer, when it has answered (Mouser's and Arrow's only
+    /// while their answers are held, which is never long);
+    /// otherwise the distributor's
     /// search for the MPN, so a link needs no credentials and no wait.
     @MainActor
     static func links(
         mpn: String,
         manufacturer: String,
         digiKey: HorizontalDigiKeyStockMonitor = .shared,
-        mouser: HorizontalMouserStockMonitor = .shared
+        mouser: HorizontalMouserStockMonitor = .shared,
+        arrow: HorizontalArrowStockMonitor = .shared
     ) -> [HorizontalPartPageLink] {
         let query = HorizontalPartQuery(mpn: mpn, manufacturer: manufacturer)
         guard !query.mpn.isEmpty else { return [] }
@@ -117,6 +123,9 @@ struct HorizontalPartPageLink: Identifiable, Equatable, Sendable {
             case .mouser:
                 guard mouser.isEnabled else { return nil }
                 url = mouser.productURL(for: query) ?? distributor.searchURL(mpn: query.mpn)
+            case .arrow:
+                guard arrow.isEnabled else { return nil }
+                url = arrow.productURL(for: query) ?? distributor.searchURL(mpn: query.mpn)
             }
             return url.map { HorizontalPartPageLink(distributor: distributor, url: $0) }
         }

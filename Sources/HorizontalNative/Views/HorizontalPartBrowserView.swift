@@ -100,6 +100,8 @@ struct HorizontalPartBrowserView: View {
     /// What Mouser stocks of the parts on screen, for the Mouser Stock
     /// column.
     @ObservedObject var mouser: HorizontalMouserStockMonitor = .shared
+    /// What Arrow stocks of the parts on screen, for the Arrow Stock column.
+    @ObservedObject var arrow: HorizontalArrowStockMonitor = .shared
 
     @State private var searchScope: HorizontalPartSearchScope = .all
     @State private var searchText = ""
@@ -431,11 +433,13 @@ struct HorizontalPartBrowserView: View {
     /// column counts while that distributor is on.
     private var minimumTableWidth: CGFloat {
         1140 + (digiKey.isEnabled ? Self.stockColumnMinimumWidth : 0) + (mouser.isEnabled ? Self.stockColumnMinimumWidth : 0)
+            + (arrow.isEnabled ? Self.stockColumnMinimumWidth : 0)
     }
 
     private static let stockColumnMinimumWidth: CGFloat = 100
     private static let digiKeyStockColumnID = "digikeyStock"
     private static let mouserStockColumnID = "mouserStock"
+    private static let arrowStockColumnID = "arrowStock"
 
     /// The column is there while DigiKey is on in Settings, and shown unless
     /// hidden from the table's header menu.
@@ -608,27 +612,42 @@ struct HorizontalPartBrowserView: View {
             .customizationID("package")
             .disabledCustomizationBehavior(.visibility)
 
-            // DigiKey's stock of the part's MPN, while DigiKey is on. Not
-            // sortable: like the library columns, it comes from outside the
-            // part.
-            if digiKey.isEnabled {
-                TableColumn("DigiKey Stock") { part in
-                    cell(part) { digiKeyStockCell(part) }
+            // The distributors' columns are one group: a table's builder
+            // takes ten columns, and with these there are more.
+            Group {
+                // DigiKey's stock of the part's MPN, while DigiKey is on. Not
+                // sortable: like the library columns, it comes from outside the
+                // part.
+                if digiKey.isEnabled {
+                    TableColumn("DigiKey Stock") { part in
+                        cell(part) { digiKeyStockCell(part) }
+                    }
+                    .width(min: Self.stockColumnMinimumWidth, ideal: 110)
+                    .customizationID(Self.digiKeyStockColumnID)
                 }
-                .width(min: Self.stockColumnMinimumWidth, ideal: 110)
-                .customizationID(Self.digiKeyStockColumnID)
-            }
 
-            // Mouser's stock of the part's MPN, while Mouser is on: asked
-            // about only for the rows on screen, and held in memory only, as
-            // Mouser's API terms require. A column of its own, credited to
-            // Mouser, never mixed with another distributor's.
-            if mouser.isEnabled {
-                TableColumn("Mouser Stock") { part in
-                    cell(part) { mouserStockCell(part) }
+                // Mouser's stock of the part's MPN, while Mouser is on: asked
+                // about only for the rows on screen, and held in memory only, as
+                // Mouser's API terms require. A column of its own, credited to
+                // Mouser, never mixed with another distributor's.
+                if mouser.isEnabled {
+                    TableColumn("Mouser Stock") { part in
+                        cell(part) { mouserStockCell(part) }
+                    }
+                    .width(min: Self.stockColumnMinimumWidth, ideal: 110)
+                    .customizationID(Self.mouserStockColumnID)
                 }
-                .width(min: Self.stockColumnMinimumWidth, ideal: 110)
-                .customizationID(Self.mouserStockColumnID)
+
+                // Arrow's stock of the part's MPN, while Arrow is on: asked
+                // about only for the rows on screen and held in memory only, as
+                // Mouser's is. A column of its own, credited to Arrow.
+                if arrow.isEnabled {
+                    TableColumn("Arrow Stock") { part in
+                        cell(part) { arrowStockCell(part) }
+                    }
+                    .width(min: Self.stockColumnMinimumWidth, ideal: 110)
+                    .customizationID(Self.arrowStockColumnID)
+                }
             }
 
             TableColumn("Tags", value: \.tagList) { part in
@@ -710,10 +729,11 @@ struct HorizontalPartBrowserView: View {
         }
         #endif
         HorizontalPartDistributorMenuItems(
-            links: HorizontalPartPageLink.links(mpn: part.mpn, manufacturer: part.manufacturer, digiKey: digiKey, mouser: mouser),
+            links: HorizontalPartPageLink.links(mpn: part.mpn, manufacturer: part.manufacturer, digiKey: digiKey, mouser: mouser, arrow: arrow),
             stockChecks: [
                 HorizontalStockCheck.digiKey(digiKey.state(for: part)) { digiKey.lookUp([part], force: true) },
-                HorizontalStockCheck.mouser(mouser.state(for: part)) { mouser.lookUp([HorizontalPartQuery(part: part)]) }
+                HorizontalStockCheck.mouser(mouser.state(for: part)) { mouser.lookUp([HorizontalPartQuery(part: part)]) },
+                HorizontalStockCheck.arrow(arrow.state(for: part)) { arrow.lookUp([HorizontalPartQuery(part: part)]) }
             ].compactMap { $0 }
         )
     }
@@ -835,6 +855,46 @@ struct HorizontalPartBrowserView: View {
         .onChange(of: query) { old, new in
             mouser.hide(old)
             mouser.show(new)
+        }
+    }
+
+    /// The part's stock at Arrow: a count, right-aligned, orange when none is
+    /// left, and a link to the part's Arrow page; its tooltip says what the
+    /// other sites Arrow answers for have and credits Arrow. The row tells
+    /// the monitor it shows the part for as long as it is up, which is what
+    /// has Arrow asked about it.
+    @ViewBuilder
+    private func arrowStockCell(_ part: HorizontalPoolPart) -> some View {
+        let state = arrow.state(for: part)
+        let query = HorizontalPartQuery(part: part)
+        let text = Text(state.title)
+            .monospacedDigit()
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: state.isNumeric ? .trailing : .leading)
+            .contentShape(Rectangle())
+        Group {
+            if let url = state.productURL {
+                Button { openURL(url) } label: {
+                    text.foregroundStyle(state.isWarning ? Color.orange : Color.accentColor)
+                }
+                .buttonStyle(.plain)
+                #if os(macOS)
+                .pointerStyle(.link)
+                #endif
+            } else {
+                text
+                    .foregroundStyle(state.isWarning ? Color.orange : state.isNumeric ? Color.primary : Color.secondary)
+                    .onTapGesture(count: 2) {
+                        place(part)
+                    }
+            }
+        }
+        .help(state.help(for: part))
+        .onAppear { arrow.show(query) }
+        .onDisappear { arrow.hide(query) }
+        .onChange(of: query) { old, new in
+            arrow.hide(old)
+            arrow.show(new)
         }
     }
 
@@ -1003,6 +1063,13 @@ struct HorizontalStockCheck: Identifiable {
         switch state {
         case .off, .noMPN, .notSetUp: nil
         default: HorizontalStockCheck(distributor: .mouser, hasAnswer: state.hasAnswer, action: action)
+        }
+    }
+
+    static func arrow(_ state: HorizontalArrowStockMonitor.CellState, action: @escaping () -> Void) -> HorizontalStockCheck? {
+        switch state {
+        case .off, .noMPN, .notSetUp: nil
+        default: HorizontalStockCheck(distributor: .arrow, hasAnswer: state.hasAnswer, action: action)
         }
     }
 }

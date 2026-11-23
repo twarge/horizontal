@@ -1376,9 +1376,9 @@ struct HorizontalPoolBrowserView: View {
     /// (each would redraw a list of thousands); a part not asked about yet —
     /// one right-clicked without being selected — is asked about at DigiKey
     /// now, so the next menu opens DigiKey's page for it rather than its
-    /// search. Mouser is never asked from here: its terms forbid fetching
-    /// ahead, and this pane shows no Mouser stock, so Open on Mouser is its
-    /// search unless the Parts pane holds an answer.
+    /// search. Mouser and Arrow are never asked from here: this pane shows
+    /// neither's stock, and Mouser's terms forbid fetching ahead, so Open on
+    /// Mouser or Arrow is its search unless the Parts pane holds an answer.
     @ViewBuilder
     private func distributorMenuItems(_ item: HorizontalPoolLibraryItem) -> some View {
         let monitor = HorizontalDigiKeyStockMonitor.shared

@@ -136,6 +136,8 @@ struct HorizontalSettingsView: View {
             HorizontalDigiKeySettingsSection()
 
             HorizontalMouserSettingsSection()
+
+            HorizontalArrowSettingsSection()
         }
         .formStyle(.grouped)
         .checkboxTogglesOnMac()
