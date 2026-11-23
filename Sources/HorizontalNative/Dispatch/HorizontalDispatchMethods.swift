@@ -155,9 +155,9 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "clean_up_project_pool",
-            summary: "Remove items in the project pool's cache that nothing in the design reaches, as Horizon's Clean up Pool Cache does: parts no component uses with their entities, units, symbols, packages and 3D models, and frames, decals and padstacks nothing names. A dry run lists them. One transaction and one live undo step.",
+            summary: "Remove items in the project pool's cache that nothing in the design reaches, as Horizon's Clean up Pool Cache does: parts no component uses with their entities, units, symbols, packages and 3D models, and frames, decals and padstacks nothing names. A dry run lists them, and after them the project's own unused items (project_local: true), which no library holds: those go only when remove names them. One transaction and one live undo step.",
             params: ["handle": "Project handle.",
-                     "remove": "Ids of the unused items to remove, from a dry run's items (optional; default every one).",
+                     "remove": "Ids of the unused items to remove, from a dry run's items (optional; default every cached copy and none of the project's own).",
                      "review_digest": "Digest a dry run returned (recommended).",
                      "expected_revision": "The project revision this edit was planned against.",
                      "operation_id": "Caller-chosen mutation ID.", "plan_digest": "Digest returned by a dry run (optional).",

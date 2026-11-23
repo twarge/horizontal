@@ -118,13 +118,15 @@ enum HorizontalDispatchPool {
                 throw HorizontalDispatchError.failed("The project pool or design changed since review. Run a dry run again.")
             }
             let poolURL = entry.project.baseURL.appendingPathComponent(directory)
+            // Unnamed, a cleanup takes the cached copies and leaves the
+            // project's own, which no library has to copy again.
             var chosen = Set<String>()
-            if !review.items.isEmpty || ids != nil {
+            if !review.defaultSelection.isEmpty || ids != nil {
                 let (paths, manifest) = try HorizontalPoolCacheCleanup.removal(review, removing: ids, archive: store.archive,
                                                                               project: entry.project, poolDirectory: directory)
                 for path in paths { try store.remove(poolURL.appendingPathComponent(path)) }
                 if let manifest { try store.write(manifest, to: poolURL.appendingPathComponent(HorizontalPoolCacheProvenance.path)) }
-                chosen = ids ?? Set(review.items.map(\.id))
+                chosen = ids ?? review.defaultSelection
                 HorizontalPoolLibrary.invalidateCache()
                 HorizontalPoolPadstacks.invalidateCaches()
             }
@@ -136,8 +138,10 @@ enum HorizontalDispatchPool {
             let listed = ids != nil && params.string("detail") == "compact" ? removed : review.items
             var result: JSONDictionary = ["applied": chosen.count, "undo_name": "Clean Up Project Pool", "review_digest": review.digest,
                     "items": listed.map { item -> JSONDictionary in
-                        ["id": item.id, "kind": item.kind, "uuid": item.uuid as Any, "name": item.name,
-                         "paths": item.paths, "bytes": item.bytes]
+                        var json: JSONDictionary = ["id": item.id, "kind": item.kind, "uuid": item.uuid as Any, "name": item.name,
+                                                    "paths": item.paths, "bytes": item.bytes]
+                        if item.isProjectLocal { json["project_local"] = true }
+                        return json
                     },
                     "remove": removed.map(\.id), "remove_bytes": removed.reduce(0) { $0 + $1.bytes },
                     "normalized_ops": [["op": "clean_up_project_pool", "remove": chosen.sorted(), "review_digest": review.digest]]]

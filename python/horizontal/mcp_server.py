@@ -928,12 +928,16 @@ def clean_up_project_pool(remove: list[str] | None = None, path: str | None = No
     """Remove items in the project pool's cache that nothing in the design reaches, as Horizon's Clean up Pool
     Cache does. That covers parts no component uses, with the entities, units, symbols, packages and 3D models
     only they need, and frames, decals and padstacks nothing names. A unit keeps all its symbols, and a package
-    all its models. Project-local items are never offered.
+    all its models.
 
-    A dry run lists them in items, each with an id, kind, name, paths and bytes. remove takes ids from it;
-    leave it out to remove every one. The reply's remove gives the ids it removes (or would), and remove_bytes
-    their size. Pass the dry run's review_digest to refuse a pool or design that changed since. One transaction
-    and one live undo step; a live document's files go at its next save."""
+    A dry run lists them in items, each with an id, kind, name, paths and bytes. After the cached copies come the
+    project's own unused items, the ones it keeps outside cache/, marked project_local: true with an id
+    "local|<path>". No library holds those, so removing one removes the only copy.
+
+    remove takes ids from the dry run. Left out, it removes every cached copy and none of the project's own:
+    name those to remove them, and only when the user asked for it. The reply's remove gives the ids it removes
+    (or would), and remove_bytes their size. Pass the dry run's review_digest to refuse a pool or design that
+    changed since. One transaction and one live undo step; a live document's files go at its next save."""
     options = {k: v for k, v in {"remove": remove, "review_digest": review_digest}.items() if v is not None}
     return _edit_call(_resolve(path), "clean_up_project_pool", dry_run=dry_run, **options)
 

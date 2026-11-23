@@ -2,6 +2,8 @@ import SwiftUI
 
 /// Horizon's "Clean up Pool Cache": the project pool's cached items nothing
 /// in the design reaches, each with a checkbox, removed as one undoable step.
+/// The project's own unused items follow in sections of their own, unticked:
+/// no library has them to copy again.
 struct HorizontalPoolCleanupSheet: View {
     var review: HorizontalPoolCacheCleanupReview
     var isReadOnly: Bool
@@ -11,17 +13,25 @@ struct HorizontalPoolCleanupSheet: View {
     @State private var checked = Set<String>()
     @State private var error: String?
 
-    private var groups: [(kind: String, title: String, items: [HorizontalPoolCacheCleanupItem])] {
+    /// The sections in the review's order: each kind of cached copy, then
+    /// each kind of the project's own.
+    private var groups: [(id: String, title: String, items: [HorizontalPoolCacheCleanupItem])] {
         var order = [String]()
-        var byKind = [String: [HorizontalPoolCacheCleanupItem]]()
+        var byGroup = [String: [HorizontalPoolCacheCleanupItem]]()
         for item in review.items {
-            if byKind[item.kind] == nil { order.append(item.kind) }
-            byKind[item.kind, default: []].append(item)
+            let group = (item.isProjectLocal ? "local-" : "cached-") + item.kind
+            if byGroup[group] == nil { order.append(group) }
+            byGroup[group, default: []].append(item)
         }
-        return order.map { kind in
-            let items = byKind[kind] ?? []
-            return (kind, HorizontalPoolItemCategory(rawValue: kind)?.title ?? "3D Models", items)
+        return order.map { group in
+            let items = byGroup[group] ?? []
+            let title = HorizontalPoolItemCategory(rawValue: items.first?.kind ?? "")?.title ?? "3D Models"
+            return (group, items.first?.isProjectLocal == true ? "The Project’s Own \(title)" : title, items)
         }
+    }
+
+    private var hasLocalItems: Bool {
+        review.items.contains(where: \.isProjectLocal)
     }
 
     private var checkedBytes: Int {
@@ -34,6 +44,10 @@ struct HorizontalPoolCleanupSheet: View {
                 Text("Clean Up Project Pool").font(.headline)
                 Text("Items in the project pool that nothing in the design uses: no component, sheet frame, board decal or via names them, or anything they depend on.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if hasLocalItems {
+                    Text("The project’s own items are listed last and start unticked. They are not copies from a library, so removing one removes the only copy.")
+                        .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(16)
@@ -43,7 +57,7 @@ struct HorizontalPoolCleanupSheet: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List {
-                    ForEach(groups, id: \.kind) { group in
+                    ForEach(groups, id: \.id) { group in
                         Section(group.title) {
                             ForEach(group.items) { item in row(item) }
                         }
@@ -79,8 +93,9 @@ struct HorizontalPoolCleanupSheet: View {
         #else
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         #endif
-        // Everything starts ticked, as in Horizon.
-        .onAppear { checked = Set(review.items.map(\.id)) }
+        // Every cached copy starts ticked, as in Horizon; the project's own
+        // start unticked.
+        .onAppear { checked = review.defaultSelection }
     }
 
     private func row(_ item: HorizontalPoolCacheCleanupItem) -> some View {

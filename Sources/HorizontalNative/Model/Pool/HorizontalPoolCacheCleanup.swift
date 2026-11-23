@@ -85,10 +85,12 @@ enum HorizontalPoolCacheUsage {
     }
 }
 
-/// One thing a cleanup can remove: a cached pool item (a package with the
-/// padstacks beside it) or a cached 3D model.
+/// One thing a cleanup can remove: a pool item (a package with the padstacks
+/// beside it) or a 3D model, cached from a library or the project's own.
 struct HorizontalPoolCacheCleanupItem: Identifiable, Hashable, Sendable {
-    /// "part|<uuid>" for a pool item, "model|<path>" for a 3D model.
+    /// For a cached copy, "part|<uuid>" for a pool item and "model|<path>"
+    /// for a 3D model. For one of the project's own, "local|<path>": a cached
+    /// copy can share its uuid.
     var id: String
     var kind: String
     var uuid: String?
@@ -96,6 +98,9 @@ struct HorizontalPoolCacheCleanupItem: Identifiable, Hashable, Sendable {
     /// Pool-relative files.
     var paths: [String]
     var bytes: Int
+    /// The project's own, kept outside `cache/`: no library has it to copy
+    /// again, so a cleanup removes it only when it is chosen.
+    var isProjectLocal = false
 
     var kindTitle: String {
         HorizontalPoolItemCategory(rawValue: kind)?.singularTitle ?? "3D model"
@@ -103,8 +108,14 @@ struct HorizontalPoolCacheCleanupItem: Identifiable, Hashable, Sendable {
 }
 
 struct HorizontalPoolCacheCleanupReview: Sendable {
-    /// What nothing in the design reaches, parts first.
+    /// What nothing in the design reaches: the cached copies, parts first,
+    /// then the project's own in the same order.
     var items: [HorizontalPoolCacheCleanupItem]
+    /// What a cleanup removes when it isn't told what to: every cached copy.
+    /// The sheet starts with these ticked.
+    var defaultSelection: Set<String> {
+        Set(items.filter { !$0.isProjectLocal }.map(\.id))
+    }
     /// The pool files the review was computed from.
     var projectFiles: [String: Data]
     let digest: String
@@ -120,11 +131,15 @@ struct HorizontalPoolCacheCleanupReview: Sendable {
 /// Horizon's "Clean up Pool Cache": items in the project pool's cache that
 /// nothing in the design reaches. The rule is conservative. A used unit keeps
 /// all its symbols and a used package all its models, so switching either
-/// later needs no re-import. Project-local items, `pool.json`, the cache
-/// manifest and hidden files are never offered.
+/// later needs no re-import. `pool.json`, the cache manifest and hidden files
+/// are never offered.
+///
+/// Horizon stops at the cache. Here the project's own unused items are
+/// offered after it (`localItems`), since nothing else in the app removes
+/// one, but a cleanup takes them only when they are chosen.
 enum HorizontalPoolCacheCleanup {
-    private static let cacheKinds: [HorizontalPoolItemCategory] = [.part, .entity, .unit, .symbol, .package, .padstack, .frame, .decal]
-    private static let modelCache = "3d_models/cache/"
+    static let cacheKinds: [HorizontalPoolItemCategory] = [.part, .entity, .unit, .symbol, .package, .padstack, .frame, .decal]
+    static let modelCache = "3d_models/cache/"
 
     /// The pool files a cleanup looks at: all but hidden ones (98). A Finder
     /// `.DS_Store` isn't a pool item. Horizon's own cleanup offers one in
@@ -179,20 +194,26 @@ enum HorizontalPoolCacheCleanup {
             for path in files.keys.sorted() where path.hasPrefix(prefix) && !path.dropFirst(prefix.count).contains("/") {
                 guard let json = jsons[path], json.string("type") == category.rawValue, let uuid = json.string("uuid"),
                       !reachedKeys.contains(.init(type: category.rawValue, uuid: uuid)) else { continue }
-                var name = json.string("name") ?? uuid
-                if category == .part {
-                    let part = HorizontalPartRecord.resolve(json) { partsByID[$0.lowercased()] }
-                    name = [part.mpn, part.manufacturer].filter { !$0.isEmpty }.joined(separator: " / ")
-                    if name.isEmpty { name = uuid }
-                }
-                items.append(item(category, uuid: uuid, name: name, paths: [path], files: files))
+                items.append(item(category, uuid: uuid, name: name(of: json, category, uuid: uuid, partsByID: partsByID),
+                                  paths: [path], files: files))
             }
         }
         for path in files.keys.sorted() where path.hasPrefix(modelCache) && !keptModels.contains(path) {
             items.append(.init(id: "model|" + path, kind: "model", uuid: nil, name: URL(fileURLWithPath: path).lastPathComponent,
                                paths: [path], bytes: files[path]?.count ?? 0))
         }
+        items += localItems(files: files, jsons: jsons, reachedKeys: reachedKeys, keptModels: keptModels, partsByID: partsByID)
         return .init(items: items, projectFiles: files)
+    }
+
+    /// The name a row shows: a part's MPN and manufacturer, anything else's
+    /// own name.
+    static func name(of json: JSONDictionary, _ category: HorizontalPoolItemCategory, uuid: String,
+                     partsByID: [String: JSONDictionary]) -> String {
+        guard category == .part else { return json.string("name") ?? uuid }
+        let part = HorizontalPartRecord.resolve(json) { partsByID[$0.lowercased()] }
+        let name = [part.mpn, part.manufacturer].filter { !$0.isEmpty }.joined(separator: " / ")
+        return name.isEmpty ? uuid : name
     }
 
     private static func item(_ category: HorizontalPoolItemCategory, uuid: String, name: String,
@@ -201,10 +222,11 @@ enum HorizontalPoolCacheCleanup {
               paths: paths, bytes: paths.reduce(0) { $0 + (files[$1]?.count ?? 0) })
     }
 
-    /// What removing the chosen items (every one when `ids` is nil) takes out
-    /// of the pool: their pool-relative files, and the cache manifest without
-    /// their entries (nil when it has none of them). The design is reviewed
-    /// again first, so nothing it has come to use since is removed.
+    /// What removing the chosen items (every cached copy when `ids` is nil)
+    /// takes out of the pool: their pool-relative files, and the cache
+    /// manifest without their entries (nil when it has none of them). The
+    /// design is reviewed again first, so nothing it has come to use since is
+    /// removed.
     static func removal(_ review: HorizontalPoolCacheCleanupReview, removing ids: Set<String>?,
                         archive: HorizontalProjectArchive, project: HorizontalProject,
                         poolDirectory: String) throws -> (paths: [String], manifest: Data?) {
@@ -214,9 +236,11 @@ enum HorizontalPoolCacheCleanup {
         }
         let current = Self.review(archive: archive, project: project, files: files)
         let available = Dictionary(uniqueKeysWithValues: current.items.map { ($0.id, $0) })
-        let chosen = ids ?? Set(review.items.map(\.id))
+        let chosen = ids ?? review.defaultSelection
         guard !chosen.isEmpty else {
-            throw HorizontalDispatchError.invalidParams("Nothing in the project pool is unused.")
+            throw HorizontalDispatchError.invalidParams(review.items.isEmpty
+                ? "Nothing in the project pool is unused."
+                : "Nothing in the project pool's cache is unused. The project's own unused items go only when they are named.")
         }
         if let missing = chosen.subtracting(available.keys).sorted().first {
             throw HorizontalDispatchError.invalidParams("\(missing) is not an unused item in the project pool.")

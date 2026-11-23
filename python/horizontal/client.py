@@ -599,7 +599,8 @@ class Project:
     def clean_up_project_pool(self, remove: list[str] | None = None, dry_run: bool = False, *,
                               review_digest: str | None = None, expected_revision: str | None = None,
                               operation_id: str | None = None, plan_digest: str | None = None) -> dict[str, Any]:
-        """Remove project pool cache items nothing in the design reaches; a dry run lists them."""
+        """Remove project pool cache items nothing in the design reaches; a dry run lists them, and the
+        project's own unused items after them, which go only when remove names them."""
         options = {k: v for k, v in {"remove": remove, "review_digest": review_digest,
                                    "plan_digest": plan_digest}.items() if v is not None}
         result = self._call("clean_up_project_pool", dry_run=dry_run,
