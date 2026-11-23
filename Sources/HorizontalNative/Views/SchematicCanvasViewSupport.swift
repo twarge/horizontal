@@ -133,6 +133,7 @@ struct SchematicMetalHighlightCacheKey: Hashable {
     var sceneKey: Int
     var highlightedNetIDs: [String]
     var highlightedComponentIDs: [String]
+    var highlightedPinKeys: [String] = []
 }
 
 typealias SchematicMetalLineScene = (
@@ -157,8 +158,18 @@ enum SchematicHighlightSubset {
     static func sheet(
         _ sheet: HorizontalSchematicSheet,
         netIDs: Set<String>,
-        componentIDs: Set<String>
+        componentIDs: Set<String>,
+        pinKeys: Set<String> = []
     ) -> HorizontalSchematicSheet {
+        // A pin Spotlight's pins, each with its name and pad texts
+        // (`HorizontalPinFunctionSpotlight.pinKeys(in:)`).
+        func isLitPin(_ geometryID: String) -> Bool {
+            guard !pinKeys.isEmpty, let key = HorizontalPinFunctionSpotlight.pinKey(forGeometryID: geometryID) else {
+                return false
+            }
+            return pinKeys.contains(key)
+        }
+
         func onNet(_ netID: String?) -> Bool {
             guard let netID else {
                 return false
@@ -180,11 +191,11 @@ enum SchematicHighlightSubset {
         }
         let smashedTextIDs = Set(subset.symbols.flatMap(\.smashedTextIDs).map { $0.lowercased() })
 
-        subset.symbolLines = sheet.symbolLines.filter { inSymbol($0.id) }
-        subset.symbolPolygons = sheet.symbolPolygons.filter { inSymbol($0.id) }
-        subset.symbolTexts = sheet.symbolTexts.filter { inSymbol($0.id) }
-        subset.symbolPins = sheet.symbolPins.filter { onNet($0.netID) || inSymbol($0.id) }
-        subset.symbolPinCircles = sheet.symbolPinCircles.filter { onNet($0.netID) || inSymbol($0.id) }
+        subset.symbolLines = sheet.symbolLines.filter { inSymbol($0.id) || isLitPin($0.id) }
+        subset.symbolPolygons = sheet.symbolPolygons.filter { inSymbol($0.id) || isLitPin($0.id) }
+        subset.symbolTexts = sheet.symbolTexts.filter { inSymbol($0.id) || isLitPin($0.id) }
+        subset.symbolPins = sheet.symbolPins.filter { onNet($0.netID) || inSymbol($0.id) || isLitPin($0.id) }
+        subset.symbolPinCircles = sheet.symbolPinCircles.filter { onNet($0.netID) || inSymbol($0.id) || isLitPin($0.id) }
         subset.noPopulateMarks = sheet.noPopulateMarks.filter { symbolIDs.contains($0.symbolID.lowercased()) }
         subset.texts = sheet.texts.filter { smashedTextIDs.contains($0.id.lowercased()) }
         subset.netLines = sheet.netLines.filter { onNet($0.netID) }

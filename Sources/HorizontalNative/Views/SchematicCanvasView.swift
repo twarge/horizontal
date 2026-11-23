@@ -409,6 +409,8 @@ struct SchematicCanvasView: View {
     /// The window's Pools pane, for Alternate Parts…; nil where there is none.
     @Environment(\.horizonPoolRevealAction) private var poolRevealAction
     @Environment(\.horizonPartReplaceActions) private var partReplaceActions
+    /// The window's pin Spotlight (`HorizontalPinSpotlightSource`).
+    @Environment(\.horizonPinSpotlight) private var pinSpotlight
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
 
     init(
@@ -564,7 +566,31 @@ struct SchematicCanvasView: View {
     }
 
     private var hasActiveHighlight: Bool {
-        !highlightedNetIDs.isEmpty || !highlightedComponentIDs.isEmpty
+        !highlightedNetIDs.isEmpty || !highlightedComponentIDs.isEmpty || pinSpotlight?.spotlight != nil
+    }
+
+    /// The right-click menu's pin Spotlight entries for the pin under the
+    /// pointer on the symbol `ref` names.
+    private func pinFunctionEntries(for ref: HorizontalSelectableRef) -> [HorizontalTargetItemMenuEntry] {
+        guard ref.type == .schematicSymbol, !editorProfile.isPoolMode else {
+            return []
+        }
+        return HorizontalPinFunctionMenu.entries(
+            for: HorizontalPinFunctionMenu.target(at: contextMenuWorldPoint, symbolID: ref.id, in: sheet),
+            actions: pinSpotlight
+        )
+    }
+
+    /// A click on a free pin of the pin Spotlight moves the function's net
+    /// there; true when the click was that.
+    private func movePinFunction(at point: HorizontalPoint) -> Bool {
+        guard !isReadOnly, !editorProfile.isPoolMode,
+              let target = HorizontalPinFunctionMenu.target(at: point, in: sheet),
+              let pin = HorizontalPinFunctionMenu.movable(target, actions: pinSpotlight) else {
+            return false
+        }
+        pinSpotlight?.move(pin)
+        return true
     }
 
     /// Whether a move is drawn by patching the moved objects' Metal buffers,
@@ -947,6 +973,9 @@ struct SchematicCanvasView: View {
                     return
                 }
                 #endif
+                if clickAction == .replace, clickCount == 1, movePinFunction(at: pointer.raw) {
+                    return
+                }
                 updateSelection(with: hitRef, action: clickAction)
             },
             onAreaSelection: { refs, action in
@@ -2601,9 +2630,10 @@ struct SchematicCanvasView: View {
 
     /// Ends the window's highlight, wherever it came from.
     private func clearHighlight() {
-        guard !highlightedNetIDs.isEmpty || !highlightedComponentIDs.isEmpty else {
+        guard hasActiveHighlight else {
             return
         }
+        pinSpotlight?.clear()
         onHighlightNetCommand([])
         onHighlightComponentCommand([])
     }
@@ -8847,6 +8877,12 @@ struct SchematicCanvasView: View {
         if let partReplaceActions, !isReadOnly, !editorProfile.isPoolMode {
             handlers.replacePart = { partID, componentIDs in partReplaceActions.replace(partID, componentIDs) }
         }
+        if let pinSpotlight, !editorProfile.isPoolMode {
+            handlers.spotlightPinFunction = { component, pin, function in pinSpotlight.show(component, pin, function) }
+            handlers.movePinFunctionNet = { gate, pin in
+                if let lit = pinSpotlight.spotlight?.pin(gateID: gate, pinID: pin) { pinSpotlight.move(lit) }
+            }
+        }
         if onRevealPoolSymbol != nil, selectedSymbolPoolID() != nil {
             handlers.showInPoolManager = { revealSelectedSymbol(.registeredPool) }
             handlers.showInProjectPoolManager = { revealSelectedSymbol(.projectPool) }
@@ -9004,6 +9040,7 @@ struct SchematicCanvasView: View {
                 entries.append(.command(title: "Clear all NC pins", .clearAllNCPins))
             }
             entries.append(contentsOf: HorizontalSchematicPinNoConnect.menuEntries(for: ref, at: contextMenuWorldPoint, in: sheet))
+            entries.append(contentsOf: pinFunctionEntries(for: ref))
         }
         if let smash = smashEntry(for: ref) { entries.append(smash) }
         entries.append(contentsOf: blockSymbolEntries(for: ref))
@@ -9039,6 +9076,7 @@ struct SchematicCanvasView: View {
         if let noPopulate = noPopulateEntry(for: ref) { entries.append(noPopulate) }
         if !isReadOnly, !editorProfile.isPoolMode, onApplyProjectEdit != nil {
             entries.append(contentsOf: HorizontalSchematicPinNoConnect.menuEntries(for: ref, at: contextMenuWorldPoint, in: sheet))
+            entries.append(contentsOf: pinFunctionEntries(for: ref))
         }
         if let smash = smashEntry(for: ref) { entries.append(smash) }
         entries.append(contentsOf: blockSymbolEntries(for: ref))
@@ -11185,16 +11223,18 @@ struct SchematicCanvasView: View {
 
         let netIDs = Set(highlightedNetIDs.map { $0.lowercased() })
         let componentIDs = Set(highlightedComponentIDs.map { $0.lowercased() })
+        let pinKeys = pinSpotlight?.spotlight?.pinKeys(in: sheet) ?? []
         let key = SchematicMetalHighlightCacheKey(
             selectableKey: selectableCacheKey,
             sceneKey: sceneKey,
             highlightedNetIDs: netIDs.sorted(),
-            highlightedComponentIDs: componentIDs.sorted()
+            highlightedComponentIDs: componentIDs.sorted(),
+            highlightedPinKeys: pinKeys.sorted()
         )
 
         return selectableCache.metalHighlight(key: key) {
             let scene = schematicMetalScene(
-                of: SchematicHighlightSubset.sheet(sheet, netIDs: netIDs, componentIDs: componentIDs),
+                of: SchematicHighlightSubset.sheet(sheet, netIDs: netIDs, componentIDs: componentIDs, pinKeys: pinKeys),
                 isolatedNetLineIDs: isolatedNetLineIDs,
                 junctionRenderInfo: junctionRenderInfo,
                 cached: false
@@ -11243,6 +11283,7 @@ struct SchematicCanvasView: View {
             &* 31
             &+ highlightedComponentIDs.hashValue
             &* 31
+            &+ (pinSpotlight?.spotlight != nil ? 1 : 0)
             &+ sheet.bounds.minX.hashValue
             &+ sheet.bounds.minY.hashValue
             &+ sheet.bounds.maxX.hashValue

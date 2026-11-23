@@ -705,6 +705,15 @@ class SetPinAlternate(ComponentOp):
         return self
 
 
+class MovePinNet(ComponentOp):
+    """Take a net from one pin of a component to a free pin of it, wires and all; function names the alternate the
+    new pin is then drawn as (USART1_TX), which the old pin stops showing."""
+    op: Literal["move_pin_net"]
+    pin: StrictStr
+    to_pin: StrictStr
+    function: StrictStr | None = None
+
+
 class RemapPart(ComponentOp):
     """pin_map is optional: it pairs old pins with new ones, each named as connect names a pin (VSSA/VREF- → VSSA,
     or gate/pin), and pins it leaves out are matched by gate and pin name. Only a pin on a net needs a counterpart:
@@ -1301,7 +1310,7 @@ class CopyLayout(Input):
 EditOperation = Annotated[EnsureComponent | RemoveComponent | RemovePlacement | SetValue | SetRefdes | SetPart | SetPopulation |
                           SetGroup | EnsureNet | RenameNet | SetNetClass | SetDiffpair | ClearDiffpair | RetireNet | Connect | Disconnect |
                           Place | PlaceSymbol | MoveSymbols | MoveToOtherSheet | RemoveSymbol | DrawNetLine | PlaceJunction | SetNetLineEndpoint | RemapPart | PlaceText | RemoveText |
-                          RemoveNetLine | RemoveJunction | PruneSheet | TerminatePin | SetSymbolDisplay | SetCustomValue | Smash | SetNoConnect | SetPinAlternate |
+                          RemoveNetLine | RemoveJunction | PruneSheet | TerminatePin | SetSymbolDisplay | SetCustomValue | Smash | SetNoConnect | SetPinAlternate | MovePinNet |
                           PlaceTrack | RemoveTrack | SetTrackWidth | PlaceVia | RemoveVia | UnpinVias |
                           PlacePowerSymbol | PlaceNetLabel | RemoveSheetMark |
                           AddSheet | RenameSheet | SetSheetFrame | RemoveSheet |

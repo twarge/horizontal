@@ -180,6 +180,10 @@ Schematic editing supports:
   what a symbol's `$VALUE` text draws (`"${value}\n${mpn}"`; `""` or null
   clears it), and `set_sheet_frame {sheet, frame}` gives a sheet a frame the
   project pool has, or `"none"`.
+- `move_pin_net {component, pin, to_pin, function?}` takes a net from one pin of a
+  component to a free pin of it: the connection, and every wire that ended on
+  the old pin. `function` (`USART1_TX`) is the alternate the new pin is then
+  drawn as, which the old pin stops showing.
 - `set_pin_alternate {component, pin, alternate | assignments, use_primary_name?, custom_name?, custom_direction?}`
   picks a pin's function from the alternates its unit offers. `alternate` is a
   name (whole, or one "/" part of it when that is unique: `SPI1_SCK` finds

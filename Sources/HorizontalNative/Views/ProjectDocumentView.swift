@@ -1334,6 +1334,14 @@ struct ProjectWorkspaceView: View {
                 replacement: { partReplacement(for: $0) },
                 replace: { item, replacement in replacePartsFromLibrary(item, replacement) }
             )
+            .pinFunctionSpotlight(
+                project: { project },
+                canMove: !isReadOnly,
+                boardComponentIDs: { boardComponentIDs($0) },
+                apply: { operations, actionName in
+                    applyProjectEdit(operations, actionName: actionName, schematicURL: selectedSchematic?.url)
+                }
+            )
             .alert("Could Not Place Part", isPresented: libraryPlacementErrorPresented) {
                 Button("OK", role: .cancel) {}
             } message: {

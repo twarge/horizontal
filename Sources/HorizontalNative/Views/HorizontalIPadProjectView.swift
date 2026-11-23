@@ -205,6 +205,12 @@ struct HorizontalIPadProjectView: View {
                     replacement: { partReplacement(for: $0) },
                     replace: { item, replacement in replacePartsFromLibrary(item, replacement) }
                 )
+                .pinFunctionSpotlight(
+                    project: { project },
+                    canMove: !isReadOnly,
+                    boardComponentIDs: { boardComponentIDs($0) },
+                    apply: { operations, actionName in applyProjectEdit(operations, actionName: actionName) }
+                )
                 // While no pool is registered, the first project opened in a
                 // run offers Horizon's default pool or a pool on disk, as the
                 // Mac does at each launch.

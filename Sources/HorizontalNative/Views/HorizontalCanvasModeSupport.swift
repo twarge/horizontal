@@ -452,6 +452,8 @@ struct HorizontalCanvasCommandHandlerSet {
     var setAllUnconnectedPinsNC: (() -> Void)? = nil
     var clearAllNCPins: (() -> Void)? = nil
     var setPinNoConnect: ((String, String, Bool) -> Void)? = nil
+    var spotlightPinFunction: ((String, String, String) -> Void)? = nil
+    var movePinFunctionNet: ((String, String) -> Void)? = nil
     var toggleNoPopulate: (() -> Void)? = nil
     var setDiffpair: (([String]) -> Void)? = nil
     var clearDiffpair: ((String) -> Void)? = nil
@@ -719,6 +721,11 @@ struct HorizontalCanvasCommandHandlerSet {
         case .setPinNoConnect(let symbol, let pin, let mark):
             guard !isReadOnly else { return }
             setPinNoConnect?(symbol, pin, mark)
+        case .spotlightPinFunction(let component, let pin, let function):
+            spotlightPinFunction?(component, pin, function)
+        case .movePinFunctionNet(let gate, let pin):
+            guard !isReadOnly else { return }
+            movePinFunctionNet?(gate, pin)
         case .toggleNoPopulate:
             guard !isReadOnly else { return }
             toggleNoPopulate?()

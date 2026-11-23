@@ -29,6 +29,7 @@ struct BoardMetalHighlightCacheKey: Hashable {
     var visibleCompositeGroups: Set<Int>
     var highlightedNetIDs: [String]
     var highlightedComponentIDs: [String]
+    var highlightedPadPaths: [String] = []
     /// "As is": nothing dims, so what is highlighted is drawn lighter.
     var lightens: Bool
 }
@@ -43,8 +44,17 @@ enum BoardHighlightSubset {
     static func board(
         _ board: HorizontalBoard,
         netIDs: Set<String>,
-        componentIDs: Set<String>
+        componentIDs: Set<String>,
+        padPaths: Set<String> = []
     ) -> HorizontalBoard {
+        // A pin Spotlight's pads (`HorizontalPinFunctionSpotlight.padPaths(in:)`).
+        func isLitPad(_ geometryID: String) -> Bool {
+            guard !padPaths.isEmpty, let path = HorizontalBoard.padPath(forPadPolygonID: geometryID) else {
+                return false
+            }
+            return padPaths.contains(path)
+        }
+
         func onNet(_ netID: String?) -> Bool {
             guard let netID else {
                 return false
@@ -65,12 +75,12 @@ enum BoardHighlightSubset {
             return packageIDs.contains(packageID)
         }
 
-        subset.packagePads = board.packagePads.filter { onNet($0.netID) || inPackage($0.id) }
-        subset.packageHoles = board.packageHoles.filter { onNet($0.netID) || inPackage($0.id) }
+        subset.packagePads = board.packagePads.filter { onNet($0.netID) || inPackage($0.id) || isLitPad($0.id) }
+        subset.packageHoles = board.packageHoles.filter { onNet($0.netID) || inPackage($0.id) || isLitPad($0.id) }
         subset.packagePolygons = board.packagePolygons.filter { inPackage($0.id) }
         subset.packageLines = board.packageLines.filter { inPackage($0.id) }
         subset.packageArcs = board.packageArcs.filter { inPackage($0.id) }
-        subset.packageTexts = board.packageTexts.filter { onNet($0.netID) || inPackage($0.id) }
+        subset.packageTexts = board.packageTexts.filter { onNet($0.netID) || inPackage($0.id) || isLitPad($0.id) }
         subset.keepouts = board.keepouts.filter { inPackage($0.id) }
         subset.tracks = board.tracks.filter { onNet($0.netID) }
         subset.netTies = board.netTies.filter { onNet($0.netID) }

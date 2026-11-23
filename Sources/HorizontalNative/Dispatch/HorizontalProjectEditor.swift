@@ -49,6 +49,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     case unsmash = "unsmash"
     case setNoConnect = "set_no_connect"
     case setPinAlternate = "set_pin_alternate"
+    case movePinNet = "move_pin_net"
     case remapPart = "remap_part"
     case placeText = "place_text"
     case removeText = "remove_text"
@@ -161,6 +162,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .terminatePin: "Draw a short wire straight out from a symbol pin and end it in a net label or power symbol facing away from the pin. Connects the pin to the net first when it is on none."
         case .setNoConnect: "Mark component pins as deliberately not connected, or clear the mark. A pin on a net is refused unless disconnect is passed. all does it for every free pin of a gate or the whole component, as Horizon's Set all unconnected pins NC and Clear all NC pins do."
         case .setPinAlternate: "Choose the function a pin is drawn as — an alternate name its unit offers, such as SPI1_SCK on an MCU port pin — or a custom name, or go back to the primary name. get_component lists each pin's alternates and what is selected. The apply_ops reply gives warnings when a placed symbol will not draw the choice (one showing pins custom_only)."
+        case .movePinNet: "Move a net from one pin of a component to another pin of it that is free, as when a microcontroller function such as USART1_TX is taken to another pin that offers it: the new pin joins the net, every wire that ended on the old pin ends on the new one, and the old pin is left on no net. With function, the new pin is drawn as that alternate and the old pin stops showing it. Tracks on the old pad stay where they are; the reply's warnings name them."
         case .remapPart: "Replace a component's part, preserving connections, symbols and wires atomically. Pins are matched by name, except where pin_map pairs them by name or gate/pin."
         case .placeText: "Write a text on a schematic sheet, or change one that is already there: move it, turn it, rewrite it. id names the text to change, from list_texts; give only what changes. x_mm, y_mm or both move it, and it keeps its uuid, layer and the rest. An id that names no text makes one under it, so a batch can name a text and edit or remove it later. A smashed symbol's texts (list_texts with smashed) are changed the same way, and go on drawing its refdes and value. The text starts at x_mm and runs right (origin is vertical alone); the reply gives the box it covers, extent_mm, and the symbols, labels, power symbols and texts it overlaps."
         case .removeText: "Remove a text from a schematic sheet."
@@ -406,6 +408,10 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "use_primary_name": "Also show the primary name beside the alternates (optional; default false).",
                     "custom_name": "A name of your own, shown with the alternates (optional; \"\" or null removes it).",
                     "custom_direction": "The direction that custom name has: input, output, bidirectional, open_collector, passive, power_input, power_output or not_connected (optional; default unchanged, else bidirectional)."]
+        case .movePinNet:
+            return ["component": component, "pin": "The pin the net is on now, named as connect names a pin.",
+                    "to_pin": "The pin that takes the net: on no net and not marked no-connect. Where wires end on the old pin, its gate has to be drawn on their sheet.",
+                    "function": "An alternate the new pin offers, named as set_pin_alternate names one (optional): the new pin is drawn as it, and the old pin stops showing its alternate of that name."]
         case .remapPart:
             return ["component": component, "part": "Target imported pool part id.",
                     "pin_map": "Optional object from pins of the old part to pins of the new one, each named as connect names a pin: by name or uuid, whole first (so VSSA/VREF- works), then as gate/pin, by name, suffix or uuid. Pins it leaves out are matched by gate and pin name; every connected or drawn pin has to map one way or the other.",
@@ -1174,6 +1180,8 @@ final class HorizontalProjectEditor {
             change.merge(try setNoConnect(params)) { _, new in new }
         case .setPinAlternate:
             change.merge(try setPinAlternate(params)) { _, new in new }
+        case .movePinNet:
+            change.merge(try movePinNet(params)) { _, new in new }
         case .remapPart:
             change.merge(try remapPart(params)) { _, new in new }
         case .placeText:
@@ -2402,6 +2410,99 @@ final class HorizontalProjectEditor {
             }
         }
         return warnings
+    }
+
+    // MARK: - Moving a pin's net
+
+    /// The net on one pin of a component, taken to another pin of it: the
+    /// connection, the wires that ended on the old pin and, with `function`,
+    /// which pin is drawn as it. The new pin has to be free, so no net is
+    /// merged or dropped by the move.
+    private func movePinNet(_ params: JSONDictionary) throws -> JSONDictionary {
+        let componentID = try componentID(params)
+        let refdes = components()[componentID]?.string("refdes") ?? componentID
+        guard let from = params.string("pin"), !from.isEmpty, let to = params.string("to_pin"), !to.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("move_pin_net needs \"pin\" and \"to_pin\", two pins of the component.")
+        }
+        let fromPath = try pinPath(["pin": from], componentID: componentID)
+        let toPath = try pinPath(["pin": to], componentID: componentID)
+        let fromName = pinName(fromPath, componentID: componentID), toName = pinName(toPath, componentID: componentID)
+        guard fromPath.lowercased() != toPath.lowercased() else {
+            throw HorizontalDispatchError.invalidParams("\(refdes) pin \(fromName) is the pin the net is on already.")
+        }
+        let connections = components()[componentID]?.dictionary("connections") ?? [:]
+        func connection(_ path: String) -> (key: String, value: JSONDictionary)? {
+            connections.first { $0.key.lowercased() == path.lowercased() }.flatMap { item in
+                (item.value as? JSONDictionary).map { (item.key, $0) }
+            }
+        }
+        guard let source = connection(fromPath), let net = source.value.string("net") else {
+            throw HorizontalDispatchError.invalidParams("\(refdes) pin \(fromName) is on no net, so there is nothing to move.")
+        }
+        if let taken = connection(toPath) {
+            let what = taken.value.string("net").map { "on \(boardNetName($0))" } ?? "marked no-connect"
+            throw HorizontalDispatchError.invalidParams("\(refdes) pin \(toName) is \(what); move_pin_net takes a net to a free pin.")
+        }
+        // The alternates, read before anything changes, so a function the
+        // new pin doesn't offer stops the move.
+        let function = params.string("function").flatMap { $0.isEmpty ? nil : $0 }
+        let shown = try function.map { try alternate($0, of: try unitPin(toPath, componentID: componentID), pin: "\(refdes) pin \(toName)") }
+
+        try connect(componentID, pin: toPath, to: net)
+        let fromPieces = fromPath.lowercased().split(separator: "/").map(String.init)
+        let toPieces = toPath.lowercased().split(separator: "/").map(String.init)
+        var moved = [String]()
+        for sheet in try sheetsInOrder() {
+            func symbols(ofGate gateID: String) -> [String] {
+                sheet.json.dictionaryMap("symbols").filter {
+                    $0.value.string("component")?.lowercased() == componentID.lowercased() && $0.value.string("gate")?.lowercased() == gateID
+                }.keys.sorted()
+            }
+            let sources = Set(symbols(ofGate: fromPieces[0]).map { $0.lowercased() })
+            guard !sources.isEmpty else { continue }
+            for (lineID, line) in sheet.json.dictionaryMap("net_lines").sorted(by: { $0.key < $1.key }) {
+                for end in ["from", "to"] {
+                    let pieces = (line.dictionary(end)?.string("pin") ?? "").lowercased().split(separator: "/").map(String.init)
+                    guard pieces.count == 2, sources.contains(pieces[0]), pieces[1] == fromPieces[1] else { continue }
+                    guard let target = symbols(ofGate: toPieces[0]).first else {
+                        throw HorizontalDispatchError.unsupported(
+                            "A wire ends on \(refdes) pin \(fromName), and pin \(toName) is on a gate this sheet doesn't draw. "
+                                + "Place that gate on the sheet, or rewire by hand: disconnect, connect and draw_net_line.")
+                    }
+                    _ = try setNetLineEndpoint(["line": lineID, "end": end, "sheet": sheet.id,
+                                                "endpoint": ["kind": "pin", "symbol": target, "pin": toPieces[1]] as JSONDictionary])
+                    moved.append(lineID)
+                }
+            }
+        }
+        try updateComponent(componentID) { component in
+            var connections = component["connections"] as? JSONDictionary ?? [:]
+            connections.removeValue(forKey: source.key)
+            component["connections"] = connections
+        }
+        touchedPins.insert("\(componentID)|\(fromPath.lowercased())")
+
+        var change: JSONDictionary = ["component": componentID, "pin": fromPath, "pin_name": fromName,
+                                      "to_pin": toPath, "to_pin_name": toName, "net": net, "net_lines": moved]
+        if let shown {
+            _ = try setPinAlternate(["component": componentID, "pin": toPath, "alternate": shown.id])
+            change["function"] = shown.name
+            // The old pin stops saying it carries what has left it.
+            let entry = components()[componentID]?.dictionary("alt_pins")?.first { $0.key.lowercased() == fromPath.lowercased() }?.value as? JSONDictionary
+            let chosen = (entry?["pin_names"] as? [String] ?? []).map { $0.lowercased() }
+            let offered = try unitPin(fromPath, componentID: componentID).alternates
+            let moving = Set(HorizontalPinFunctions.names(in: shown.name).map { $0.lowercased() })
+            let leaving = Set(offered.filter { alternate in
+                HorizontalPinFunctions.names(in: alternate.name).contains { moving.contains($0.lowercased()) }
+            }.map { $0.id.lowercased() })
+            if chosen.contains(where: leaving.contains) {
+                var clearing: JSONDictionary = ["component": componentID, "pin": fromPath,
+                                                "alternate": chosen.filter { !leaving.contains($0) }]
+                if let primary = entry?.bool("use_primary_name") { clearing["use_primary_name"] = primary }
+                _ = try setPinAlternate(clearing)
+            }
+        }
+        return change
     }
 
     private func unitPin(_ path: String, componentID: String) throws -> HorizontalDispatchPoolIndex.Pin {

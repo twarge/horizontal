@@ -2177,33 +2177,43 @@ struct HorizontalSchematic {
         return "\(sortedNames.first ?? "") ... \(sortedNames.last ?? "")"
     }
 
-    private static func alternatePinNames(from unitPin: JSONDictionary) -> [String: String] {
-        let rawNames = unitPin.dictionaryMap("alt_names").isEmpty
-            ? unitPin.dictionaryMap("names")
-            : unitPin.dictionaryMap("alt_names")
-        return rawNames.reduce(into: [String: String]()) { result, item in
-            if let name = item.value.string("name") {
-                result[normalizedID(item.key)] = name
+    /// A unit pin's alternate names by id. Units written before `alt_names`
+    /// keep them as a bare `names` array, whose ids Horizon derives from
+    /// each name's place in it (`HorizontalUnitPin.derivedAlternateNames`);
+    /// a component's `alt_pins` names its choice by those ids.
+    private static func alternatePinNameOptions(from unitPin: JSONDictionary) -> [HorizontalSymbolPinNameOption] {
+        let pinDirection = unitPin.string("direction") ?? "bidirectional"
+        let modern = unitPin.dictionaryMap("alt_names")
+        let options: [HorizontalSymbolPinNameOption]
+        if !modern.isEmpty {
+            options = modern.compactMap { id, item in
+                item.string("name").map {
+                    HorizontalSymbolPinNameOption(id: normalizedID(id), name: $0, direction: item.string("direction") ?? pinDirection)
+                }
             }
+        } else if let legacy = unitPin["names"] as? [String] {
+            options = legacy.enumerated().map { index, name in
+                HorizontalSymbolPinNameOption(
+                    id: normalizedID(UUID.horizonAlternatePinNameID(index: index)),
+                    name: name,
+                    direction: pinDirection
+                )
+            }
+        } else {
+            // A `names` map, as an early build of this app read it.
+            options = unitPin.dictionaryMap("names").compactMap { id, item in
+                item.string("name").map {
+                    HorizontalSymbolPinNameOption(id: normalizedID(id), name: $0, direction: item.string("direction") ?? pinDirection)
+                }
+            }
+        }
+        return options.sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
     }
 
-    private static func alternatePinNameOptions(from unitPin: JSONDictionary) -> [HorizontalSymbolPinNameOption] {
-        let rawNames = unitPin.dictionaryMap("alt_names").isEmpty
-            ? unitPin.dictionaryMap("names")
-            : unitPin.dictionaryMap("alt_names")
-        return rawNames.compactMap { id, item in
-            item.string("name").map {
-                HorizontalSymbolPinNameOption(
-                    id: normalizedID(id),
-                    name: $0,
-                    direction: item.string("direction") ?? unitPin.string("direction") ?? "bidirectional"
-                )
-            }
-        }
-        .sorted {
-            $0.name.localizedStandardCompare($1.name) == .orderedAscending
-        }
+    private static func alternatePinNames(from unitPin: JSONDictionary) -> [String: String] {
+        alternatePinNameOptions(from: unitPin).reduce(into: [String: String]()) { $0[$1.id] = $1.name }
     }
 
     private static func appendTilde(_ text: String) -> String {

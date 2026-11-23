@@ -791,6 +791,11 @@ struct BoardCanvasView: View {
     /// The window's Pools pane, for Alternate Parts…; nil where there is none.
     @Environment(\.horizonPoolRevealAction) private var poolRevealAction
     @Environment(\.horizonPartReplaceActions) private var partReplaceActions
+    /// The window's pin Spotlight (`HorizontalPinSpotlightSource`), which
+    /// lights a function's pins here as their pads.
+    @Environment(\.horizonPinSpotlight) private var pinSpotlight
+    /// Where the right-click that opened the menu was, for the pad under it.
+    @State private var contextMenuWorldPoint: HorizontalPoint?
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
 
     init(
@@ -1059,6 +1064,28 @@ struct BoardCanvasView: View {
 
     private var hasActiveHighlight: Bool {
         !highlightedNetIDs.isEmpty || routeHighlightNetID != nil || !highlightedComponentIDs.isEmpty
+            || (pinSpotlight?.spotlight != nil && !modeProfile.isPoolMode)
+    }
+
+    /// The pin the pad under `point` is, with the functions it offers.
+    private func pinFunctionTarget(at point: HorizontalPoint?) -> HorizontalPinFunctionTarget? {
+        guard !modeProfile.isPoolMode, let point, let pinSpotlight,
+              let pad = HorizontalPinFunctionMenu.pad(at: point, in: board, preferringLayer: drawingLayer) else {
+            return nil
+        }
+        return pinSpotlight.padTarget(pad.componentID, pad.padID)
+    }
+
+    /// A click on a free pad of the pin Spotlight moves the function's net
+    /// to its pin; true when the click was that.
+    private func movePinFunction(at point: HorizontalPoint) -> Bool {
+        guard !isReadOnly, pinSpotlight?.spotlight?.carrying != nil,
+              let target = pinFunctionTarget(at: point),
+              let pin = HorizontalPinFunctionMenu.movable(target, actions: pinSpotlight) else {
+            return false
+        }
+        pinSpotlight?.move(pin)
+        return true
     }
 
     private var drawsGridInMetal: Bool {
@@ -1423,6 +1450,9 @@ struct BoardCanvasView: View {
                     return
                 }
 
+                if clickAction == .replace, clickCount == 1, movePinFunction(at: pointer.raw) {
+                    return
+                }
                 lastPointerPick.point = pointer.raw
                 lastPointerPick.worldUnitsPerPoint = worldUnitsPerPoint
                 let hitRef = hitSelectable(at: pointer.raw, worldUnitsPerPoint: worldUnitsPerPoint)
@@ -4088,6 +4118,12 @@ struct BoardCanvasView: View {
         if let partReplaceActions, !isReadOnly, !modeProfile.isPoolMode {
             handlers.replacePart = { partID, componentIDs in partReplaceActions.replace(partID, componentIDs) }
         }
+        if let pinSpotlight, !modeProfile.isPoolMode {
+            handlers.spotlightPinFunction = { component, pin, function in pinSpotlight.show(component, pin, function) }
+            handlers.movePinFunctionNet = { gate, pin in
+                if let lit = pinSpotlight.spotlight?.pin(gateID: gate, pinID: pin) { pinSpotlight.move(lit) }
+            }
+        }
         handlers.switchPane = onSwitchPane
         return handlers
     }
@@ -4282,6 +4318,7 @@ struct BoardCanvasView: View {
     }
 
     private func targetMenuItems(at point: HorizontalPoint, worldUnitsPerPoint: Double) -> [HorizontalSelectionTargetItem] {
+        contextMenuWorldPoint = point
         let admits = selectionFilterAdmits
         return HorizontalCanvasModeSupport.targetMenuItems(
             scene: boardSelectableScene(),
@@ -4303,6 +4340,14 @@ struct BoardCanvasView: View {
         let hasNet = refHasNet(ref)
 
         var entries: [HorizontalTargetItemMenuEntry] = [.select(title: "Select"), .separator]
+
+        // The pad under the pointer, as the pin it is: the pin Spotlight.
+        if isPackage {
+            let pinEntries = HorizontalPinFunctionMenu.entries(for: pinFunctionTarget(at: contextMenuWorldPoint), actions: pinSpotlight)
+            if !pinEntries.isEmpty {
+                entries.append(contentsOf: pinEntries + [.separator])
+            }
+        }
 
         #if os(macOS)
         // Edit text inline (reopens the placement popover on the existing text).
@@ -4873,9 +4918,10 @@ struct BoardCanvasView: View {
 
     /// Ends the window's highlight, wherever it came from.
     private func clearHighlight() {
-        guard !highlightedNetIDs.isEmpty || !highlightedComponentIDs.isEmpty else {
+        guard !highlightedNetIDs.isEmpty || !highlightedComponentIDs.isEmpty || pinSpotlight?.spotlight != nil else {
             return
         }
+        pinSpotlight?.clear()
         onHighlightNetCommand([])
         onHighlightComponentCommand([])
     }
@@ -14742,6 +14788,7 @@ struct BoardCanvasView: View {
             signature.hiddenAirwireNetIDs = displayOptions.hiddenAirwireNetIDs(spotlighting: highlightedNetIDs)
         }
         let lightens = displayOptions.highlightMode == "as_is"
+        let padPaths = modeProfile.isPoolMode ? [] : pinSpotlight?.spotlight?.padPaths(in: board) ?? []
         let key = BoardMetalHighlightCacheKey(
             bucketsKey: sceneGroupKeys == nil ? bucketsKey : nil,
             sceneGroupKeys: sceneGroupKeys,
@@ -14750,11 +14797,12 @@ struct BoardCanvasView: View {
             visibleCompositeGroups: visibleCompositeGroups,
             highlightedNetIDs: netIDs.sorted(),
             highlightedComponentIDs: componentIDs.sorted(),
+            highlightedPadPaths: padPaths.sorted(),
             lightens: lightens
         )
 
         return selectableCache.metalHighlight(key: key) {
-            let subset = BoardHighlightSubset.board(boardForMetalBuckets, netIDs: netIDs, componentIDs: componentIDs)
+            let subset = BoardHighlightSubset.board(boardForMetalBuckets, netIDs: netIDs, componentIDs: componentIDs, padPaths: padPaths)
             let scene = concatenateMetalBuckets(
                 buildBoardMetalElementBuckets(renderLayers: renderLayers, partialBoard: subset),
                 signature: signature,
@@ -14857,6 +14905,7 @@ struct BoardCanvasView: View {
             &* 31
             &+ highlightedComponentIDs.hashValue
             &* 31
+            &+ (pinSpotlight?.spotlight != nil ? 1 : 0)
             &+ displayOptions.highlightMode.hashValue
             &+ board.bounds.minX.hashValue
             &+ board.bounds.minY.hashValue

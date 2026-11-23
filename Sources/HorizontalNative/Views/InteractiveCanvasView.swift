@@ -195,6 +195,13 @@ enum HorizontalCanvasCommand {
     /// Schematic: mark one pin of a symbol not connected, or clear its mark
     /// (Horizon's Set NC / Clear NC on a pin).
     case setPinNoConnect(symbol: String, pin: String, mark: Bool)
+    /// Spotlight every pin of a component that offers a function, asked
+    /// from one of its pins (a gate/pin path), on the schematic and, as
+    /// pads, on the board.
+    case spotlightPinFunction(component: String, pin: String, function: String)
+    /// While a pin Spotlight shows: move the function's net to this free
+    /// pin of its component.
+    case movePinFunctionNet(gate: String, pin: String)
     /// Schematic: mark the selected symbols' components do not populate, or
     /// populate again (Horizon's "Mark do not populate" / "Mark populate").
     case toggleNoPopulate
