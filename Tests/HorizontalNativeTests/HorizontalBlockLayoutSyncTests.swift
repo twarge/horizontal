@@ -448,11 +448,10 @@ final class HorizontalBlockLayoutSyncTextAndNestingTests: XCTestCase {
         return try XCTUnwrap(HorizontalBlockLayoutSync.smashedTexts(of: package, on: try fixture.board).first)
     }
 
-    func testASmashedTextMovedInOneInstanceMovesInTheOther() throws {
-        fixture = try BlockLayoutFixture(instances: 2)
+    /// Both R2s smashed, as Horizon writes a smashed package: its refdes a
+    /// board text of its own, from_smash, which the package names.
+    private func smashBothR2s() throws -> (String, String) {
         let (i1, i2) = (fixture.instances[0], fixture.instances[1])
-        // Both R2s smashed, as Horizon writes a smashed package: its refdes a
-        // board text of its own, from_smash, which the package names.
         var json = try fixture.boardJSON()
         var packages = json.dictionaryMap("packages")
         var texts = json.dictionaryMap("texts")
@@ -473,6 +472,12 @@ final class HorizontalBlockLayoutSyncTextAndNestingTests: XCTestCase {
         json["packages"] = packages
         json["texts"] = texts
         try fixture.putBoard(json)
+        return (i1, i2)
+    }
+
+    func testASmashedTextMovedInOneInstanceMovesInTheOther() throws {
+        fixture = try BlockLayoutFixture(instances: 2)
+        let (i1, i2) = try smashBothR2s()
         let before = try smashedText(i1, "R2")
         let other = try smashedText(i2, "R2")
         XCTAssertNotEqual(before.text, "", "the refdes, smashed")
@@ -485,6 +490,46 @@ final class HorizontalBlockLayoutSyncTextAndNestingTests: XCTestCase {
         XCTAssertEqual(after.position.x, other.position.x + mm, accuracy: 2)
         XCTAssertEqual(after.position.y, other.position.y + mm / 2, accuracy: 2)
         XCTAssertEqual(after.text, other.text, "its own refdes")
+    }
+
+    func testASmashedTextResizedInOneInstanceIsResizedInTheOther() throws {
+        fixture = try BlockLayoutFixture(instances: 2)
+        let (i1, i2) = try smashBothR2s()
+        let before = try smashedText(i1, "R2")
+        let other = try smashedText(i2, "R2")
+        XCTAssertEqual(other.size, mm)
+        XCTAssertEqual(other.width, 150_000)
+        let changes = try sync { board in
+            let index = try XCTUnwrap(board.packageTexts.firstIndex { $0.id == before.id })
+            board.packageTexts[index].size = 1.5 * mm
+            board.packageTexts[index].width = 200_000
+        }
+        XCTAssertEqual(changes?.texts.count, 1)
+        XCTAssertEqual(changes?.report.changed, ["I2"])
+        let after = try smashedText(i2, "R2")
+        XCTAssertEqual(after.size, 1.5 * mm, "as large as the one resized")
+        XCTAssertEqual(after.width, 200_000, "drawn with its line width")
+        XCTAssertEqual(after.position, other.position, "where it was")
+        XCTAssertEqual(after.text, other.text, "its own refdes")
+    }
+
+    func testASmashedTextMovedKeepsTheSizeTheOtherInstanceGaveIt() throws {
+        fixture = try BlockLayoutFixture(instances: 2)
+        let (i1, i2) = try smashBothR2s()
+        // I2's refdes made larger on its own, with the sync off.
+        var board = try fixture.board
+        let theirs = try smashedText(i2, "R2")
+        let theirIndex = try XCTUnwrap(board.packageTexts.firstIndex { $0.id == theirs.id })
+        board.packageTexts[theirIndex].size = 2 * mm
+        try fixture.write(board)
+        let before = try smashedText(i1, "R2")
+        try sync { board in
+            let index = try XCTUnwrap(board.packageTexts.firstIndex { $0.id == before.id })
+            board.packageTexts[index].position = HorizontalPoint(x: before.position.x + mm, y: before.position.y)
+        }
+        let after = try smashedText(i2, "R2")
+        XCTAssertEqual(after.position.x, theirs.position.x + mm, accuracy: 2)
+        XCTAssertEqual(after.size, 2 * mm, "only what the edit changed is carried over")
     }
 
     func testAnEditInsideANestedInstanceReachesTheOthersOnce() throws {

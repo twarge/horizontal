@@ -15,6 +15,8 @@ import Foundation
 /// - A part an edit moves, turns, flips or sets a flag on, where the other
 ///   instance's part is laid out alike; a part newly placed, where the other
 ///   instance's is unplaced; a part taken off the board.
+/// - A text smashed out of such a part that an edit moves, turns, flips,
+///   resizes or draws with another line width.
 /// - The instance's own copper (`owned`) an edit adds, moves, reshapes or
 ///   deletes; copper it merely takes out of the instance stays where it is
 ///   in the others.
@@ -93,8 +95,9 @@ enum HorizontalBlockLayoutSync {
         /// Vias that change or are added, by id.
         var vias = [String: HorizontalMarker]()
         var removedVias = Set<String>()
-        /// Texts smashed out of packages that move, by id (`<package>/text/<uuid>`):
-        /// where they are drawn, the text itself the package's own.
+        /// Texts smashed out of packages that an edit changed, by id
+        /// (`<package>/text/<uuid>`): where and how large they are drawn,
+        /// the text itself the package's own.
         var texts = [String: HorizontalText]()
         var report = Report()
 
@@ -122,15 +125,28 @@ enum HorizontalBlockLayoutSync {
     }
 
     /// `text` where the motion puts it, as `target` draws it: its place, angle,
-    /// side and layer, the words its own.
-    static func moved(_ text: HorizontalText, onto target: HorizontalText, motion: HorizontalBoardMotion) -> HorizontalText {
+    /// side and layer, the words its own. Its size and line width are
+    /// `text`'s where the edit changed them from `old`'s, else `target`'s
+    /// own, so a text made larger in one instance alone stays so when its
+    /// counterpart is only moved.
+    static func moved(_ text: HorizontalText, from old: HorizontalText, onto target: HorizontalText,
+                      motion: HorizontalBoardMotion) -> HorizontalText {
         let placed = motion.text(text)
         var result = target
         result.position = placed.position.rounded
         result.angle = placed.angle
         result.mirrored = placed.mirrored
         result.layer = placed.layer
+        if old.size != text.size { result.size = text.size }
+        if old.width != text.width { result.width = text.width }
         return result
+    }
+
+    /// Whether an edit changed where or how large a smashed text is drawn:
+    /// what is carried over to its counterparts.
+    static func textDiffers(_ a: HorizontalText, _ b: HorizontalText) -> Bool {
+        a.position != b.position || a.angle != b.angle || a.mirrored != b.mirrored || a.layer != b.layer
+            || a.size != b.size || a.width != b.width
     }
 
     /// The namespace copies' ids are made in.
@@ -372,12 +388,13 @@ enum HorizontalBlockLayoutSync {
                     let targets = HorizontalBlockLayoutSync.smashedTexts(of: targetPackage, on: baseline)
                     for text in editTexts {
                         guard let old = baseTexts.first(where: { $0.id == text.id }),
-                              old.position != text.position || old.angle != text.angle || old.mirrored != text.mirrored || old.layer != text.layer,
+                              HorizontalBlockLayoutSync.textDiffers(old, text),
                               let theirs = HorizontalBlockLayoutSync.counterpart(of: old, among: targets, motion: motion) else { continue }
-                        let copy = HorizontalBlockLayoutSync.moved(text, onto: theirs, motion: motion)
+                        let copy = HorizontalBlockLayoutSync.moved(text, from: old, onto: theirs, motion: motion)
                         let id = theirs.id.lowercased()
                         if claim("text:" + id, by: path, label: "a text in \(targetInstance.name)",
-                                 value: Self.signature(copy.position) + ",\(copy.angle),\(copy.mirrored),\(copy.layer ?? 0)",
+                                 value: Self.signature(copy.position) + ",\(copy.angle),\(copy.mirrored),\(copy.layer ?? 0)"
+                                     + ",\(Int64(copy.size.rounded())),\(Int64(copy.width.rounded()))",
                                  agrees: false) {
                             changes.texts[id] = copy
                             changedNames.insert(target)
@@ -854,6 +871,8 @@ enum HorizontalBlockLayoutSync {
             board.packageTexts[index].angle = text.angle
             board.packageTexts[index].mirrored = text.mirrored
             board.packageTexts[index].layer = text.layer
+            board.packageTexts[index].size = text.size
+            board.packageTexts[index].width = text.width
         }
         for (id, flags) in changes.flags {
             guard let index = board.packages.firstIndex(where: { $0.id.lowercased() == id }) else { continue }

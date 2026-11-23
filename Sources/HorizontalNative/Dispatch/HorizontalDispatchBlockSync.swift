@@ -239,6 +239,10 @@ enum HorizontalDispatchBlockSync {
             item["placement"] = HorizontalSmash.storedPlacement(drawing: HorizontalPlacementTransform(
                 shift: text.position, angle: text.angle, mirrored: text.mirrored))
             if let layer = text.layer { item["layer"] = layer }
+            // Only where the edit changed them: a text that merely moved
+            // keeps the numbers the file has.
+            if item.double("size") != text.size { item["size"] = int(text.size) }
+            if (item.double("width") ?? 0) != text.width { item["width"] = int(text.width) }
             texts[textKey] = item
         }
         let innerLayers = max(board.copperLayerCount - 2, 0)
