@@ -693,6 +693,13 @@ struct HorizontalPartBrowserView: View {
                 }
             }
         }
+        // The project's own copy of a part an attached pool has too: the
+        // pool's takes its place, and updates it from then on.
+        if let onCopyToPool, !isReadOnly, let pools = libraryRow(for: part)?.poolsHoldingOwnCopy {
+            ForEach(pools) { pool in
+                Button("Use \(pool.name)’s Copy…") { onCopyToPool(part.id, pool.url) }
+            }
+        }
         // The reverse of an update: what was edited here goes to its pool.
         if onCopyEditsToPool != nil, !isReadOnly, let review = library.review, let row = libraryRow(for: part), row.canCopyToPool {
             Button("Copy Changes to \(row.poolCopyTargetNames.joined(separator: " and "))…") {

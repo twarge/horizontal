@@ -424,10 +424,10 @@ struct HorizontalIPadProjectView: View {
         .alert("Library Review", isPresented: Binding(get: { partLibrary.error != nil }, set: { if !$0 { partLibrary.error = nil } })) {
             Button("OK") { partLibrary.error = nil }
         } message: { Text(partLibrary.error ?? "") }
-        .alert(pendingPoolCopy.map { "Copy \($0.partName) to \($0.targetName)?" } ?? "",
+        .alert(pendingPoolCopy?.title ?? "",
                isPresented: Binding(get: { pendingPoolCopy != nil }, set: { if !$0 { pendingPoolCopy = nil } }),
                presenting: pendingPoolCopy) { copy in
-            Button("Copy") { commitPoolCopy(copy) }
+            Button(copy.confirmLabel) { commitPoolCopy(copy) }
             Button("Cancel", role: .cancel) {}
         } message: { copy in
             Text(copy.summary)
@@ -1732,7 +1732,7 @@ struct HorizontalIPadProjectView: View {
             var archive = document.archive
             try HorizontalPoolPartCopier.track(copy, in: &archive, poolDirectory: directory,
                                                projectPoolURL: project.baseURL.appendingPathComponent(directory))
-            try applyArchiveEdit(archive, to: project, actionName: "Copy to \(copy.targetName)")
+            try applyArchiveEdit(archive, to: project, actionName: copy.actionName)
             partLibrary.recheck()
         } catch {
             partLibrary.error = HorizontalCanvasProjectEdit.message(for: error)

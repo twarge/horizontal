@@ -898,7 +898,9 @@ def list_part_updates(path: str | None = None, pool_path: str | None = None,
     references, local-edit conflicts, unavailable sources, and review_digest. Does not change files.
 
     Each part names its source_pool, the pool it is kept up to date from; in_attached_pool is false for a part
-    made in the project (projectOnly) and one no attached pool holds. A change names its file (path), the fields
+    made in the project (projectOnly) and one no attached pool holds. projectCopy is the project's own file of a
+    part an attached pool holds too (source_pool names the pool): nothing updates it until the app's Use Pool's
+    Copy takes the pool's in its place (no tool does). A change names its file (path), the fields
     that differ and their sizes (before_bytes, null for a new item, and after_bytes); include_contents adds the
     texts. A change that is locally_modified was edited in the project; source_changed says its pool's copy changed
     too since the project took it. can_copy_to_pool marks an edit its pool could take (the app's Copy Changes to

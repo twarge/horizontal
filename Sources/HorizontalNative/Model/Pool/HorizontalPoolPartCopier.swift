@@ -40,11 +40,28 @@ struct HorizontalPoolPartCopy: Identifiable {
     /// project keeps its own, and the parts review shows the difference.
     var existing: [HorizontalPoolCopyItem]
 
+    /// The pool has the part and all it needs already, as the project has
+    /// them: nothing goes into the pool, and the project only takes the
+    /// pool's copy in place of its own.
+    var copiesNothing: Bool { poolFiles.isEmpty }
+
+    /// The confirmation's title, its button, and the edit's name for Undo.
+    var title: String {
+        copiesNothing ? "Use \(targetName)’s copy of \(partName)?" : "Copy \(partName) to \(targetName)?"
+    }
+    var confirmLabel: String { copiesNothing ? "Use Pool’s Copy" : "Copy" }
+    var actionName: String { copiesNothing ? "Use \(targetName)’s Copy" : "Copy to \(targetName)" }
+
     /// The confirmation's text: what is copied, what is there already, and
     /// what the project does after.
     var summary: String {
         func list(_ items: [HorizontalPoolCopyItem]) -> String {
             items.map { "• \($0.kind): \($0.name)" + ($0.note.isEmpty ? "" : " (\($0.note))") }.joined(separator: "\n")
+        }
+        guard !copiesNothing else {
+            return ["\(targetName) has the part already, and what it needs:\n" + list(existing),
+                    "Nothing is written to \(targetName). The project’s own copies give way to the pool’s, "
+                        + "and the project then keeps the part up to date from there."].joined(separator: "\n\n")
         }
         var sections = ["Copies into \(targetName):\n" + list(copied)]
         if !existing.isEmpty {
@@ -66,6 +83,12 @@ struct HorizontalPoolPartCopy: Identifiable {
 /// models under their own paths) rather than under the project cache's
 /// uuid names. The project then caches the part from the pool, as placing it
 /// from the pool would have, so its copies record where they came from.
+///
+/// A pool that has the part already, the same as the project's own file of
+/// it, gets nothing: the project only takes the pool's copy (a part put in
+/// the pool by hand, or by a copy the project then undid, which otherwise
+/// stayed the project's own for good). One the project already caches is its
+/// pool's to update, and is refused.
 enum HorizontalPoolPartCopier {
     static func plan(
         partID: String,
@@ -93,7 +116,9 @@ enum HorizontalPoolPartCopier {
                 if held[key] == nil { held[key] = item }
             }
         }
-        guard held["part|" + partID] == nil else {
+        // The project's own file of a part the pool has goes on, to be
+        // compared with the pool's like anything else the part needs.
+        guard held["part|" + partID] == nil || !isCached(partPath) else {
             throw HorizontalDispatchError.invalidParams("\(targetInfo.name) has \(partName.isEmpty ? partID : partName) already.")
         }
         // A cached copy with a recorded origin in a pool the project is

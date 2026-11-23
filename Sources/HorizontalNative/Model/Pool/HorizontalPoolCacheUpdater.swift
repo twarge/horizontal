@@ -3,6 +3,11 @@ import HorizontalProjectIO
 
 enum HorizontalPartLibraryStatus: String, Sendable {
     case current, updateAvailable, locallyModified, sourceUnavailable, projectOnly
+    /// The project keeps its own file of a part an attached pool holds under
+    /// the same uuid: copied into the pool by hand, or by a Copy to Pool the
+    /// project then undid. The pool doesn't update it until the project takes
+    /// the pool's copy (`HorizontalPoolPartCopier`).
+    case projectCopy
 
     var title: String {
         switch self {
@@ -11,6 +16,7 @@ enum HorizontalPartLibraryStatus: String, Sendable {
         case .locallyModified: "Modified in project"
         case .sourceUnavailable: "Source unavailable"
         case .projectOnly: "Project-only"
+        case .projectCopy: "Project’s own copy"
         }
     }
 
@@ -21,6 +27,7 @@ enum HorizontalPartLibraryStatus: String, Sendable {
         case .locallyModified: "pencil.circle"
         case .sourceUnavailable: "questionmark.circle"
         case .projectOnly: "folder"
+        case .projectCopy: "folder.badge.questionmark"
         }
     }
 }
@@ -75,6 +82,13 @@ struct HorizontalPartLibraryReview: Identifiable, Sendable {
     /// project, or one whose pool isn't registered or found here.
     var isInNoAttachedPool: Bool {
         status == .projectOnly || (status == .sourceUnavailable && sourcePool == nil)
+    }
+
+    /// The attached pools holding a part the project keeps its own copy of,
+    /// any of which the project can take the part from instead.
+    var poolsHoldingOwnCopy: [HorizontalPoolCopyTarget] {
+        guard status == .projectCopy else { return [] }
+        return sourcePoolURLs.map { HorizontalPoolCopyTarget(url: $0, name: HorizontalPoolRegistryStore.poolInfo(at: $0).name) }
     }
 
     /// The status as the Parts pane and the updates sheet show it. A source
@@ -449,7 +463,25 @@ enum HorizontalPoolCacheUpdater {
                                                  status: .current, references: references[id] ?? [])
             row.dependencies = dependencies(of: id, jsons: jsons)
             guard partPath.hasPrefix("parts/cache/") else {
+                // The project's own file. No pool updates it, but an attached
+                // pool may hold the part under the same uuid, and then it is
+                // not the project's alone.
                 row.status = .projectOnly
+                let holders = grouped[HorizontalPoolItemCategory.part.rawValue + "|" + id] ?? []
+                if !holders.isEmpty {
+                    row.status = .projectCopy
+                    let names = holders.reduce(into: [String]()) { if !$0.contains($1.poolName) { $0.append($1.poolName) } }
+                    row.sourcePool = names.joined(separator: ", ")
+                    row.sourcePoolURLs = holders.reduce(into: [URL]()) { if !$0.contains($1.poolURL) { $0.append($1.poolURL) } }
+                    let own = files[partPath].flatMap { try? HorizontalPoolCacheProvenance.digest($0, path: partPath) }
+                    let same = own != nil && holders.contains { holder in
+                        (try? Data(contentsOf: holder.url)).flatMap { try? HorizontalPoolCacheProvenance.digest($0, path: partPath) } == own
+                    }
+                    let pools = names.joined(separator: " and ")
+                    row.message = same
+                        ? "\(pools) \(names.count == 1 ? "has" : "have") this part too, but the project keeps its own copy, which no pool updates. Use the pool’s copy to keep it up to date from there."
+                        : "\(pools) \(names.count == 1 ? "has" : "have") this part too, with other contents than the project’s own copy."
+                }
                 reviews.append(row)
                 continue
             }

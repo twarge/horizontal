@@ -888,7 +888,10 @@ final class HorizontalPoolCacheImporterTests: XCTestCase {
         var files = try cachedFiles()
         files["parts/local.json"] = files["parts/cache/part-1.json"]
         let review = try cachedReview(files: files)
-        XCTAssertEqual(review.parts.first?.status, .projectOnly)
+        // Stock has the part too, so the project's file is its own copy of
+        // Stock's, not a part no pool has.
+        XCTAssertEqual(review.parts.first?.status, .projectCopy)
+        XCTAssertEqual(review.parts.first?.sourcePool, "Stock")
         XCTAssertFalse(review.parts.first?.canUpdate ?? true)
     }
 

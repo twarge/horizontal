@@ -28,7 +28,10 @@ struct HorizontalPartUpdatesSheet: View {
     @State private var pendingEditCopy: HorizontalPoolEditCopy?
 
     private var rows: [HorizontalPartLibraryReview] {
-        review.parts.filter { showAll || $0.status != .current && $0.status != .projectOnly }
+        // Nothing here updates a part the project keeps itself, whether or
+        // not a pool has it too: that one is taken from its pool in the
+        // Parts pane.
+        review.parts.filter { showAll || ![.current, .projectOnly, .projectCopy].contains($0.status) }
             .sorted {
                 if $0.references.isEmpty != $1.references.isEmpty { return !$0.references.isEmpty }
                 return $0.name.localizedStandardCompare($1.name) == .orderedAscending
