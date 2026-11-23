@@ -1603,16 +1603,21 @@ struct HorizontalIPadProjectView: View {
             onCopyEditsToPool: isReadOnly ? nil : { copy in try copyEditsToPool(copy) },
             onReviewUpdates: { showsPartUpdates = true },
             onCleanUp: poolCleanupAction(for: project),
-            onSelectUses: { partID in
-                // As on the Mac, less the sheet change: selected and
-                // highlighted, so a sheet that draws them shows them.
+            onHighlightUses: { partID in
+                selectComponents(HorizontalPartUseGroup.componentIDs(in: HorizontalPartUseGroup.groups(usingPart: partID, in: project)))
+            },
+            onSpotlightUses: { partID in
+                // As on the Mac, less the sheet change before it: selected
+                // and spotlit, then brought into the other panes where
+                // Settings asks.
                 let componentIDs = Set(HorizontalDesignIndex(project: project).sortedComponents
                     .filter { $0.partID?.caseInsensitiveCompare(partID) == .orderedSame }
                     .map(\.id))
                 guard !componentIDs.isEmpty else { return }
                 selectComponents(componentIDs)
-                highlightedComponentIDs = componentIDs
+                spotlightFromCanvas(componentIDs, from: .parts)
             },
+            partUses: { HorizontalPartUseGroup.groups(usingPart: $0, in: project) },
             selectedComponentPartIDs: partMarks(in: project).selected,
             spotlitPartIDs: partMarks(in: project).spotlit,
             spotlightDimsOthers: boardDisplayOptions.highlightMode != "as_is",

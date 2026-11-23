@@ -70,9 +70,18 @@ struct HorizontalPartBrowserView: View {
     var onReviewUpdates: () -> Void = {}
     /// Opens the project pool cleanup, where the document offers one.
     var onCleanUp: (() -> Void)? = nil
-    /// Selects and highlights the components fitted with a part, in the
-    /// schematic and on the board, where the document offers it.
-    var onSelectUses: ((HorizontalPoolPart.ID) -> Void)? = nil
+    /// A click on a part's row: the components fitted with it are selected
+    /// in the other views, boxed blue there as a selection made in one
+    /// canvas is in the other. A part no component has leaves the selection
+    /// as it is.
+    var onHighlightUses: ((HorizontalPoolPart.ID) -> Void)? = nil
+    /// Spotlight, in a row's menu: the components fitted with the part
+    /// selected and spotlit in the schematic and on the board, and brought
+    /// into view there when Settings has Spotlight frame every view.
+    var onSpotlightUses: ((HorizontalPoolPart.ID) -> Void)? = nil
+    /// The components fitted with a part, block by block, for its row's
+    /// Replace and Change Value.
+    var partUses: ((HorizontalPoolPart.ID) -> [HorizontalPartUseGroup])? = nil
     /// The parts the components selected anywhere in the window are fitted
     /// with, lowercased: their rows are tinted blue, as a selection is boxed
     /// blue in the other views. The list's own selection is left alone.
@@ -97,6 +106,7 @@ struct HorizontalPartBrowserView: View {
     @State private var selectedPartID: HorizontalPoolPart.ID?
     @State private var sortOrder = [KeyPathComparator(\HorizontalPoolPart.mpn)]
     @Environment(\.horizonPoolRevealAction) private var poolRevealAction
+    @Environment(\.horizonPartReplaceActions) private var partReplaceActions
     @Environment(\.openURL) private var openURL
     #if os(macOS)
     /// For the pool windows Open in … opens.
@@ -229,7 +239,10 @@ struct HorizontalPartBrowserView: View {
         // show through it; a table cannot, so keep the content clear of it.
         .padding(.leading, safeAreaInsets.leading)
         .padding(.trailing, safeAreaInsets.trailing)
-        .onChange(of: selectedPartID) { _, _ in
+        .onChange(of: selectedPartID) { _, partID in
+            if let partID, usedPartIDs.contains(partID.lowercased()) {
+                onHighlightUses?(partID)
+            }
             selectionChangedAt = Date()
             pendingRevealTask?.cancel()
             pendingRevealTask = nil
@@ -650,9 +663,10 @@ struct HorizontalPartBrowserView: View {
         }
         // Finding where a part is used: the project's Find matches sheets,
         // not what is on them.
-        if let onSelectUses, usedPartIDs.contains(part.id.lowercased()) {
-            Button("Select Components Using This Part") { onSelectUses(part.id) }
+        if let onSpotlightUses, usedPartIDs.contains(part.id.lowercased()) {
+            Button("Spotlight") { onSpotlightUses(part.id) }
         }
+        replaceMenus(for: part)
         if let onCopyToPool, !isReadOnly, !copyTargets.isEmpty, libraryRow(for: part)?.isInNoAttachedPool == true {
             Menu("Copy to Pool") {
                 ForEach(copyTargets) { target in
@@ -702,6 +716,27 @@ struct HorizontalPartBrowserView: View {
                 HorizontalStockCheck.mouser(mouser.state(for: part)) { mouser.lookUp([HorizontalPartQuery(part: part)]) }
             ].compactMap { $0 }
         )
+    }
+
+    /// Replace and Change Value, as a right-click on one of the part's
+    /// symbols in the schematic has them, for every component fitted with
+    /// the part. A part two blocks use is replaced in each on its own, so
+    /// its menus are under the blocks' names.
+    @ViewBuilder
+    private func replaceMenus(for part: HorizontalPoolPart) -> some View {
+        if !isReadOnly, let partReplaceActions, let partUses, usedPartIDs.contains(part.id.lowercased()) {
+            let groups = partUses(part.id).map { (group: $0, entries: partReplaceActions.rowEntries($0.componentIDs)) }
+                .filter { !$0.entries.isEmpty }
+            if let only = groups.first, groups.count == 1 {
+                HorizontalPartRowMenuEntries(entries: only.entries, replace: partReplaceActions.replace)
+            } else {
+                ForEach(groups, id: \.group.id) { item in
+                    Menu("In \(item.group.blockName)") {
+                        HorizontalPartRowMenuEntries(entries: item.entries, replace: partReplaceActions.replace)
+                    }
+                }
+            }
+        }
     }
 
     /// The pools a part can be opened in, each in a window of its own: the

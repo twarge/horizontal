@@ -219,6 +219,50 @@ final class PartReplaceMenuTests: XCTestCase {
         XCTAssertNil(content("c-missing", []), "a component no block has")
     }
 
+    // MARK: - A part's row in the Parts pane
+
+    func testAPartsRowOffersReplaceAndChangeValueForEveryComponentFittedWithIt() throws {
+        let entries = HorizontalPartReplaceMenu.rowEntries(catalog: catalog, componentIDs: ["c-r1", "c-r2"], replacement: replacement)
+        XCTAssertEqual(entries.count, 2)
+        guard case .submenu(let replaceTitle, let parts) = entries[0] else {
+            return XCTFail("Replace")
+        }
+        XCTAssertEqual(replaceTitle, "Replace R1, R2")
+        XCTAssertEqual(choices(parts).map(\.part), ["p-10k-0402", "p-10k-0603", "p-10k-0805"])
+        XCTAssertEqual(choices(parts).map(\.isOn), [false, true, false], "the part the row is for")
+        XCTAssertEqual(Set(choices(parts).map(\.components)), [["c-r1", "c-r2"]])
+        // Change Value, and with Option held the same in the footprint.
+        guard case .optionAlternate(.submenu(let anyTitle, _), .submenu(let sameTitle, _)) = entries[1] else {
+            return XCTFail("Change Value and its Option alternate")
+        }
+        XCTAssertEqual(anyTitle, "Change Value of R1, R2")
+        XCTAssertEqual(sameTitle, "Change Value, Same Footprint of R1, R2")
+    }
+
+    func testAPartsRowOffersNothingForComponentsNoOneBlockHas() {
+        XCTAssertTrue(HorizontalPartReplaceMenu.rowEntries(catalog: catalog, componentIDs: ["c-r1", "c-elsewhere"],
+                                                           replacement: replacement).isEmpty,
+                      "one of them is in another block: a list for R1 alone would not be the row's")
+        XCTAssertTrue(HorizontalPartReplaceMenu.rowEntries(catalog: catalog, componentIDs: ["c-missing"], replacement: replacement).isEmpty)
+    }
+
+    func testAPartsUsesAreGroupedByBlockTheTopBlockFirst() {
+        let blocks = [
+            HorizontalProjectBlock(uuid: "B-TOP", isTop: true, name: "Main"),
+            HorizontalProjectBlock(uuid: "b-amp", isTop: false, name: "Amplifier"),
+            HorizontalProjectBlock(uuid: "b-adc", isTop: false, name: "ADC"),
+        ]
+        let components: [(id: String, partID: String?, blockID: String?)] = [
+            ("C-R1", "P-10K", nil), ("c-r2", "p-10k", "b-top"), ("c-r3", "p-10k", "B-AMP"), ("c-r4", "p-10k", "b-adc"),
+            ("c-r5", "p-22k", nil), ("c-r6", nil, nil),
+        ]
+        let groups = HorizontalPartUseGroup.groups(usingPart: "p-10k", components: components, blocks: blocks)
+        XCTAssertEqual(groups.map(\.blockName), ["Main", "ADC", "Amplifier"])
+        XCTAssertEqual(groups.map(\.componentIDs), [["c-r1", "c-r2"], ["c-r4"], ["c-r3"]])
+        XCTAssertEqual(HorizontalPartUseGroup.componentIDs(in: groups), ["c-r1", "c-r2", "c-r3", "c-r4"])
+        XCTAssertTrue(HorizontalPartUseGroup.groups(usingPart: "p-unused", components: components, blocks: blocks).isEmpty)
+    }
+
     func testTheSubmenuClosesWithAlternatePartsWhichStandsAloneWhereNothingCanBeReplaced() throws {
         let content = HorizontalPartReplaceMenu.content(for: try XCTUnwrap(offer(["c-r1"])))
         guard case .submenu(let title, let entries)? = HorizontalPartReplaceMenu.entry(content, browses: true) else {

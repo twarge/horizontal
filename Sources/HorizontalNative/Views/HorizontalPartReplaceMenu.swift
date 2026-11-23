@@ -93,6 +93,32 @@ enum HorizontalPartReplaceMenu {
         return Content(title: title, entries: entries)
     }
 
+    // MARK: - A part's row
+
+    /// Replace and Change Value for a part's row in the Parts pane, which
+    /// speaks for every component fitted with the part: exactly
+    /// `componentIDs`, which one block has, or nothing. Unlike a canvas's
+    /// right-click, there is no one component to fall back on, so a list
+    /// that would answer only some of them is not offered.
+    static func rowEntries(
+        catalog: HorizontalPartAlternatesCatalog,
+        componentIDs: Set<String>,
+        replacement: (Set<String>) -> HorizontalPartReplacement?
+    ) -> [HorizontalTargetItemMenuEntry] {
+        guard let replacement = replacement(componentIDs), replacement.targets.count == componentIDs.count else {
+            return []
+        }
+        var entries = [HorizontalTargetItemMenuEntry]()
+        if let offer = catalog.offer(for: replacement) {
+            let content = content(for: offer)
+            entries.append(.submenu(title: content.title, content.entries))
+        }
+        if let anyFootprint = catalog.values(for: replacement, samePackage: false) {
+            entries.append(valueEntry(anyFootprint: anyFootprint, sameFootprint: catalog.values(for: replacement, samePackage: true)))
+        }
+        return entries
+    }
+
     // MARK: - Change Value
 
     static let changeValueTitle = "Change Value"
@@ -238,6 +264,10 @@ struct HorizontalPartReplaceActions {
     /// Change Value for the same, nil while the pools are being read or
     /// where there is nothing to list.
     var valueEntry: (_ componentID: String, _ selection: Set<String>) -> HorizontalTargetItemMenuEntry?
+    /// Replace and Change Value for exactly these components, every one
+    /// fitted with one part: the Parts pane's row for it
+    /// (`HorizontalPartReplaceMenu.rowEntries`).
+    var rowEntries: (_ componentIDs: Set<String>) -> [HorizontalTargetItemMenuEntry]
     /// Gives the components the part, as one undoable edit.
     var replace: (_ partID: String, _ componentIDs: [String]) -> Void
 }
@@ -343,6 +373,13 @@ struct HorizontalPartReplaceMenuSource: ViewModifier {
                     HorizontalPartReplaceMenu.valueEntry(
                         catalog: $0, componentID: componentID, selection: selection, replacement: replacement)
                 }
+            },
+            rowEntries: { componentIDs in
+                guard let catalog = store.catalog else {
+                    let loading = HorizontalPartReplaceMenu.loading
+                    return [.submenu(title: loading.title, loading.entries)]
+                }
+                return HorizontalPartReplaceMenu.rowEntries(catalog: catalog, componentIDs: componentIDs, replacement: replacement)
             },
             replace: { partID, componentIDs in
                 guard let part = store.catalog?.part(partID), let replacement = replacement(Set(componentIDs)),

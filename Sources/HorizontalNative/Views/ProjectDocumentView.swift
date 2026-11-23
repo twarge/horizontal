@@ -2553,7 +2553,9 @@ struct ProjectWorkspaceView: View {
                     onCopyEditsToPool: isReadOnly ? nil : { copy in try copyEditsToPool(copy) },
                     onReviewUpdates: { showsPartUpdates = true },
                     onCleanUp: poolCleanupAction,
-                    onSelectUses: { selectComponents(usingPart: $0) },
+                    onHighlightUses: { selectComponents(HorizontalPartUseGroup.componentIDs(in: HorizontalPartUseGroup.groups(usingPart: $0, in: project))) },
+                    onSpotlightUses: { spotlightComponents(usingPart: $0) },
+                    partUses: { HorizontalPartUseGroup.groups(usingPart: $0, in: project) },
                     selectedComponentPartIDs: partMarks.selected,
                     spotlitPartIDs: partMarks.spotlit,
                     spotlightDimsOthers: boardDisplayOptions.highlightMode != "as_is",
@@ -3511,13 +3513,14 @@ struct ProjectWorkspaceView: View {
         }
     }
 
-    /// The Parts pane's Select Components Using This Part: every component
-    /// fitted with the part, selected and highlighted on the board and in
-    /// the schematic. When the schematic shows a sheet that draws none of
-    /// them, it goes to the first sheet that does, as `zoom_to` would; the
-    /// highlight follows the page change, and so does the selection, which
-    /// the schematic didn't make.
-    private func selectComponents(usingPart partID: String) {
+    /// The Parts pane's Spotlight: every component fitted with the part,
+    /// selected and spotlit on the board and in the schematic. When the
+    /// schematic shows a sheet that draws none of them, it goes to the first
+    /// sheet that does, as `zoom_to` would; the highlight follows the page
+    /// change, and so does the selection, which the schematic didn't make.
+    /// Then, as a canvas's L, what is spotlit is brought into the other
+    /// views where Settings asks for it, the Parts pane staying put.
+    private func spotlightComponents(usingPart partID: String) {
         let users = HorizontalDesignIndex(project: project).sortedComponents
             .filter { $0.partID?.caseInsensitiveCompare(partID) == .orderedSame }
         guard !users.isEmpty else { return }
@@ -3534,6 +3537,12 @@ struct ProjectWorkspaceView: View {
         }
         selectComponents(componentIDs)
         highlightSelectedComponents(componentIDs)
+        Task { @MainActor in
+            // The page change swaps the canvas; framing waits for it, as
+            // Find's reveal does.
+            try? await Task.sleep(for: .milliseconds(250))
+            frameSpotlight(from: .parts)
+        }
     }
 
     /// A schematic page change drops the page's selection, and only the

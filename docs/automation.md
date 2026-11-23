@@ -917,7 +917,7 @@ the channel — and the 3D view wears a blue box on each part of it. The board
 and the schematic keep their own, though: a part picked on the board is not
 selected in the schematic, nor one picked in the schematic on the board
 (`HorizontalPane.componentSelectionTargets`). A selection made anywhere else
-— the 3D view, Find, the Parts pane's Select Components Using This Part, or
+— the 3D view, Find, the Parts pane's Spotlight, or
 `select` — lands in both, the board selecting the components' packages and
 the schematic their symbols; a canvas already showing the set ignores it.
 The thing is resolved by
