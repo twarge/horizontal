@@ -403,7 +403,8 @@ struct BoardCanvasView: View {
         /// interaction hooks — points, cursor, escape, commit — so a new one
         /// needs no state-machine plumbing; only `commitDrawGraphics` branches.
         /// `plane` is Horizon's tool_draw_plane: draw a polygon, then bind it to
-        /// a net. `dimension` draws a two-point measurement.
+        /// a net. `dimension` draws a measurement: its two points, then where
+        /// its line goes (`BoardDrawDimension`).
         var outcome: Outcome = .geometry
 
         enum Outcome {
@@ -2108,6 +2109,13 @@ struct BoardCanvasView: View {
     private var interactionStatusText: String? {
         if let measureState {
             return measureState.statusText
+        }
+        if let state = drawGraphicsState, state.outcome == .dimension {
+            switch BoardDrawDimension.distinct(state.points, pointKey: pointKey).count {
+            case 0: return "Dimension: click the first point   Esc cancels"
+            case 1: return "Dimension: click the second point   Esc cancels"
+            default: return "Dimension: click where its line goes   Return places it here   Esc cancels"
+            }
         }
         if let state = drawGraphicsState {
             return HorizontalCanvasModeSupport.drawingToolStatusText(
@@ -5996,9 +6004,6 @@ struct BoardCanvasView: View {
         onSelectDrawingLayer(layer)
     }
 
-    /// Begin a dimension: a two-point measurement, drawn with the line tool's
-    /// own interaction and committed as a `HorizontalDimension` rather than as
-    /// board graphics.
     /// Design ▸ Measure Distance (`BoardMeasureState`). Nothing changes on
     /// the board, so it starts on a locked one too, but not over another
     /// tool.
@@ -6012,6 +6017,10 @@ struct BoardCanvasView: View {
         hoveredObject = nil
     }
 
+    /// Begin a dimension: its two points, then where its line goes
+    /// (`BoardDrawDimension`), with the line tool's own cursor, Esc and
+    /// Return, committed as a `HorizontalDimension` rather than as board
+    /// graphics.
     private func beginDrawDimension() {
         guard !isReadOnly,
               modeProfile.mode == .board,
@@ -6033,25 +6042,24 @@ struct BoardCanvasView: View {
         publishSelectionContext()
     }
 
-    private func commitDrawDimension(_ result: DrawGraphicsResult, state: DrawGraphicsState) {
-        // The line tool hands back a segment; a dimension is its two ends. A
-        // zero-length one measures nothing, so the tool stays armed rather than
-        // dropping a dimension the user cannot see.
-        guard let line = result.lines.first(where: { pointKey($0.from) != pointKey($0.to) }) else {
+    /// The dimension the tool has so far: nil until two points apart are
+    /// down, then following the cursor until the third.
+    private func drawnDimension(for state: DrawGraphicsState, id: String = "dimension-preview") -> HorizontalDimension? {
+        guard state.outcome == .dimension else {
+            return nil
+        }
+        return BoardDrawDimension.dimension(id: id, points: state.points, cursor: state.cursor, pointKey: pointKey)
+    }
+
+    private func commitDrawDimension(state: DrawGraphicsState) {
+        // A dimension with no length measures nothing, so the tool stays
+        // armed rather than dropping one the user cannot see.
+        guard let dimension = drawnDimension(for: state, id: UUID().uuidString.lowercased()) else {
             drawGraphicsState = state
             return
         }
         var draft = editedBoard ?? sourceBoard
-        draft.dimensions.append(
-            HorizontalDimension(
-                id: UUID().uuidString.lowercased(),
-                p0: line.from,
-                p1: line.to,
-                labelDistance: 1_000_000,
-                labelSize: 1_500_000,
-                mode: .distance
-            )
-        )
+        draft.dimensions.append(dimension)
         editedBoard = draft
         drawGraphicsState = nil
         invalidateSelectableCache()
@@ -6093,6 +6101,13 @@ struct BoardCanvasView: View {
         state.cursor = point
         drawGraphicsState = state
 
+        if state.outcome == .dimension {
+            // The third point is where the dimension's line goes.
+            if BoardDrawDimension.distinct(state.points, pointKey: pointKey).count >= 3 {
+                commitDrawDimension(state: state)
+            }
+            return
+        }
         guard state.primitive != .line else {
             return
         }
@@ -6107,6 +6122,15 @@ struct BoardCanvasView: View {
         guard !isReadOnly,
               var state = drawGraphicsState,
               let cursor = state.cursor else {
+            return
+        }
+        if state.outcome == .dimension {
+            // Return, or a double-click: with one point down the cursor is
+            // the second, and the dimension goes where the cursor has it.
+            if BoardDrawDimension.distinct(state.points, pointKey: pointKey).count == 1 {
+                state.points.append(cursor)
+            }
+            commitDrawDimension(state: state)
             return
         }
         if let result = finalizedGraphicsResult(for: state) {
@@ -6138,7 +6162,7 @@ struct BoardCanvasView: View {
             return
         }
 
-        guard state.primitive == .line else {
+        guard state.primitive == .line, state.outcome != .dimension else {
             cancelDrawGraphics()
             return
         }
@@ -7540,7 +7564,7 @@ struct BoardCanvasView: View {
             commitDrawPlane(result, state: state)
             return
         case .dimension:
-            commitDrawDimension(result, state: state)
+            commitDrawDimension(state: state)
             return
         case .geometry:
             break
@@ -15354,7 +15378,14 @@ struct BoardCanvasView: View {
             appendSegment(from: measurement.from, to: measurement.to, color: HorizontalMetalRGBA(theme.textOverlay.opacity(0.9)))
         }
 
-        if let state = drawGraphicsState {
+        if let state = drawGraphicsState, let dimension = drawnDimension(for: state) {
+            // Both points are down: the dimension whole, its line following
+            // the cursor.
+            let color = HorizontalMetalRGBA(theme.textOverlay.opacity(0.82))
+            for stroke in BoardDrawDimension.strokes(of: dimension) {
+                appendSegment(from: stroke.from, to: stroke.to, color: color)
+            }
+        } else if let state = drawGraphicsState {
             var points = state.points
             if let cursor = state.cursor,
                points.isEmpty || pointKey(points.last ?? cursor) != pointKey(cursor) {
@@ -17309,6 +17340,15 @@ struct BoardCanvasView: View {
             )
         }
         guard let state = drawGraphicsState else {
+            return
+        }
+        if let dimension = drawnDimension(for: state) {
+            for (index, stroke) in BoardDrawDimension.strokes(of: dimension).enumerated() {
+                drawPreviewSegment(
+                    HorizontalSegment(id: "dimension-preview-\(index)", from: stroke.from, to: stroke.to, width: 0, layer: nil),
+                    context: context, transform: transform
+                )
+            }
             return
         }
 
