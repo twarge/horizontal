@@ -4309,8 +4309,8 @@ struct BoardCanvasView: View {
         if harvestable { entries.append(.command(title: "Copy", .copySelection)) } // copy is safe read-only
 
         // Move ▸ (transforms). "Move" covers everything movable; rotate/mirror are
-        // only offered for types those passes actually transform (dimensions and
-        // decals can move but not yet rotate/mirror).
+        // only offered for types those passes actually transform (dimensions
+        // can move but not rotate/mirror).
         if writable, isTransformable(ref) {
             let rotatable = isRotatableOrMirrorable(ref)
             var move: [HorizontalTargetItemMenuEntry] = [.command(title: "Move", .moveSelection)]
@@ -4532,7 +4532,7 @@ struct BoardCanvasView: View {
     }
 
     /// Objects the Move transform operates on (the broadest set — includes
-    /// dimensions and decals, which can be moved).
+    /// dimensions, which can be moved).
     private func isTransformable(_ ref: HorizontalSelectableRef) -> Bool {
         switch ref.type {
         case .track, .boardNetTie, .boardLine, .boardArc, .via, .text, .boardHole,
@@ -4547,12 +4547,12 @@ struct BoardCanvasView: View {
     }
 
     /// Objects the rotate/mirror passes actually transform — `isTransformable`
-    /// minus dimensions and decals (which `rotateSelectedObjects` /
+    /// minus dimensions (which `rotateSelectedObjects` /
     /// `mirrorSelectedObjects` treat as no-ops), so we don't offer dead actions.
     private func isRotatableOrMirrorable(_ ref: HorizontalSelectableRef) -> Bool {
         switch ref.type {
         case .track, .boardNetTie, .boardLine, .boardArc, .via, .text, .boardHole,
-             .polygonVertex, .polygonEdge, .polygonArcCenter, .boardPackage, .padstackShape:
+             .polygonVertex, .polygonEdge, .polygonArcCenter, .boardPackage, .boardDecal, .padstackShape:
             return true
         case .pad:
             return modeProfile.mode == .package
@@ -8714,8 +8714,8 @@ struct BoardCanvasView: View {
     /// a whole number of quarter turns, on a move patched in Metal, of things
     /// whose turn in the model is the same rigid turn of what the scene drew.
     /// Tracks, junctions and the rest are left to the rebuild: the model turns
-    /// a track's connections its own way, and keepouts, planes, dimensions
-    /// and decals don't turn at all.
+    /// a track's connections its own way, a decal is drawn again from its
+    /// pool item, and keepouts, planes and dimensions don't turn at all.
     private func canTurnBoardMoveInPlace(by angle: Int) -> Bool {
         guard wrappedAngle(angle) % 16_384 == 0,
               canPatchBoardMoveInMetal,
@@ -9197,7 +9197,11 @@ struct BoardCanvasView: View {
                 }
             case .padstackShape:
                 mirrorPadstackShape(ref: ref, around: center, board: &board)
-            case .boardDecal, .boardPackage, .boardPanel, .dimension, .keepout, .plane:
+            case .boardDecal:
+                changeBoardDecal(ref, on: &board) {
+                    BoardDecalPlacementEdit.mirrored($0, about: center, nInnerLayers: boardInnerLayerCount, poolURL: poolURL)
+                }
+            case .boardPackage, .boardPanel, .dimension, .keepout, .plane:
                 break
             case .blockSymbolPort, .busLabel, .busRipper, .connectionLine, .drawingArc, .drawingLine, .junction, .lineNet, .netLabel, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .symbolPin:
                 break
@@ -9287,7 +9291,11 @@ struct BoardCanvasView: View {
                 }
             case .padstackShape:
                 rotatePadstackShape(ref: ref, around: center, by: angleDelta, board: &board)
-            case .boardDecal, .boardPackage, .boardPanel, .dimension, .keepout, .plane:
+            case .boardDecal:
+                changeBoardDecal(ref, on: &board) {
+                    BoardDecalPlacementEdit.turned($0, about: center, by: angleDelta, nInnerLayers: boardInnerLayerCount, poolURL: poolURL)
+                }
+            case .boardPackage, .boardPanel, .dimension, .keepout, .plane:
                 break
             case .blockSymbolPort, .busLabel, .busRipper, .connectionLine, .drawingArc, .drawingLine, .junction, .lineNet, .netLabel, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .symbolPin:
                 break
@@ -9490,6 +9498,25 @@ struct BoardCanvasView: View {
             return
         }
         dimensions[index] = BoardDimensionParts.moved(dimensions[index], parts: parts[id] ?? [ref.vertex], by: delta)
+    }
+
+    /// R or E on a decal: `change` turns or flips it and draws it again from
+    /// its pool item. One that isn't the board's to place stays; so does one
+    /// whose pool item can't be read, which the canvas says.
+    private func changeBoardDecal(
+        _ ref: HorizontalSelectableRef,
+        on board: inout HorizontalBoard,
+        _ change: (HorizontalBoardDecal) -> HorizontalBoardDecal?
+    ) {
+        guard let index = board.decals.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }),
+              board.decals[index].isPlacedByBoard else {
+            return
+        }
+        guard let changed = change(board.decals[index]) else {
+            showCanvasNote("Decal: its pool item can't be read, so it stays as it is")
+            return
+        }
+        board.decals[index] = changed
     }
 
     private func moveBoardDecal(_ decals: inout [HorizontalBoardDecal], ref: HorizontalSelectableRef, by delta: HorizontalPoint) {

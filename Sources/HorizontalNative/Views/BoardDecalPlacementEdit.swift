@@ -10,6 +10,10 @@ import Foundation
 /// `set_flip`: the decal goes to the other side of the board with the angle
 /// the file has, which there turns it the other way, so it is the decal as
 /// it lay mirrored across the vertical line through its origin.
+///
+/// R and E on a selected decal, at rest or while it is being moved, are the
+/// same two edits about a pivot (`turned`, `mirrored`): its origin goes
+/// where the turn or the flip takes it, and it is drawn again there.
 enum BoardDecalPlacementEdit {
     /// What the inspector shows of `decal`. A panel's copy of another
     /// board's decal is that board's to place, so it has its name alone.
@@ -78,6 +82,47 @@ enum BoardDecalPlacementEdit {
         }
         board.decals[index] = redrawn
         return true
+    }
+
+    /// `decal` turned anticlockwise by `angle` about `pivot`: its origin
+    /// carried round the pivot, onto whole nanometres, and the decal drawn
+    /// again at its angle and the turn's. A flipped decal's angle counts
+    /// the same way, since it is mirrored before it is turned. Nil when it
+    /// isn't the board's to place or its pool item can't be read.
+    static func turned(
+        _ decal: HorizontalBoardDecal,
+        about pivot: HorizontalPoint,
+        by angle: Int,
+        nInnerLayers: Int,
+        poolURL: URL?
+    ) -> HorizontalBoardDecal? {
+        guard decal.isPlacedByBoard, let position = decal.position else {
+            return nil
+        }
+        let turn = HorizontalPlacementTransform(shift: .zero, angle: angle, mirrored: false)
+        let landing = (turn.applying(to: position - pivot) + pivot).rounded
+        return shifted(decal, by: landing - position).redrawn(
+            angle: HorizontalCanvasModeSupport.wrappedAngle(decal.angle + angle), flip: decal.flip, scale: decal.scale,
+            nInnerLayers: nInnerLayers, projectPoolURL: poolURL)
+    }
+
+    /// `decal` flipped to the other side of the board across the vertical
+    /// line through `pivot`, as a package is: its origin mirrored, and the
+    /// decal drawn again flipped, its angle the other way round, which is
+    /// what the mirror image of a turn is. Nil as `turned` is.
+    static func mirrored(
+        _ decal: HorizontalBoardDecal,
+        about pivot: HorizontalPoint,
+        nInnerLayers: Int,
+        poolURL: URL?
+    ) -> HorizontalBoardDecal? {
+        guard decal.isPlacedByBoard, let position = decal.position else {
+            return nil
+        }
+        let landing = HorizontalPoint(x: 2 * pivot.x - position.x, y: position.y).rounded
+        return shifted(decal, by: landing - position).redrawn(
+            angle: HorizontalCanvasModeSupport.wrappedAngle(-decal.angle), flip: !decal.flip, scale: decal.scale,
+            nInnerLayers: nInnerLayers, projectPoolURL: poolURL)
     }
 
     /// `decal` moved by `delta`, its place in the file with it.
