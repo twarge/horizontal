@@ -297,7 +297,9 @@ struct HorizontalIPadProjectView: View {
         visiblePanes = [panes.contains(focusedPane) ? focusedPane : (firstAsked ?? focusedPane)]
     }
 
-    private var projectBody: some View {
+    /// `projectBody` in two halves: one chain of its modifiers is more than
+    /// the type checker takes in the time it allows.
+    private var projectBodyBase: some View {
         // No NavigationStack here: the DocumentGroup already supplies the document
         // navigation bar (filename + back-to-Files + the document menu). Wrapping
         // the content in another NavigationStack stacked a second, redundant bar
@@ -469,6 +471,10 @@ struct HorizontalIPadProjectView: View {
         .onChange(of: isReadOnly) { _, _ in
             checkPlaneFills(again: true)
         }
+    }
+
+    private var projectBody: some View {
+        projectBodyBase
         // On a phone the navigator, the inspector and the export panel slide
         // up over the canvas instead of beside it; at the medium detent the
         // canvas behind stays live, so a selection can be inspected and changed.
@@ -575,10 +581,16 @@ struct HorizontalIPadProjectView: View {
             NotificationCenter.default.publisher(for: HorizontalPoolLibrary.itemDidSaveNotification)
                 .receive(on: RunLoop.main)
         ) { notification in
-            if let payload = notification.userInfo?[HorizontalPoolLibrary.itemDidSavePayloadKey]
-                as? HorizontalPoolLibrary.ItemDidSavePayload {
-                handlePoolItemSaved(payload)
-            }
+            handlePoolItemSaved(notification)
+        }
+    }
+
+    /// Kept out of `projectBody`'s modifier chain, which is as long as the
+    /// type checker tolerates.
+    private func handlePoolItemSaved(_ notification: Notification) {
+        let payload = notification.userInfo?[HorizontalPoolLibrary.itemDidSavePayloadKey]
+        if let payload = payload as? HorizontalPoolLibrary.ItemDidSavePayload {
+            handlePoolItemSaved(payload)
         }
     }
 
@@ -3437,7 +3449,7 @@ struct HorizontalExportPanel: View {
         self.settledProject = settledProject
         self.archive = archive
         self.onShowRulesResults = onShowRulesResults
-        _settings = State(initialValue: HorizontalExportSettings(project: project))
+        _settings = State(initialValue: HorizontalExportSettings.remembered(for: project))
     }
 
     var body: some View {

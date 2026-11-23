@@ -288,7 +288,11 @@ struct HorizontalBoardDrawingExportSettings: Hashable {
 }
 
 struct HorizontalBoardDXFExportSettings: Hashable {
-    var enabled = true
+    /// Off until its checkbox is ticked: a fabricator takes the Gerbers and
+    /// the drawing, and a DXF is asked for now and then. Export All leaves
+    /// it out; MCP's export, which names its sections, writes `board_dxf`
+    /// when asked for it either way.
+    var enabled = false
     var filename: String
     var minimumLineWidthMM = 0.1
     var includeHoles = true

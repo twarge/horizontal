@@ -195,6 +195,11 @@ struct HorizontalExportSidebarView: View {
         .listStyle(.insetGrouped)
         #endif
         .scrollContentBackground(.hidden)
+        // The choices made here are the app's to remember
+        // (`HorizontalExportPreferences`): the next window opens with them.
+        .onChange(of: settings) { _, changed in
+            HorizontalExportPreferences(changed).save()
+        }
         .onAppear {
             guard !didInitExpansion else { return }
             didInitExpansion = true

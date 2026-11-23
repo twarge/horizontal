@@ -939,7 +939,7 @@ struct ProjectWorkspaceView: View {
                     ? .selection
                     : nil)
         )
-        _exportSettings = State(initialValue: HorizontalExportSettings(project: project))
+        _exportSettings = State(initialValue: HorizontalExportSettings.remembered(for: project))
     }
 
     /// First-open sidebar state: a remembered choice wins; otherwise the
@@ -1822,9 +1822,9 @@ struct ProjectWorkspaceView: View {
         // Export settings no one changed are named and placed for the saved
         // project; changed ones keep what was chosen, and the folder moves
         // when it was still the one beside the old project.
-        let previousExportSettings = HorizontalExportSettings(project: previous)
+        let previousExportSettings = HorizontalExportSettings.remembered(for: previous)
         if exportSettings == previousExportSettings {
-            exportSettings = HorizontalExportSettings(project: project)
+            exportSettings = HorizontalExportSettings.remembered(for: project)
         } else if exportSettings.targetDirectory == previousExportSettings.targetDirectory {
             exportSettings.targetDirectory = HorizontalExportSettings(project: project).targetDirectory
         }
