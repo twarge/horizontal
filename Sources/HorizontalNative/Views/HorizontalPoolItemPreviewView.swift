@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The library browser's preview pane: a drawing for symbols, frames,
 /// packages, padstacks and decals, a table for units and entities, and for
-/// parts their data, their symbols and their footprint. Sits below the item
+/// parts their data over their symbols and footprint, side by side. Sits below the item
 /// list; follows the selection.
 struct HorizontalPoolItemPreviewView: View {
     var item: HorizontalPoolLibraryItem?
@@ -69,26 +69,33 @@ struct HorizontalPoolItemPreviewView: View {
         case .table(let table):
             HorizontalPoolPreviewTableView(table: table, onReveal: onReveal)
         case .part(let part):
-            // Horizon's part preview: the data on top, the entity's symbols
-            // below it, the footprint beside both. The data and the symbols
-            // split the column's height; the data scrolls.
-            HStack(spacing: 0) {
-                VStack(spacing: 0) {
-                    HorizontalPoolPreviewTableView(table: part.table, onReveal: onReveal)
-                    if !part.gates.isEmpty {
-                        Divider()
-                        HorizontalPoolPartSymbolView(gates: part.gates, palette: schematicPalette)
-                            .id(item.id)
-                    }
-                }
-                if let geometry = part.package {
+            // The data on top, across the whole pane, where its values have
+            // room; the entity's symbols and the footprint side by side
+            // under it. The data takes the height the drawings leave, and
+            // scrolls.
+            VStack(spacing: 0) {
+                HorizontalPoolPreviewTableView(table: part.table, onReveal: onReveal)
+                    .frame(minHeight: 90)
+                    .layoutPriority(1)
+                if !part.gates.isEmpty || part.package != nil {
                     Divider()
-                    HorizontalBoardPreviewCanvas(
-                        geometry: geometry,
-                        hiddenLayers: HorizontalPoolPreviewBuilder.packageHiddenLayers,
-                        palette: boardPalette
-                    )
-                    .frame(minWidth: 180, idealWidth: 280, maxWidth: 360)
+                    HStack(spacing: 0) {
+                        if !part.gates.isEmpty {
+                            HorizontalPoolPartSymbolView(gates: part.gates, palette: schematicPalette)
+                                .id(item.id)
+                        }
+                        if let geometry = part.package {
+                            if !part.gates.isEmpty {
+                                Divider()
+                            }
+                            HorizontalBoardPreviewCanvas(
+                                geometry: geometry,
+                                hiddenLayers: HorizontalPoolPreviewBuilder.packageHiddenLayers,
+                                palette: boardPalette
+                            )
+                        }
+                    }
+                    .frame(minHeight: 110, idealHeight: 200, maxHeight: 240)
                 }
             }
         case .unavailable(let message):
@@ -533,6 +540,8 @@ struct HorizontalPoolPreviewTableView: View {
                             GridRow {
                                 Text(field.label)
                                     .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .fixedSize()
                                     .gridColumnAlignment(.trailing)
                                 fieldValue(field)
                             }
