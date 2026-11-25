@@ -122,4 +122,4 @@ jobs:
         uses: ./.github/actions/occt-static
 
       - name: Build
-        run: make ios
+        run: make ios XCODE_FLAGS=CODE_SIGNING_ALLOWED=NO

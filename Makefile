@@ -66,13 +66,13 @@ build: deps
 release:
 	$(MAKE) build CONFIG=Release
 
-## ios: build for the iOS Simulator (unsigned, as Xcode does for a generic destination)
+## ios: build for the iOS Simulator
 ios: deps
-	$(XCODEBUILD) -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+	$(XCODEBUILD) -destination 'generic/platform=iOS Simulator' $(XCODE_FLAGS) build
 
-## visionos: build for the visionOS Simulator (unsigned, as `ios` is)
+## visionos: build for the visionOS Simulator
 visionos: deps
-	$(XCODEBUILD) -destination 'generic/platform=visionOS Simulator' CODE_SIGNING_ALLOWED=NO build
+	$(XCODEBUILD) -destination 'generic/platform=visionOS Simulator' $(XCODE_FLAGS) build
 
 ## app-path: print the path of the built .app (inside Xcode's DerivedData)
 app-path:
