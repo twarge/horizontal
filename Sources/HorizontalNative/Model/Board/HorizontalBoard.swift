@@ -1972,9 +1972,9 @@ struct HorizontalBoard {
                                   vias: resolvedVias, copperLayers: copperLayers, heldPoints: heldPoints)
         var junctionNetIDs = [String: String]()
         for (id, point) in junctions {
-            let layers = holds.netLayers(of: id, at: point, copperLayers: copperLayers)
-            let netsHere = Set(layers.compactMap { netForKey[junctionNodes.node(point, layer: $0, junction: id)] })
-            if netsHere.count == 1, let netID = netsHere.first {
+            if let netID = holds.net(of: id, at: point, copperLayers: copperLayers, netOn: {
+                netForKey[junctionNodes.node(point, layer: $0, junction: id)]
+            }) {
                 junctionNetIDs[id] = netID
             }
         }

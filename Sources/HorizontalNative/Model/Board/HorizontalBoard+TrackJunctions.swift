@@ -232,6 +232,28 @@ extension HorizontalBoard {
             }
             return layers[id.lowercased()].map { Array($0) } ?? copperLayers
         }
+
+        /// The net of a junction, from the net `netOn` finds at its point on
+        /// a layer: the one net on `netLayers`. Where those layers hold two,
+        /// the one on the layers of the copper that names it. A track that
+        /// ends on a pad names no junction, so it holds by position any
+        /// junction under the pad's centre; one there that another net's
+        /// track on the other side bends on is that track's still, and with
+        /// no net its track joined nothing in the rats' nest.
+        func net(of id: String, at point: HorizontalPoint, copperLayers: [Int], netOn: (Int) -> String?) -> String? {
+            func single(_ layers: [Int]) -> String? {
+                let nets = Set(layers.compactMap(netOn))
+                return nets.count == 1 ? nets.first : nil
+            }
+            if let net = single(netLayers(of: id, at: point, copperLayers: copperLayers)) {
+                return net
+            }
+            guard heldByPosition.contains(HorizontalBoard.junctionPointKey(point)),
+                  let named = layers[id.lowercased()], !named.isEmpty else {
+                return nil
+            }
+            return single(Array(named))
+        }
     }
 
     /// `segments` are the tracks and net ties; `heldPoints` the places of

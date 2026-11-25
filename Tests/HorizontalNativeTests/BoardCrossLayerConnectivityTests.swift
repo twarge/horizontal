@@ -161,4 +161,45 @@ final class BoardCrossLayerConnectivityTests: XCTestCase {
         let resolved = HorizontalBoardConnectivity.recompute(board)
         XCTAssertNil(net(resolved, "t-bottom"))
     }
+
+    /// A junction on a pad's centre stands for a track taken off the pad
+    /// (`testJunctionOnPadCentreDetachesTheTrack`), but only on the layers of
+    /// the copper that names it. Another net's bottom track bending under a
+    /// top-only pad, as the two sides of a flex run over each other, leaves
+    /// the pad its net: read without the layer, the pad's own tracks had no
+    /// net and the net an airwire to copper it was routed to.
+    func testAnotherLayersJunctionUnderAPadLeavesThePadItsNet() {
+        let padCenter = p(5_000_000, 0)
+        var under = track("t-bottom", padCenter, p(10_000_000, 0), layer: bottom)
+        under.fromJunctionID = "j"
+        var board = makeBoard(
+            tracks: [track("t-top", padCenter, p(0, 0), layer: top), under],
+            pads: [
+                pad("pkg/pad/a", at: padCenter, net: "net-a", layer: top),
+                pad("pkg/pad/b", at: p(10_000_000, 0), net: "net-b", layer: bottom),
+            ]
+        )
+        board.junctions = ["j": padCenter]
+
+        let resolved = HorizontalBoardConnectivity.recompute(board)
+        XCTAssertEqual(net(resolved, "t-top"), "net-a")
+        XCTAssertEqual(net(resolved, "t-bottom"), "net-b")
+        XCTAssertEqual(resolved.junctionNetIDs["j"], "net-b", "the junction is its own track's")
+    }
+
+    /// The junction a track on the pad's own layer names still takes that
+    /// track off the pad.
+    func testAJunctionOnThePadsOwnLayerStillDetachesItsTrack() {
+        let padCenter = p(5_000_000, 0)
+        var detached = track("t-top", padCenter, p(0, 0), layer: top)
+        detached.fromJunctionID = "j"
+        var board = makeBoard(
+            tracks: [detached],
+            pads: [pad("pkg/pad/a", at: padCenter, net: "net-a", layer: top)]
+        )
+        board.junctions = ["j": padCenter]
+
+        let resolved = HorizontalBoardConnectivity.recompute(board)
+        XCTAssertNil(net(resolved, "t-top"))
+    }
 }

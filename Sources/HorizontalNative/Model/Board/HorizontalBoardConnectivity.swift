@@ -118,11 +118,11 @@ enum HorizontalBoardConnectivity {
             // the layers of its tracks where only the tracks that name it do.
             // Where another net's junction stands at its point on its layer,
             // it is the net of its own tracks there.
-            let layers = holds.netLayers(of: id, at: point, copperLayers: copperLayers)
-            let netsHere = Set(layers.compactMap {
+            // Under a pad another layer's track ends on, it is the net of
+            // the tracks that name it (`JunctionHolds.net`).
+            if let net = holds.net(of: id, at: point, copperLayers: copperLayers, netOn: {
                 netForKey[built.junctionNodes.node(point, layer: $0, junction: id)]
-            })
-            if netsHere.count == 1, let net = netsHere.first {
+            }) {
                 junctionNetIDs[id] = net
             } else {
                 junctionNetIDs.removeValue(forKey: id)
@@ -323,12 +323,29 @@ enum HorizontalBoardConnectivity {
         // what Disconnect leaves behind, and what the writer emits when a
         // junction is there). So a pad whose centre carries a junction seeds
         // nothing: copper meeting it is detached, as it is on disk.
-        let junctionKeys = Set(board.junctions.values.map(pointKey))
+        // Only on the junction's own layers, though: those of the tracks and
+        // net ties that name it and of the via on it, or every layer where
+        // nothing names it. A junction another net's bottom track bends on,
+        // under a top pad, is none of the pad's business, and read as one it
+        // left the pad's own tracks with no net and the net an airwire.
+        let junctionLayers = HorizontalBoard.junctionHolds(
+            junctions: board.junctions, segments: board.tracks + board.netTies, vias: board.vias,
+            copperLayers: copperLayers, heldPoints: []).layers
+        var junctionNodeKeys = Set<String>()
+        for (id, point) in board.junctions {
+            let named = junctionLayers[id.lowercased()] ?? []
+            for layer in named.isEmpty ? Set(copperLayers) : named {
+                junctionNodeKeys.insert(HorizontalCopperConnectivity.node(point, layer: layer))
+            }
+        }
+        func hasJunction(_ point: HorizontalPoint, layer: Int) -> Bool {
+            junctionNodeKeys.contains(HorizontalCopperConnectivity.node(point, layer: layer))
+        }
         var padAtKey = [String: String]()
         for pad in board.packagePads {
             guard let layer = pad.layer, HorizontalBoardLayers.isCopper(layer) else { continue }
             let center = HorizontalRect(points: pad.renderVertices(arcPrecision: 24)).center
-            guard !junctionKeys.contains(pointKey(center)) else { continue }
+            guard !hasJunction(center, layer: layer) else { continue }
             seed(center, layer: layer, pad.netID)
             guard let path = padPath(forPolygonID: pad.id) else { continue }
             padAtKey[HorizontalCopperConnectivity.node(center, layer: layer)] = path
@@ -339,9 +356,9 @@ enum HorizontalBoardConnectivity {
             padNodesByPath[path, default: []]
                 .append(HorizontalCopperConnectivity.node(center, layer: layer))
         }
-        for (path, center) in board.packagePadPositions where !junctionKeys.contains(pointKey(center)) {
+        for (path, center) in board.packagePadPositions {
             let normalized = normalizedID(path)
-            for layer in padLayersByPath[normalized] ?? [] {
+            for layer in padLayersByPath[normalized] ?? [] where !hasJunction(center, layer: layer) {
                 seed(center, layer: layer, padNetByPath[normalized])
                 padNodesByPath[normalized, default: []]
                     .append(HorizontalCopperConnectivity.node(center, layer: layer))
