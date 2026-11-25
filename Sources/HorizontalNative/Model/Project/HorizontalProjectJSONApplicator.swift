@@ -1467,9 +1467,23 @@ enum HorizontalProjectJSONApplicator {
             at: point, named: junctionID, layer: layer, netID: netID, board: board, junctionLayers: junctionLayers) {
             return boardJunctionEndpoint(junctionID)
         }
+        // A pad with copper on the track's layer sooner than a junction only
+        // another layer's copper is on: a route begun on a top pad another
+        // net's bottom track bends under was written onto that track's
+        // junction, and read back as taken off the pad and joined to nothing.
         let key = jsonPointKey(point)
-        if let padPath = board.packagePadPositions.first(where: { jsonPointKey($0.value) == key })?.key {
-            return ["junc": NSNull(), "pad": padPath]
+        let pad = board.packagePadPositions.first(where: { jsonPointKey($0.value) == key })
+        if let pad, layer.map({
+            BoardTrackRouting.padHasCopper(
+                path: pad.key, center: pad.value, on: $0, packagePads: board.packagePads, packageHoles: board.packageHoles)
+        }) ?? true {
+            return ["junc": NSNull(), "pad": pad.key]
+        }
+        if let junctionID = Self.junctionID(at: point, in: board.junctions) {
+            return boardJunctionEndpoint(junctionID)
+        }
+        if let pad {
+            return ["junc": NSNull(), "pad": pad.key]
         }
         return nil
     }
@@ -1479,8 +1493,9 @@ enum HorizontalProjectJSONApplicator {
     /// never one only another layer's copper is on while there is another
     /// (`HorizontalBoard.junctionIDs(at:joining:)`), and one on the track's
     /// net (`netID`) or on none sooner than another net's, which can stand
-    /// at the same point (`BoardTrackRouting.mergeJunctions`); else, rather
-    /// than lose the track, any junction there.
+    /// at the same point (`BoardTrackRouting.mergeJunctions`). Nil where
+    /// there is none of those: `boardTrackEndpoint` then names the pad the
+    /// end is on or, rather than lose the track, any junction there.
     private static func trackEndJunction(
         at point: HorizontalPoint,
         named junctionID: String?,
@@ -1498,7 +1513,6 @@ enum HorizontalProjectJSONApplicator {
         let joinable = board.junctionIDs(at: point, joining: layer, layers: junctionLayers)
         return joinable.first { netsMatch(board.junctionNetIDs[$0], netID) }
             ?? joinable.first
-            ?? Self.junctionID(at: point, in: board.junctions)
     }
 
     /// Points an existing track's or net tie's ends at the junctions the
